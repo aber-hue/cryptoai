@@ -1,0 +1,3029 @@
+import { BigQuery } from "@google-cloud/bigquery";
+import { createPool, type Pool, type PoolOptions, type RowDataPacket } from "mysql2/promise";
+import { ENV } from "./_core/env";
+
+type MarketListInput = {
+  query?: string;
+  exchangeIds?: number[];
+  marketType?: "spot" | "perps";
+  sortBy?: "listedAt" | "marketCap" | "volume24h";
+  sortOrder?: "asc" | "desc";
+  page?: number;
+  pageSize?: number;
+};
+
+function getMarketTypeFilterValues(marketType: MarketListInput["marketType"]) {
+  if (marketType === "spot") {
+    return ["spot", "alpha", "boost", "xlaunch"];
+  }
+
+  if (marketType === "perps") {
+    return ["perps"];
+  }
+
+  return [];
+}
+
+type MarketTokenRow = {
+  tokenId: number;
+  symbol: string;
+  name: string;
+  logoUrl: string | null;
+  price: number | null;
+  totalSupply: number | null;
+  circulatingSupply: number | null;
+  fdv: number | null;
+  marketCap: number | null;
+  volume24h: number | null;
+  listedAt: string | null;
+  recentVenue: string | null;
+  exchanges: Array<{
+    exchangeId: number;
+    exchangeName: string;
+    exchangeLogoUrl: string | null;
+    marketType: string | null;
+  }>;
+};
+
+type TokenProfileResult = {
+  tokenId: number;
+  symbol: string;
+  name: string;
+  slug: string | null;
+  description: string | null;
+  logoUrl: string | null;
+  coinMarketCapId: string | null;
+  coinGeckoId: string | null;
+  website: string | null;
+  whitepaperUrl: string | null;
+  currentPrice: number | null;
+  marketCap: number | null;
+  fdv: number | null;
+  totalSupply: number | null;
+  circulatingSupply: number | null;
+  volume24h: number | null;
+  priceChange24h: number | null;
+  priceChange7d: number | null;
+  tokenHolderCount: number | null;
+  coinTags: string[];
+  addresses: Array<{
+    chainName: string;
+    address: string;
+  }>;
+  latestAnnouncements: Array<{
+    id: number;
+    title: string;
+    publishedAt: string | null;
+    url: string | null;
+    type: "listing" | "delisting" | "event" | "other";
+  }>;
+};
+
+type TokenUnlockViewResult = {
+  tokenId: number;
+  categories: Array<{
+    key: string;
+    label: string;
+    ratio: number;
+  }>;
+  rows: Array<{
+    unlockDate: string;
+    categoryValues: Record<string, number | null>;
+    monthlyTotalRelease: number | null;
+    monthlyReleaseRatio: number | null;
+    cumulativeRelease: number | null;
+    cumulativeReleaseRatio: number | null;
+  }>;
+};
+
+type TokenListingViewResult = {
+  tokenId: number;
+  items: Array<{
+    id: string;
+    exchangeId: number | null;
+    exchangeName: string;
+    exchangeLogoUrl: string | null;
+    marketType: string | null;
+    eventType: "listing" | "activity";
+    title: string;
+    date: string | null;
+    priceAtList: number | null;
+    fdvAtList: number | null;
+    marketCapAtList: number | null;
+    publisher: string | null;
+    rewardToken: string | null;
+    rewardAmount: number | null;
+    estimatedValue: number | null;
+    url: string | null;
+  }>;
+};
+
+type TokenKlineRange = "1m" | "3m" | "6m" | "1y";
+
+type TokenKlineResult = {
+  tokenId: number;
+  source: "coinmarketcap" | "coingecko";
+  range: TokenKlineRange;
+  points: Array<{
+    time: string;
+    open: number | null;
+    high: number | null;
+    low: number | null;
+    close: number | null;
+    volume: number | null;
+    marketCap: number | null;
+  }>;
+};
+
+type TokenDepthViewResult = {
+  tokenId: number;
+  items: Array<{
+    exchangeId: number;
+    exchangeName: string;
+    exchangeLogoUrl: string | null;
+    marketType: string | null;
+    pairName: string | null;
+    quoteCurrency: string | null;
+    price: number | null;
+    volume24h: number | null;
+    depthBuy2: number | null;
+    depthSell2: number | null;
+    fundingRate: number | null;
+    openInterest: number | null;
+    listingTime: string | null;
+  }>;
+};
+
+type TokenDepthTrendResult = {
+  tokenId: number;
+  summary: {
+    latestPrice: number | null;
+    totalVolume24h: number | null;
+    totalDepthBuy2: number | null;
+    totalDepthSell2: number | null;
+    latestSnapshotTs: string | null;
+  };
+  points: Array<{
+    snapshotDate: string;
+    totalVolume: number | null;
+    totalDepthBuy2: number | null;
+    totalDepthSell2: number | null;
+  }>;
+};
+
+type ExchangeDepthViewResult = {
+  tokenId: number;
+  exchangeId: number;
+  exchangeName: string;
+  marketType: string | null;
+  points: Array<{
+    snapshotDate: string;
+    buyDepth: number | null;
+    sellDepth: number | null;
+    totalDepth: number | null;
+    spread: number | null;
+  }>;
+};
+
+type TokenHoldersViewResult = {
+  tokenId: number;
+  updatedAt: string | null;
+  series: Array<{
+    snapshotDate: string;
+    totalOpenInterest: number | null;
+    fundingRate: number | null;
+  }>;
+  items: Array<{
+    exchangeId: number;
+    exchangeName: string;
+    exchangeLogoUrl: string | null;
+    marketType: string | null;
+    pairName: string | null;
+    price: number | null;
+    volume24h: number | null;
+    marketShare: number | null;
+    fundingRate: number | null;
+    openInterest: number | null;
+  }>;
+};
+
+type TokenFundingViewResult = {
+  tokenId: number;
+  summary: {
+    totalRaised: number | null;
+    latestRound: string | null;
+    latestRoundDate: string | null;
+    investorCount: number;
+  };
+  rounds: Array<{
+    id: number;
+    kind: string | null;
+    roundType: string | null;
+    roundDate: string | null;
+    raise: number | null;
+    valuation: number | null;
+    announcementUrl: string | null;
+    showOnlyYear: boolean;
+    tokensForSale: number | null;
+    priceUsd: number | null;
+    lockupPeriod: string | null;
+    roi: number | null;
+    athRoi: number | null;
+    isHidden: boolean;
+    investors: string[];
+    ieoPlatform: string | null;
+    saleStatus: string | null;
+  }>;
+  teamMembers: Array<{
+    id: number;
+    name: string;
+    logoUrl: string | null;
+    jobs: string[];
+    isFormer: boolean;
+    links: Array<{
+      label: string;
+      url: string;
+    }>;
+    sortOrder: number;
+  }>;
+};
+
+type ExchangeHoldersViewResult = {
+  tokenId: number;
+  exchangeId: number;
+  exchangeName: string;
+  marketType: string | null;
+  updatedAt: string | null;
+  latestPrice: number | null;
+  latestVolume24h: number | null;
+  latestOpenInterest: number | null;
+  latestFundingRate: number | null;
+  series: Array<{
+    snapshotDate: string;
+    openInterest: number | null;
+    fundingRate: number | null;
+  }>;
+};
+
+type OnchainFundFlowResult = {
+  tokenId: number;
+  tokenAddressId: number | null;
+  totalAmount: number;
+  nodes: Array<{
+    id: string;
+    layer: number;
+    address: string;
+    label: string;
+    amount: number;
+    currentBalance: number | null;
+    kind: string;
+    outgoingCount: number;
+  }>;
+  links: Array<{
+    source: string;
+    target: string;
+    amount: number;
+    time: string | null;
+    txhash: string | null;
+  }>;
+  summaries: Array<{
+    layer: number;
+    title: string;
+    count: number;
+    totalAmount: number;
+  }>;
+};
+
+type OnchainHolderListResult = {
+  tokenId: number;
+  tokenAddressId: number | null;
+  tokenAddress: string | null;
+  snapshotDate: string | null;
+  total: number;
+  page: number;
+  pageSize: number;
+  items: Array<{
+    address: string;
+    label: string;
+    kind: string;
+    isContract: boolean;
+    balance: number | null;
+    rank: number | null;
+    balanceChange24h: number | null;
+    balanceChange7d: number | null;
+    isNew: boolean;
+  }>;
+};
+
+type AnnouncementSearchResult = {
+  items: Array<{
+    id: number;
+    title: string;
+    exchangeSlug: string | null;
+    publishedAt: string | null;
+    summary: string | null;
+    url: string | null;
+    type: "listing" | "delisting" | "event" | "other";
+  }>;
+  total: number;
+};
+
+type ListingAnnouncementSearchResult = {
+  items: Array<{
+    id: string;
+    tokenId: number;
+    symbol: string;
+    tokenName: string;
+    exchangeId: number;
+    exchangeName: string;
+    exchangeSlug: string | null;
+    marketType: string | null;
+    pairName: string | null;
+    depositTime: string | null;
+    listingTime: string | null;
+    announcementTitle: string | null;
+    announcementUrl: string | null;
+    publishedAt: string | null;
+  }>;
+  total: number;
+};
+
+type AvailableOnchainTokenResult = {
+  items: Array<{
+    tokenId: number;
+    symbol: string;
+    name: string;
+    tokenAddressId: number | null;
+    tokenAddress: string | null;
+    transferCount: number;
+    holderCount: number;
+  }>;
+};
+
+const fallbackOnchainTokens: Record<
+  string,
+  {
+    tokenId: number;
+    addresses: string[];
+  }
+> = {
+  BSB: {
+    tokenId: 0,
+    addresses: ["0x595deaad1eb5476ff1e649fdb7efc36f1e4679cc"],
+  },
+};
+
+type ProfileRow = RowDataPacket & {
+  tokenId: number;
+  symbol: string;
+  name: string;
+  slug: string | null;
+  description: string | null;
+  logoUrl: string | null;
+  coinMarketCapId: string | null;
+  coinGeckoId: string | null;
+  website: string | null;
+  whitepaperUrl: string | null;
+  currentPrice: number | null;
+  marketCap: number | null;
+  fdv: number | null;
+  totalSupply: number | null;
+  circulatingSupply: number | null;
+  volume24h: number | null;
+  priceChange24h: number | null;
+  priceChange7d: number | null;
+  tokenHolderCount: number | null;
+  coinTagsRaw: string | null;
+};
+
+let pool: Pool | null = null;
+let bigQueryClient: BigQuery | null = null;
+
+function getPool() {
+  if (pool) return pool;
+
+  const databaseUrl = process.env.DATABASE_URL;
+  if (!databaseUrl) {
+    throw new Error("DATABASE_URL is not configured");
+  }
+
+  const url = new URL(databaseUrl);
+  const options: PoolOptions = {
+    host: url.hostname,
+    port: Number(url.port || 3306),
+    user: decodeURIComponent(url.username),
+    password: decodeURIComponent(url.password),
+    database: url.pathname.replace(/^\//, ""),
+    charset: url.searchParams.get("charset") ?? "utf8mb4",
+    waitForConnections: true,
+    connectionLimit: Number(url.searchParams.get("connection_limit") ?? 10),
+  };
+
+  pool = createPool(options);
+  return pool;
+}
+
+function getBigQueryClient() {
+  if (bigQueryClient) return bigQueryClient;
+
+  const projectId = process.env.BIGQUERY_PROJECT_ID;
+  const keyFilename = process.env.BIGQUERY_CREDENTIALS_PATH;
+  if (!projectId || !keyFilename) {
+    throw new Error("BIGQUERY_PROJECT_ID or BIGQUERY_CREDENTIALS_PATH is not configured");
+  }
+
+  bigQueryClient = new BigQuery({
+    projectId,
+    keyFilename,
+  });
+
+  return bigQueryClient;
+}
+
+function parseCoinTags(value: string | null) {
+  if (!value) return [];
+  return value
+    .split(/[;,|]/)
+    .map(item => item.trim())
+    .filter(Boolean);
+}
+
+function normalizeUnlockCategory(value: string | null) {
+  if (!value) return "Unspecified";
+
+  return value
+    .split(/[_\s-]+/)
+    .filter(Boolean)
+    .map(part => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join(" ");
+}
+
+function toDateKey(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value.slice(0, 10);
+  return date.toISOString().slice(0, 10);
+}
+
+function mapAnnouncementType(row: {
+  isListing?: number | null;
+  isDelistingRisk?: number | null;
+  isActivity?: number | null;
+}): "listing" | "delisting" | "event" | "other" {
+  if (row.isListing) return "listing";
+  if (row.isDelistingRisk) return "delisting";
+  if (row.isActivity) return "event";
+  return "other";
+}
+
+function toNullableNumber(value: unknown) {
+  if (value == null) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function getKlineRangeConfig(range: TokenKlineRange) {
+  switch (range) {
+    case "1m":
+      return { period: "daily", count: 30 };
+    case "3m":
+      return { period: "daily", count: 90 };
+    case "6m":
+      return { period: "daily", count: 180 };
+    case "1y":
+      return { period: "weekly", count: 52 };
+    default:
+      return { period: "daily", count: 90 };
+  }
+}
+
+function getCoinGeckoDays(range: TokenKlineRange) {
+  switch (range) {
+    case "1m":
+      return "30";
+    case "3m":
+      return "90";
+    case "6m":
+      return "180";
+    case "1y":
+      return "365";
+    default:
+      return "90";
+  }
+}
+
+function normalizeCoinMarketCapOhlcvResponse(payload: any) {
+  const collected: any[] = [];
+  const data = payload?.data;
+
+  if (Array.isArray(data)) {
+    collected.push(...data);
+  } else if (data && typeof data === "object") {
+    Object.values(data).forEach((entry: any) => {
+      if (Array.isArray(entry)) {
+        collected.push(...entry);
+        return;
+      }
+
+      if (Array.isArray(entry?.quotes)) {
+        collected.push(...entry.quotes);
+        return;
+      }
+
+      if (Array.isArray(entry?.ohlcv)) {
+        collected.push(...entry.ohlcv);
+      }
+    });
+  }
+
+  const normalized = collected
+    .map(item => {
+      const usd =
+        item?.quote?.USD ??
+        item?.quote?.usd ??
+        item?.USD ??
+        item?.usd ??
+        item;
+      const time =
+        item?.timestamp ??
+        item?.time_open ??
+        item?.timeOpen ??
+        item?.time_close ??
+        item?.timeClose ??
+        usd?.timestamp ??
+        usd?.time_open ??
+        usd?.timeOpen ??
+        null;
+
+      if (!time) return null;
+
+      return {
+        time: new Date(time).toISOString(),
+        open: toNullableNumber(usd?.open),
+        high: toNullableNumber(usd?.high),
+        low: toNullableNumber(usd?.low),
+        close: toNullableNumber(usd?.close),
+        volume: toNullableNumber(usd?.volume),
+        marketCap: toNullableNumber(usd?.market_cap ?? usd?.marketCap),
+      };
+    })
+    .filter(
+      (
+        item
+      ): item is {
+        time: string;
+        open: number | null;
+        high: number | null;
+        low: number | null;
+        close: number | null;
+        volume: number | null;
+        marketCap: number | null;
+      } => Boolean(item?.time)
+    )
+    .sort((left, right) => new Date(left.time).getTime() - new Date(right.time).getTime());
+
+  const deduped = new Map<string, (typeof normalized)[number]>();
+  normalized.forEach(point => {
+    deduped.set(point.time, point);
+  });
+
+  return Array.from(deduped.values());
+}
+
+async function fetchCoinMarketCapKline(identifier: string, range: TokenKlineRange) {
+  if (!ENV.coinMarketCapApiKey) {
+    throw new Error("CMC_API_KEY is not configured");
+  }
+
+  const { period, count } = getKlineRangeConfig(range);
+  const url = new URL("https://pro-api.coinmarketcap.com/v2/cryptocurrency/ohlcv/historical");
+  if (/^\d+$/.test(identifier)) {
+    url.searchParams.set("id", identifier);
+  } else {
+    url.searchParams.set("slug", identifier);
+  }
+  url.searchParams.set("time_period", period);
+  url.searchParams.set("count", `${count}`);
+  url.searchParams.set("convert", "USD");
+
+  const response = await fetch(url, {
+    headers: {
+      Accept: "application/json",
+      "X-CMC_PRO_API_KEY": ENV.coinMarketCapApiKey,
+    },
+    signal: AbortSignal.timeout(20_000),
+  });
+
+  const bodyText = await response.text();
+  let payload: any = null;
+
+  try {
+    payload = bodyText ? JSON.parse(bodyText) : null;
+  } catch {
+    payload = null;
+  }
+
+  if (!response.ok) {
+    const errorMessage =
+      payload?.status?.error_message ||
+      payload?.status?.errorMessage ||
+      bodyText ||
+      `HTTP ${response.status}`;
+    throw new Error(`CMC price request failed: ${errorMessage}`);
+  }
+
+  return normalizeCoinMarketCapOhlcvResponse(payload);
+}
+
+function normalizeCoinGeckoMarketChartResponse(payload: any) {
+  const prices = Array.isArray(payload?.prices) ? payload.prices : [];
+  const marketCaps = new Map<string, number | null>(
+    (Array.isArray(payload?.market_caps) ? payload.market_caps : []).map((entry: any) => [
+      new Date(Number(entry?.[0])).toISOString(),
+      toNullableNumber(entry?.[1]),
+    ])
+  );
+  const volumes = new Map<string, number | null>(
+    (Array.isArray(payload?.total_volumes) ? payload.total_volumes : []).map((entry: any) => [
+      new Date(Number(entry?.[0])).toISOString(),
+      toNullableNumber(entry?.[1]),
+    ])
+  );
+
+  return prices
+    .map((entry: any) => {
+      const timestamp = Number(entry?.[0]);
+      const close = toNullableNumber(entry?.[1]);
+      if (!Number.isFinite(timestamp)) return null;
+
+      const time = new Date(timestamp).toISOString();
+      return {
+        time,
+        open: close,
+        high: close,
+        low: close,
+        close,
+        volume: volumes.get(time) ?? null,
+        marketCap: marketCaps.get(time) ?? null,
+      };
+    })
+    .filter(
+      (
+        item: {
+          time: string;
+          open: number | null;
+          high: number | null;
+          low: number | null;
+          close: number | null;
+          volume: number | null;
+          marketCap: number | null;
+        } | null
+      ): item is {
+        time: string;
+        open: number | null;
+        high: number | null;
+        low: number | null;
+        close: number | null;
+        volume: number | null;
+        marketCap: number | null;
+      } => Boolean(item?.time)
+    )
+    .sort(
+      (
+        left: {
+          time: string;
+        },
+        right: {
+          time: string;
+        }
+      ) => new Date(left.time).getTime() - new Date(right.time).getTime()
+    );
+}
+
+async function fetchCoinGeckoKline(coinId: string, range: TokenKlineRange) {
+  const url = new URL(`https://api.coingecko.com/api/v3/coins/${encodeURIComponent(coinId)}/market_chart`);
+  url.searchParams.set("vs_currency", "usd");
+  url.searchParams.set("days", getCoinGeckoDays(range));
+  if (range === "1y") {
+    url.searchParams.set("interval", "daily");
+  }
+
+  const response = await fetch(url, {
+    headers: {
+      Accept: "application/json",
+    },
+    signal: AbortSignal.timeout(20_000),
+  });
+
+  const bodyText = await response.text();
+  let payload: any = null;
+
+  try {
+    payload = bodyText ? JSON.parse(bodyText) : null;
+  } catch {
+    payload = null;
+  }
+
+  if (!response.ok) {
+    const errorMessage =
+      payload?.status?.error_message ||
+      payload?.error ||
+      bodyText ||
+      `HTTP ${response.status}`;
+    throw new Error(`CoinGecko price request failed: ${errorMessage}`);
+  }
+
+  return normalizeCoinGeckoMarketChartResponse(payload);
+}
+
+function formatAddressTagLabel(value: string | null | undefined) {
+  if (!value) return "普通地址";
+  const primary = value
+    .split(/[;,|]/)
+    .map(item => item.trim())
+    .filter(Boolean)[0];
+
+  if (!primary) return "普通地址";
+
+  return primary
+    .replace(/[._]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function safeParseJsonArray(value: string | null | undefined) {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function extractInvestorNames(value: string | null | undefined) {
+  if (!value) return [];
+
+  let parsed: any = null;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    parsed = null;
+  }
+
+  const entries = Array.isArray(parsed)
+    ? parsed
+    : parsed && typeof parsed === "object"
+      ? Object.values(parsed).flatMap(item => (Array.isArray(item) ? item : []))
+      : [];
+
+  return entries
+    .map((item: any) => {
+      if (typeof item === "string") return item.trim();
+      if (item && typeof item === "object") {
+        return String(item.name ?? item.title ?? item.slug ?? "").trim();
+      }
+      return "";
+    })
+    .filter(Boolean);
+}
+
+function extractJobs(value: string | null | undefined) {
+  return safeParseJsonArray(value)
+    .map((item: any) => {
+      if (typeof item === "string") return item.trim();
+      if (item && typeof item === "object") {
+        return String(item.title ?? item.name ?? item.role ?? "").trim();
+      }
+      return "";
+    })
+    .filter(Boolean);
+}
+
+function extractLinks(value: string | null | undefined) {
+  return safeParseJsonArray(value)
+    .map((item: any) => {
+      if (typeof item === "string") {
+        return { label: "Link", url: item.trim() };
+      }
+      if (item && typeof item === "object") {
+        const url = String(item.url ?? item.link ?? item.href ?? "").trim();
+        const label = String(item.type ?? item.label ?? item.name ?? "Link").trim();
+        if (!url) return null;
+        return { label: label || "Link", url };
+      }
+      return null;
+    })
+    .filter((item): item is { label: string; url: string } => Boolean(item?.url));
+}
+
+function humanizeSlug(value: string | null | undefined) {
+  if (!value) return null;
+  return value
+    .split(/[-_]+/)
+    .filter(Boolean)
+    .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function extractFundingRawMeta(value: string | null | undefined) {
+  if (!value) {
+    return {
+      ieoPlatform: null,
+      saleStatus: null,
+    };
+  }
+
+  try {
+    const parsed = JSON.parse(value);
+    return {
+      ieoPlatform: humanizeSlug(String(parsed?.idoPlatformKey ?? parsed?.platformKey ?? "").trim()) ?? null,
+      saleStatus: String(parsed?.status ?? "").trim() || null,
+    };
+  } catch {
+    return {
+      ieoPlatform: null,
+      saleStatus: null,
+    };
+  }
+}
+
+function buildMarketFilters(input: MarketListInput) {
+  const conditions: string[] = [
+    "COALESCE(tp.coin_tags, '') NOT LIKE '%STOCK%'",
+    `
+      EXISTS (
+        SELECT 1
+        FROM exchange_listings el_visible
+        JOIN exchange_platforms ep_visible ON ep_visible.id = el_visible.exchange_id
+        WHERE el_visible.token_id = tp.id
+          AND ep_visible.market_type NOT IN ('tradfi', 'onchain')
+      )
+    `,
+  ];
+  const params: Array<string | number> = [];
+
+  const query = input.query?.trim();
+  const marketTypeValues = getMarketTypeFilterValues(input.marketType);
+  if (query) {
+    conditions.push("(tp.symbol LIKE ? OR tp.name LIKE ? OR tp.slug LIKE ?)");
+    const keyword = `%${query}%`;
+    params.push(keyword, keyword, keyword);
+  }
+
+  if (input.exchangeIds?.length && marketTypeValues.length > 0) {
+    const placeholders = input.exchangeIds.map(() => "?").join(", ");
+    const marketTypePlaceholders = marketTypeValues.map(() => "?").join(", ");
+    conditions.push(`
+      (
+        SELECT COUNT(DISTINCT el_filter.exchange_id)
+        FROM exchange_listings el_filter
+        JOIN exchange_platforms ep_filter ON ep_filter.id = el_filter.exchange_id
+        WHERE el_filter.token_id = tp.id
+          AND el_filter.exchange_id IN (${placeholders})
+          AND ep_filter.market_type IN (${marketTypePlaceholders})
+      ) = ?
+    `);
+    params.push(...input.exchangeIds, ...marketTypeValues, input.exchangeIds.length);
+  } else if (input.exchangeIds?.length) {
+    const placeholders = input.exchangeIds.map(() => "?").join(", ");
+    conditions.push(`
+      (
+        SELECT COUNT(DISTINCT el_filter.exchange_id)
+        FROM exchange_listings el_filter
+        WHERE el_filter.token_id = tp.id
+          AND el_filter.exchange_id IN (${placeholders})
+      ) = ?
+    `);
+    params.push(...input.exchangeIds, input.exchangeIds.length);
+  } else if (marketTypeValues.length > 0) {
+    const marketTypePlaceholders = marketTypeValues.map(() => "?").join(", ");
+    conditions.push(`
+      EXISTS (
+        SELECT 1
+        FROM exchange_listings el_market
+        JOIN exchange_platforms ep_market ON ep_market.id = el_market.exchange_id
+        WHERE el_market.token_id = tp.id
+          AND ep_market.market_type IN (${marketTypePlaceholders})
+      )
+    `);
+    params.push(...marketTypeValues);
+  }
+
+  return {
+    whereClause: conditions.length ? `WHERE ${conditions.join(" AND ")}` : "",
+    params,
+  };
+}
+
+export async function listMarketTokens(input: MarketListInput) {
+  const currentPool = getPool();
+  const page = input.page ?? 1;
+  const pageSize = Math.min(input.pageSize ?? 25, 100);
+  const offset = (page - 1) * pageSize;
+  const { whereClause, params } = buildMarketFilters(input);
+
+  const sortableColumns = {
+    listedAt: "listingAgg.listedAt",
+    marketCap: "tp.market_cap",
+    volume24h: "COALESCE(pairAgg.volume24h, tp.volume_24h)",
+  } as const;
+  const sortBy = sortableColumns[input.sortBy ?? "listedAt"];
+  const sortOrder = input.sortOrder === "asc" ? "ASC" : "DESC";
+
+  const listSql = `
+    SELECT
+      tp.id AS tokenId,
+      tp.symbol AS symbol,
+      tp.name AS name,
+      tp.logo_url AS logoUrl,
+      tp.current_price AS price,
+      tp.total_supply AS totalSupply,
+      tp.circulating_supply AS circulatingSupply,
+      tp.fdv AS fdv,
+      tp.market_cap AS marketCap,
+      COALESCE(pairAgg.volume24h, tp.volume_24h) AS volume24h,
+      listingAgg.listedAt AS listedAt,
+      listingAgg.recentVenue AS recentVenue
+    FROM token_profiles tp
+    LEFT JOIN (
+      SELECT token_id, SUM(volume_24h) AS volume24h
+      FROM exchange_pairs
+      GROUP BY token_id
+    ) pairAgg ON pairAgg.token_id = tp.id
+    LEFT JOIN (
+      SELECT
+        el.token_id AS token_id,
+        MAX(el.listing_time) AS listedAt,
+        SUBSTRING_INDEX(
+          GROUP_CONCAT(ep.name ORDER BY el.listing_time DESC SEPARATOR '||'),
+          '||',
+          1
+        ) AS recentVenue
+      FROM exchange_listings el
+      LEFT JOIN exchange_platforms ep ON ep.id = el.exchange_id
+      WHERE ep.market_type NOT IN ('tradfi', 'onchain')
+      GROUP BY el.token_id
+    ) listingAgg ON listingAgg.token_id = tp.id
+    ${whereClause}
+    ORDER BY ${sortBy} ${sortOrder}, tp.id DESC
+    LIMIT ? OFFSET ?
+  `;
+
+  const countSql = `
+    SELECT COUNT(*) AS total
+    FROM token_profiles tp
+    ${whereClause}
+  `;
+
+  const [rows] = await currentPool.query<(RowDataPacket & Omit<MarketTokenRow, "exchanges">)[]>(
+    listSql,
+    [...params, pageSize, offset]
+  );
+  const [countRows] = await currentPool.query<(RowDataPacket & { total: number })[]>(countSql, params);
+
+  const tokenIds = rows.map(row => row.tokenId);
+  let exchangeMap = new Map<number, MarketTokenRow["exchanges"]>();
+
+  if (tokenIds.length > 0) {
+    const placeholders = tokenIds.map(() => "?").join(", ");
+    const exchangeSql = `
+      SELECT DISTINCT
+        el.token_id AS tokenId,
+        ep.id AS exchangeId,
+        ep.name AS exchangeName,
+        ep.logo_url AS exchangeLogoUrl,
+        ep.market_type AS marketType
+      FROM exchange_listings el
+      JOIN exchange_platforms ep ON ep.id = el.exchange_id
+      WHERE el.token_id IN (${placeholders})
+        AND ep.market_type NOT IN ('tradfi', 'onchain')
+      ORDER BY el.token_id, ep.id
+    `;
+
+    const [exchangeRows] = await currentPool.query<
+      (RowDataPacket & {
+        tokenId: number;
+        exchangeId: number;
+        exchangeName: string;
+        exchangeLogoUrl: string | null;
+        marketType: string | null;
+      })[]
+    >(exchangeSql, tokenIds);
+
+    exchangeMap = exchangeRows.reduce((map, row) => {
+      const current = map.get(row.tokenId) ?? [];
+      current.push({
+        exchangeId: row.exchangeId,
+        exchangeName: row.exchangeName,
+        exchangeLogoUrl: row.exchangeLogoUrl,
+        marketType: row.marketType,
+      });
+      map.set(row.tokenId, current);
+      return map;
+    }, new Map<number, MarketTokenRow["exchanges"]>());
+  }
+
+  return {
+    items: rows.map(row => ({
+      ...row,
+      exchanges: exchangeMap.get(row.tokenId) ?? [],
+    })),
+    total: countRows[0]?.total ?? 0,
+    page,
+    pageSize,
+  };
+}
+
+export async function getTokenProfileBySymbol(symbol: string): Promise<TokenProfileResult | null> {
+  const currentPool = getPool();
+
+  const profileSql = `
+    SELECT
+      tp.id AS tokenId,
+      tp.symbol AS symbol,
+      tp.name AS name,
+      tp.slug AS slug,
+      tp.description AS description,
+      tp.logo_url AS logoUrl,
+      tp.coin_market_cap_id AS coinMarketCapId,
+      tp.coingecko_id AS coinGeckoId,
+      tp.website AS website,
+      tp.whitepaper_url AS whitepaperUrl,
+      tp.current_price AS currentPrice,
+      tp.market_cap AS marketCap,
+      tp.fdv AS fdv,
+      tp.total_supply AS totalSupply,
+      tp.circulating_supply AS circulatingSupply,
+      tp.volume_24h AS volume24h,
+      tp.price_change_24h AS priceChange24h,
+      tp.price_change_7d AS priceChange7d,
+      tp.token_holder_count AS tokenHolderCount,
+      tp.coin_tags AS coinTagsRaw
+    FROM token_profiles tp
+    WHERE UPPER(tp.symbol) = UPPER(?)
+    ORDER BY tp.id DESC
+    LIMIT 1
+  `;
+
+  const [profileRows] = await currentPool.query<ProfileRow[]>(profileSql, [symbol]);
+  const profile = profileRows[0];
+
+  if (!profile) return null;
+
+  const [addressRows] = await currentPool.query<
+    (RowDataPacket & {
+      chainName: string;
+      address: string;
+    })[]
+  >(
+    `
+      SELECT
+        chain_name AS chainName,
+        address AS address
+      FROM token_address
+      WHERE token_id = ?
+      ORDER BY chain_name, id
+    `,
+    [profile.tokenId]
+  );
+
+  const [announcementRows] = await currentPool.query<
+    (RowDataPacket & {
+      id: number;
+      title: string;
+      publishedAt: string | null;
+      url: string | null;
+      isListing: number | null;
+      isDelistingRisk: number | null;
+      isActivity: number | null;
+    })[]
+  >(
+    `
+      SELECT DISTINCT
+        ea.id AS id,
+        ea.title AS title,
+        ea.published_at AS publishedAt,
+        ea.url AS url,
+        ea.is_listing AS isListing,
+        ea.is_delisting_risk AS isDelistingRisk,
+        ea.is_activity AS isActivity
+      FROM exchange_listings el
+      LEFT JOIN exchange_announcements ea ON ea.id = el.announcement_id
+      WHERE el.token_id = ?
+        AND ea.id IS NOT NULL
+      ORDER BY ea.published_at DESC, ea.id DESC
+      LIMIT 5
+    `,
+    [profile.tokenId]
+  );
+
+  return {
+    tokenId: profile.tokenId,
+    symbol: profile.symbol,
+    name: profile.name,
+    slug: profile.slug,
+    description: profile.description,
+    logoUrl: profile.logoUrl,
+    coinMarketCapId: profile.coinMarketCapId,
+    coinGeckoId: profile.coinGeckoId,
+    website: profile.website,
+    whitepaperUrl: profile.whitepaperUrl,
+    currentPrice: profile.currentPrice,
+    marketCap: profile.marketCap,
+    fdv: profile.fdv,
+    totalSupply: profile.totalSupply,
+    circulatingSupply: profile.circulatingSupply,
+    volume24h: profile.volume24h,
+    priceChange24h: profile.priceChange24h,
+    priceChange7d: profile.priceChange7d,
+    tokenHolderCount: profile.tokenHolderCount,
+    coinTags: parseCoinTags(profile.coinTagsRaw),
+    addresses: addressRows,
+    latestAnnouncements: announcementRows.map(row => ({
+      id: row.id,
+      title: row.title,
+      publishedAt: row.publishedAt,
+      url: row.url,
+      type: mapAnnouncementType(row),
+    })),
+  };
+}
+
+export async function getTokenUnlockViewBySymbol(symbol: string): Promise<TokenUnlockViewResult | null> {
+  const currentPool = getPool();
+  const profile = await getTokenProfileBySymbol(symbol);
+
+  if (!profile) return null;
+
+  const [rows] = await currentPool.query<
+    (RowDataPacket & {
+      unlockDate: string;
+      recipientCategory: string | null;
+      unlockAmount: number | null;
+      percentageOfTotalSupply: number | null;
+    })[]
+  >(
+    `
+      SELECT
+        unlock_date AS unlockDate,
+        recipient_category AS recipientCategory,
+        unlock_amount AS unlockAmount,
+        percentage_of_total_supply AS percentageOfTotalSupply
+      FROM token_unlocks
+      WHERE token_id = ?
+      ORDER BY unlock_date ASC, id ASC
+    `,
+    [profile.tokenId]
+  );
+
+  const [allocationRows] = await currentPool.query<
+    (RowDataPacket & {
+      category: string | null;
+      percentage: number | null;
+      amount: number | null;
+    })[]
+  >(
+    `
+      SELECT
+        category AS category,
+        percentage AS percentage,
+        amount AS amount
+      FROM token_allocation
+      WHERE token_id = ?
+      ORDER BY id ASC
+    `,
+    [profile.tokenId]
+  );
+
+  const preferredCategoryOrder = ["Community", "Ecosystem", "Investors", "Team"];
+  const categoryTotals = new Map<string, number>();
+  const allocationPercentages = new Map<string, number>();
+  const groupedRows = new Map<
+    string,
+    {
+      unlockDate: string;
+      categoryValues: Record<string, number | null>;
+      monthlyTotalRelease: number;
+    }
+  >();
+
+  allocationRows.forEach(row => {
+    const normalizedCategory = normalizeUnlockCategory(row.category);
+    const percentage = row.percentage ?? 0;
+    allocationPercentages.set(normalizedCategory, percentage);
+    if (!categoryTotals.has(normalizedCategory) && row.amount != null) {
+      categoryTotals.set(normalizedCategory, row.amount);
+    }
+  });
+
+  rows.forEach(row => {
+    const normalizedCategory = normalizeUnlockCategory(row.recipientCategory);
+    const amount = row.unlockAmount ?? 0;
+    const dateKey = toDateKey(row.unlockDate);
+
+    categoryTotals.set(normalizedCategory, (categoryTotals.get(normalizedCategory) ?? 0) + amount);
+
+    const current =
+      groupedRows.get(dateKey) ?? {
+        unlockDate: dateKey,
+        categoryValues: {},
+        monthlyTotalRelease: 0,
+      };
+
+    current.categoryValues[normalizedCategory] = (current.categoryValues[normalizedCategory] ?? 0) + amount;
+    current.monthlyTotalRelease += amount;
+    groupedRows.set(dateKey, current);
+  });
+
+  const categoryKeySet = new Set<string>([
+    ...Array.from(categoryTotals.keys()),
+    ...Array.from(allocationPercentages.keys()),
+  ]);
+  const categoryKeys = Array.from(categoryKeySet).sort((left, right) => {
+    const leftIndex = preferredCategoryOrder.indexOf(left);
+    const rightIndex = preferredCategoryOrder.indexOf(right);
+
+    if (leftIndex !== -1 || rightIndex !== -1) {
+      if (leftIndex === -1) return 1;
+      if (rightIndex === -1) return -1;
+      return leftIndex - rightIndex;
+    }
+
+    return left.localeCompare(right);
+  });
+
+  let cumulativeUnlockAmount = 0;
+
+  return {
+    tokenId: profile.tokenId,
+    categories: categoryKeys.map(key => ({
+      key,
+      label: key,
+      ratio:
+        allocationPercentages.get(key) ??
+        (profile.totalSupply && profile.totalSupply > 0
+          ? ((categoryTotals.get(key) ?? 0) / profile.totalSupply) * 100
+          : 0),
+    })),
+    rows: Array.from(groupedRows.values())
+      .sort((left, right) => new Date(left.unlockDate).getTime() - new Date(right.unlockDate).getTime())
+      .map(row => {
+        cumulativeUnlockAmount += row.monthlyTotalRelease;
+        const monthlyReleaseRatio =
+          profile.totalSupply && profile.totalSupply > 0
+            ? (row.monthlyTotalRelease / profile.totalSupply) * 100
+            : 0;
+        const cumulativeReleaseRatio =
+          profile.totalSupply && profile.totalSupply > 0
+            ? (cumulativeUnlockAmount / profile.totalSupply) * 100
+            : 0;
+
+        return {
+          unlockDate: row.unlockDate,
+          categoryValues: Object.fromEntries(
+            categoryKeys.map(key => [key, row.categoryValues[key] ?? null])
+          ),
+          monthlyTotalRelease: row.monthlyTotalRelease,
+          monthlyReleaseRatio,
+          cumulativeRelease: cumulativeUnlockAmount,
+          cumulativeReleaseRatio,
+        };
+      }),
+  };
+}
+
+export async function getTokenListingViewBySymbol(symbol: string): Promise<TokenListingViewResult | null> {
+  const currentPool = getPool();
+  const profile = await getTokenProfileBySymbol(symbol);
+
+  if (!profile) return null;
+
+  const [listingRows] = await currentPool.query<
+    (RowDataPacket & {
+      exchangeId: number | null;
+      exchangeName: string | null;
+      exchangeLogoUrl: string | null;
+      marketType: string | null;
+      listingTime: string | null;
+      priceAtList: number | null;
+      fdvAtList: number | null;
+      marketCapAtList: number | null;
+      title: string | null;
+      url: string | null;
+    })[]
+  >(
+    `
+      SELECT
+        el.exchange_id AS exchangeId,
+        ep.name AS exchangeName,
+        ep.logo_url AS exchangeLogoUrl,
+        ep.market_type AS marketType,
+        el.listing_time AS listingTime,
+        el.price_at_list AS priceAtList,
+        el.fdv_at_list AS fdvAtList,
+        el.market_cap_at_list AS marketCapAtList,
+        ea.title AS title,
+        ea.url AS url
+      FROM exchange_listings el
+      LEFT JOIN exchange_platforms ep ON ep.id = el.exchange_id
+      LEFT JOIN exchange_announcements ea ON ea.id = el.announcement_id
+      WHERE el.token_id = ?
+      ORDER BY el.listing_time DESC, el.id DESC
+    `,
+    [profile.tokenId]
+  );
+
+  const [activityRows] = await currentPool.query<
+    (RowDataPacket & {
+      exchangeId: number | null;
+      exchangeName: string | null;
+      exchangeLogoUrl: string | null;
+      marketType: string | null;
+      activityType: string | null;
+      title: string;
+      publisher: string | null;
+      rewardToken: string | null;
+      rewardAmount: number | null;
+      estimatedValue: number | null;
+      startTime: string | null;
+      endTime: string | null;
+      url: string | null;
+    })[]
+  >(
+    `
+      SELECT
+        ea.exchange_id AS exchangeId,
+        ep.name AS exchangeName,
+        ep.logo_url AS exchangeLogoUrl,
+        ep.market_type AS marketType,
+        ea.activity_type AS activityType,
+        ea.title AS title,
+        ea.publisher AS publisher,
+        ea.reward_token AS rewardToken,
+        ea.reward_amount AS rewardAmount,
+        ea.estimated_value AS estimatedValue,
+        ea.start_time AS startTime,
+        ea.end_time AS endTime,
+        ann.url AS url
+      FROM exchange_activities ea
+      LEFT JOIN exchange_platforms ep ON ep.id = ea.exchange_id
+      LEFT JOIN exchange_announcements ann ON ann.id = ea.announcement_id
+      WHERE ea.token_id = ?
+      ORDER BY ea.start_time DESC, ea.id DESC
+    `,
+    [profile.tokenId]
+  );
+
+  const items = [
+    ...listingRows.map((row, index) => ({
+      id: `listing-${row.exchangeId ?? "unknown"}-${index}`,
+      exchangeId: row.exchangeId,
+      exchangeName: row.exchangeName ?? "Unknown Exchange",
+      exchangeLogoUrl: row.exchangeLogoUrl,
+      marketType: row.marketType,
+      eventType: "listing" as const,
+      title: row.title ?? `${profile.symbol} 上线 ${row.exchangeName ?? "交易所"}`,
+      date: row.listingTime,
+      priceAtList: row.priceAtList,
+      fdvAtList: row.fdvAtList,
+      marketCapAtList: row.marketCapAtList,
+      publisher: null,
+      rewardToken: null,
+      rewardAmount: null,
+      estimatedValue: null,
+      url: row.url,
+    })),
+    ...activityRows.map((row, index) => ({
+      id: `activity-${row.exchangeId ?? "unknown"}-${index}`,
+      exchangeId: row.exchangeId,
+      exchangeName: row.exchangeName ?? row.publisher ?? "Activity",
+      exchangeLogoUrl: row.exchangeLogoUrl,
+      marketType: row.marketType,
+      eventType: "activity" as const,
+      title: row.title,
+      date: row.startTime,
+      priceAtList: null,
+      fdvAtList: null,
+      marketCapAtList: null,
+      publisher: row.publisher,
+      rewardToken: row.rewardToken,
+      rewardAmount: row.rewardAmount,
+      estimatedValue: row.estimatedValue,
+      url: row.url,
+    })),
+  ].sort((left, right) => {
+    const leftTime = left.date ? new Date(left.date).getTime() : 0;
+    const rightTime = right.date ? new Date(right.date).getTime() : 0;
+    return rightTime - leftTime;
+  });
+
+  return {
+    tokenId: profile.tokenId,
+    items,
+  };
+}
+
+export async function getTokenKlineBySymbol(
+  symbol: string,
+  range: TokenKlineRange = "3m"
+): Promise<TokenKlineResult | null> {
+  const profile = await getTokenProfileBySymbol(symbol);
+
+  if (!profile) return null;
+
+  const cmcIdentifier = String(profile.coinMarketCapId ?? "").trim();
+  const cgIdentifier = String(profile.coinGeckoId ?? "").trim();
+
+  const errors: string[] = [];
+
+  if (cmcIdentifier) {
+    try {
+      const points = await fetchCoinMarketCapKline(cmcIdentifier, range);
+      if (points.length > 0) {
+        return {
+          tokenId: profile.tokenId,
+          source: "coinmarketcap",
+          range,
+          points,
+        };
+      }
+      errors.push("CMC returned no points");
+    } catch (error) {
+      errors.push(error instanceof Error ? error.message : "CMC request failed");
+    }
+  }
+
+  if (cgIdentifier) {
+    try {
+      const points = await fetchCoinGeckoKline(cgIdentifier, range);
+      if (points.length > 0) {
+        return {
+          tokenId: profile.tokenId,
+          source: "coingecko",
+          range,
+          points,
+        };
+      }
+      errors.push("CoinGecko returned no points");
+    } catch (error) {
+      errors.push(error instanceof Error ? error.message : "CoinGecko request failed");
+    }
+  }
+
+  if (!cmcIdentifier && !cgIdentifier) {
+    throw new Error("Missing CoinMarketCap and CoinGecko identifiers for this token");
+  }
+
+  throw new Error(errors.join(" | ") || "No kline data source available");
+}
+
+export async function searchAnnouncements(options: {
+  query?: string;
+  symbol?: string;
+  exchangeSlug?: string;
+  type?: "listing" | "delisting" | "event" | "other";
+  limit?: number;
+}): Promise<AnnouncementSearchResult> {
+  const currentPool = getPool();
+  const params: Array<string | number> = [];
+  const where: string[] = [];
+  const limit = Math.min(Math.max(options.limit ?? 50, 1), 100);
+
+  if (options.exchangeSlug?.trim()) {
+    where.push("LOWER(ea.exchange_slug) = LOWER(?)");
+    params.push(options.exchangeSlug.trim());
+  }
+
+  if (options.query?.trim()) {
+    const query = `%${options.query.trim()}%`;
+    where.push(
+      "(ea.title LIKE ? OR ea.content_summary LIKE ? OR ea.content LIKE ?)"
+    );
+    params.push(query, query, query);
+  }
+
+  if (options.type) {
+    if (options.type === "listing") {
+      where.push("ea.is_listing = 1");
+    } else if (options.type === "delisting") {
+      where.push("ea.is_delisting_risk = 1");
+    } else if (options.type === "event") {
+      where.push("ea.is_activity = 1");
+    } else {
+      where.push("COALESCE(ea.is_listing, 0) = 0 AND COALESCE(ea.is_delisting_risk, 0) = 0 AND COALESCE(ea.is_activity, 0) = 0");
+    }
+  }
+
+  if (options.symbol?.trim()) {
+    where.push(`
+      (
+        EXISTS (
+          SELECT 1
+          FROM exchange_listings el
+          JOIN token_profiles tp ON tp.id = el.token_id
+          WHERE el.announcement_id = ea.id
+            AND UPPER(tp.symbol) = UPPER(?)
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM exchange_activities act
+          JOIN token_profiles tp ON tp.id = act.token_id
+          WHERE act.announcement_id = ea.id
+            AND UPPER(tp.symbol) = UPPER(?)
+        )
+        OR UPPER(ea.title) LIKE UPPER(?)
+        OR UPPER(COALESCE(ea.content_summary, '')) LIKE UPPER(?)
+      )
+    `);
+    params.push(options.symbol.trim(), options.symbol.trim(), `%${options.symbol.trim()}%`, `%${options.symbol.trim()}%`);
+  }
+
+  const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
+
+  const sql = `
+    SELECT
+      ea.id AS id,
+      ea.title AS title,
+      ea.exchange_slug AS exchangeSlug,
+      ea.published_at AS publishedAt,
+      ea.content_summary AS summary,
+      ea.url AS url,
+      ea.is_listing AS isListing,
+      ea.is_delisting_risk AS isDelistingRisk,
+      ea.is_activity AS isActivity
+    FROM exchange_announcements ea
+    ${whereClause}
+    ORDER BY ea.published_at DESC, ea.id DESC
+    LIMIT ?
+  `;
+
+  const [rows] = await currentPool.query<
+    (RowDataPacket & {
+      id: number;
+      title: string;
+      exchangeSlug: string | null;
+      publishedAt: string | null;
+      summary: string | null;
+      url: string | null;
+      isListing: number | null;
+      isDelistingRisk: number | null;
+      isActivity: number | null;
+    })[]
+  >(sql, [...params, limit]);
+
+  return {
+    items: rows.map(row => ({
+      id: row.id,
+      title: row.title,
+      exchangeSlug: row.exchangeSlug,
+      publishedAt: row.publishedAt,
+      summary: row.summary,
+      url: row.url,
+      type: row.isListing ? "listing" : row.isDelistingRisk ? "delisting" : row.isActivity ? "event" : "other",
+    })),
+    total: rows.length,
+  };
+}
+
+export async function searchListingAnnouncements(options: {
+  query?: string;
+  exchangeSlug?: string;
+  limit?: number;
+}): Promise<ListingAnnouncementSearchResult> {
+  const currentPool = getPool();
+  const params: Array<string | number> = [];
+  const where = [
+    "ep.market_type NOT IN ('tradfi', 'onchain')",
+    "el.listing_time IS NOT NULL",
+  ];
+  const limit = Math.min(Math.max(options.limit ?? 50, 1), 100);
+
+  if (options.exchangeSlug?.trim()) {
+    where.push("LOWER(ep.slug) = LOWER(?)");
+    params.push(options.exchangeSlug.trim());
+  }
+
+  if (options.query?.trim()) {
+    const keyword = `%${options.query.trim()}%`;
+    where.push(`
+      (
+        tp.symbol LIKE ?
+        OR tp.name LIKE ?
+        OR el.pair_name LIKE ?
+        OR COALESCE(ea.title, '') LIKE ?
+        OR ep.name LIKE ?
+      )
+    `);
+    params.push(keyword, keyword, keyword, keyword, keyword);
+  }
+
+  const sql = `
+    SELECT
+      el.id AS listingId,
+      el.token_id AS tokenId,
+      tp.symbol AS symbol,
+      tp.name AS tokenName,
+      ep.id AS exchangeId,
+      ep.name AS exchangeName,
+      ep.slug AS exchangeSlug,
+      ep.market_type AS marketType,
+      el.pair_name AS pairName,
+      el.deposit_time AS depositTime,
+      el.listing_time AS listingTime,
+      ea.title AS announcementTitle,
+      ea.url AS announcementUrl,
+      ea.published_at AS publishedAt
+    FROM exchange_listings el
+    JOIN token_profiles tp ON tp.id = el.token_id
+    JOIN exchange_platforms ep ON ep.id = el.exchange_id
+    LEFT JOIN exchange_announcements ea ON ea.id = el.announcement_id
+    WHERE ${where.join(" AND ")}
+    ORDER BY el.listing_time DESC, el.id DESC
+    LIMIT ?
+  `;
+
+  const [rows] = await currentPool.query<
+    (RowDataPacket & {
+      listingId: number;
+      tokenId: number;
+      symbol: string;
+      tokenName: string;
+      exchangeId: number;
+      exchangeName: string;
+      exchangeSlug: string | null;
+      marketType: string | null;
+      pairName: string | null;
+      depositTime: string | null;
+      listingTime: string | null;
+      announcementTitle: string | null;
+      announcementUrl: string | null;
+      publishedAt: string | null;
+    })[]
+  >(sql, [...params, limit]);
+
+  return {
+    items: rows.map(row => ({
+      id: `listing-${row.listingId}`,
+      tokenId: row.tokenId,
+      symbol: row.symbol,
+      tokenName: row.tokenName,
+      exchangeId: row.exchangeId,
+      exchangeName: row.exchangeName,
+      exchangeSlug: row.exchangeSlug,
+      marketType: row.marketType,
+      pairName: row.pairName,
+      depositTime: row.depositTime,
+      listingTime: row.listingTime,
+      announcementTitle: row.announcementTitle,
+      announcementUrl: row.announcementUrl,
+      publishedAt: row.publishedAt,
+    })),
+    total: rows.length,
+  };
+}
+
+export async function getTokenDepthViewBySymbol(
+  symbol: string,
+  marketType?: "spot" | "perps"
+): Promise<TokenDepthViewResult | null> {
+  const currentPool = getPool();
+  const profile = await getTokenProfileBySymbol(symbol);
+
+  if (!profile) return null;
+
+  const marketCondition =
+    marketType === "perps"
+      ? "AND ep.market_type = 'perps'"
+      : marketType === "spot"
+        ? "AND ep.market_type <> 'perps'"
+        : "";
+
+  const [rows] = await currentPool.query<
+    (RowDataPacket & TokenDepthViewResult["items"][number])[]
+  >(
+    `
+      SELECT
+        ep.id AS exchangeId,
+        ep.name AS exchangeName,
+        ep.logo_url AS exchangeLogoUrl,
+        ep.market_type AS marketType,
+        p.pair_name AS pairName,
+        p.quote_currency AS quoteCurrency,
+        p.price AS price,
+        p.volume_24h AS volume24h,
+        p.depth_buy_2 AS depthBuy2,
+        p.depth_sell_2 AS depthSell2,
+        p.funding_rate AS fundingRate,
+        p.open_interest AS openInterest,
+        p.listing_time AS listingTime
+      FROM exchange_pairs p
+      JOIN exchange_platforms ep ON ep.id = p.exchange_id
+      WHERE p.token_id = ?
+        AND ep.market_type NOT IN ('tradfi', 'onchain')
+        ${marketCondition}
+      ORDER BY COALESCE(p.volume_24h, 0) DESC, ep.name ASC, p.id DESC
+    `,
+    [profile.tokenId]
+  );
+
+  return {
+    tokenId: profile.tokenId,
+    items: rows.map(row => ({
+      exchangeId: row.exchangeId,
+      exchangeName: row.exchangeName,
+      exchangeLogoUrl: row.exchangeLogoUrl,
+      marketType: row.marketType,
+      pairName: row.pairName,
+      quoteCurrency: row.quoteCurrency,
+      price: row.price,
+      volume24h: row.volume24h,
+      depthBuy2: row.depthBuy2,
+      depthSell2: row.depthSell2,
+      fundingRate: row.fundingRate,
+      openInterest: row.openInterest,
+      listingTime: row.listingTime,
+    })),
+  };
+}
+
+export async function getTokenDepthTrendBySymbol(
+  symbol: string,
+  days = 14,
+  marketType?: "spot" | "perps"
+): Promise<TokenDepthTrendResult | null> {
+  const currentPool = getPool();
+  const profile = await getTokenProfileBySymbol(symbol);
+
+  if (!profile) return null;
+
+  const safeDays = Math.min(Math.max(days, 7), 365);
+
+  const marketCondition =
+    marketType === "perps"
+      ? "AND ep.market_type = 'perps'"
+      : marketType === "spot"
+        ? "AND ep.market_type <> 'perps'"
+        : "";
+
+  const [summaryRows] = await currentPool.query<
+    (RowDataPacket & TokenDepthTrendResult["summary"])[]
+  >(
+    `
+      SELECT
+        AVG(p.price) AS latestPrice,
+        SUM(p.volume_24h) AS totalVolume24h,
+        SUM(p.depth_buy_2) AS totalDepthBuy2,
+        SUM(p.depth_sell_2) AS totalDepthSell2,
+        MAX(p.updated_at) AS latestSnapshotTs
+      FROM exchange_pairs p
+      JOIN exchange_platforms ep ON ep.id = p.exchange_id
+      WHERE p.token_id = ?
+        AND ep.market_type NOT IN ('tradfi', 'onchain')
+        ${marketCondition}
+    `,
+    [profile.tokenId]
+  );
+
+  const [pointRows] = await currentPool.query<
+    (RowDataPacket & TokenDepthTrendResult["points"][number])[]
+  >(
+    `
+      SELECT
+        daily_points.snapshotDate AS snapshotDate,
+        snapshot_volume.totalVolume AS totalVolume,
+        daily_points.totalDepthBuy2 AS totalDepthBuy2,
+        daily_points.totalDepthSell2 AS totalDepthSell2
+      FROM (
+        SELECT *
+        FROM (
+          SELECT
+            DATE(snapshot_ts) AS snapshotDate,
+            SUM(bid_amt) AS totalDepthBuy2,
+            SUM(ask_amt) AS totalDepthSell2
+          FROM token_trade_depth_daily
+          JOIN exchange_platforms ep ON ep.id = token_trade_depth_daily.exchange_id
+          WHERE token_id = ?
+            AND ep.market_type NOT IN ('tradfi', 'onchain')
+            ${marketCondition}
+          GROUP BY DATE(snapshot_ts)
+          ORDER BY DATE(snapshot_ts) DESC
+          LIMIT ?
+        ) recent_daily
+        ORDER BY snapshotDate ASC
+      ) daily_points
+      LEFT JOIN (
+        SELECT
+          DATE(snapshot_ts) AS snapshotDate,
+          SUM(volume_24h) AS totalVolume
+        FROM token_trade_depth_snapshot
+        JOIN exchange_platforms ep ON ep.id = token_trade_depth_snapshot.exchange_id
+        WHERE token_id = ?
+          AND ep.market_type NOT IN ('tradfi', 'onchain')
+          ${marketCondition}
+        GROUP BY DATE(snapshot_ts)
+      ) snapshot_volume ON snapshot_volume.snapshotDate = daily_points.snapshotDate
+    `,
+    [profile.tokenId, safeDays, profile.tokenId]
+  );
+
+  return {
+    tokenId: profile.tokenId,
+    summary: {
+      latestPrice: toNullableNumber(summaryRows[0]?.latestPrice) ?? profile.currentPrice,
+      totalVolume24h: toNullableNumber(summaryRows[0]?.totalVolume24h) ?? profile.volume24h,
+      totalDepthBuy2: toNullableNumber(summaryRows[0]?.totalDepthBuy2),
+      totalDepthSell2: toNullableNumber(summaryRows[0]?.totalDepthSell2),
+      latestSnapshotTs: summaryRows[0]?.latestSnapshotTs ?? null,
+    },
+    points: pointRows.map(row => ({
+      snapshotDate: row.snapshotDate,
+      totalVolume: toNullableNumber(row.totalVolume),
+      totalDepthBuy2: toNullableNumber(row.totalDepthBuy2),
+      totalDepthSell2: toNullableNumber(row.totalDepthSell2),
+    })),
+  };
+}
+
+export async function getExchangeDepthViewBySymbol(
+  symbol: string,
+  exchangeSlug: string
+): Promise<ExchangeDepthViewResult | null> {
+  const currentPool = getPool();
+  const profile = await getTokenProfileBySymbol(symbol);
+
+  if (!profile) return null;
+
+  const [exchangeRows] = await currentPool.query<
+    (RowDataPacket & {
+      exchangeId: number;
+      exchangeName: string;
+      marketType: string | null;
+    })[]
+  >(
+    `
+      SELECT
+        ep.id AS exchangeId,
+        ep.name AS exchangeName,
+        ep.market_type AS marketType
+      FROM exchange_platforms ep
+      WHERE LOWER(REPLACE(ep.name, ' ', '-')) = LOWER(?)
+      LIMIT 1
+    `,
+    [exchangeSlug]
+  );
+
+  const exchange = exchangeRows[0];
+  if (!exchange) return null;
+
+  const [pointRows] = await currentPool.query<
+    (RowDataPacket & {
+      snapshotDate: string;
+      buyDepth: number | null;
+      sellDepth: number | null;
+    })[]
+  >(
+    `
+      SELECT
+        DATE(snapshot_ts) AS snapshotDate,
+        SUM(bid_amt) AS buyDepth,
+        SUM(ask_amt) AS sellDepth
+      FROM token_trade_depth_daily
+      WHERE token_id = ?
+        AND exchange_id = ?
+      GROUP BY DATE(snapshot_ts)
+      ORDER BY DATE(snapshot_ts) ASC
+    `,
+    [profile.tokenId, exchange.exchangeId]
+  );
+
+  return {
+    tokenId: profile.tokenId,
+    exchangeId: exchange.exchangeId,
+    exchangeName: exchange.exchangeName,
+    marketType: exchange.marketType,
+    points: pointRows.map(row => {
+      const buyDepth = toNullableNumber(row.buyDepth);
+      const sellDepth = toNullableNumber(row.sellDepth);
+      const totalDepth = buyDepth != null || sellDepth != null ? (buyDepth ?? 0) + (sellDepth ?? 0) : null;
+      const spread =
+        buyDepth != null && sellDepth != null && buyDepth + sellDepth > 0
+          ? (Math.abs(buyDepth - sellDepth) / ((buyDepth + sellDepth) / 2)) * 100
+          : null;
+
+      return {
+        snapshotDate: row.snapshotDate,
+        buyDepth,
+        sellDepth,
+        totalDepth,
+        spread,
+      };
+    }),
+  };
+}
+
+export async function getTokenHoldersViewBySymbol(
+  symbol: string,
+  timeframe: "1h" | "4h" | "12h" | "1d" = "4h"
+): Promise<TokenHoldersViewResult | null> {
+  const currentPool = getPool();
+  const profile = await getTokenProfileBySymbol(symbol);
+
+  if (!profile) return null;
+
+  const bucketExpression =
+    timeframe === "1h"
+      ? "DATE_FORMAT(DATE_ADD(f.snapshot_ts, INTERVAL 8 HOUR), '%Y-%m-%d %H:00:00')"
+      : timeframe === "4h"
+        ? "DATE_FORMAT(DATE(DATE_ADD(f.snapshot_ts, INTERVAL 8 HOUR)) + INTERVAL FLOOR(HOUR(DATE_ADD(f.snapshot_ts, INTERVAL 8 HOUR)) / 4) * 4 HOUR, '%Y-%m-%d %H:00:00')"
+        : timeframe === "12h"
+          ? "DATE_FORMAT(DATE(DATE_ADD(f.snapshot_ts, INTERVAL 8 HOUR)) + INTERVAL FLOOR(HOUR(DATE_ADD(f.snapshot_ts, INTERVAL 8 HOUR)) / 12) * 12 HOUR, '%Y-%m-%d %H:00:00')"
+          : "DATE_FORMAT(DATE(DATE_ADD(f.snapshot_ts, INTERVAL 8 HOUR)), '%Y-%m-%d 00:00:00')";
+
+  const lookbackExpression =
+    timeframe === "1h"
+      ? "DATE_SUB(UTC_TIMESTAMP(), INTERVAL 24 HOUR)"
+      : timeframe === "4h"
+        ? "DATE_SUB(UTC_TIMESTAMP(), INTERVAL 7 DAY)"
+        : timeframe === "12h"
+          ? "DATE_SUB(UTC_TIMESTAMP(), INTERVAL 30 DAY)"
+          : "DATE_SUB(UTC_TIMESTAMP(), INTERVAL 180 DAY)";
+
+  const [seriesRows] = await currentPool.query<
+    (RowDataPacket & TokenHoldersViewResult["series"][number])[]
+  >(
+    `
+      SELECT
+        ${bucketExpression} AS snapshotDate,
+        SUM(f.open_interest) AS totalOpenInterest,
+        AVG(f.funding_rate) AS fundingRate
+      FROM funding_rate_daily f
+      JOIN exchange_platforms ep ON ep.id = f.exchange_id
+      WHERE f.token_id = ?
+        AND ep.market_type = 'perps'
+        AND f.snapshot_ts >= ${lookbackExpression}
+      GROUP BY ${bucketExpression}
+      ORDER BY snapshotDate ASC
+    `,
+    [profile.tokenId]
+  );
+
+  const [itemRows] = await currentPool.query<
+    (RowDataPacket & TokenHoldersViewResult["items"][number])[]
+  >(
+    `
+      SELECT
+        ep.id AS exchangeId,
+        ep.name AS exchangeName,
+        ep.logo_url AS exchangeLogoUrl,
+        ep.market_type AS marketType,
+        p.pair_name AS pairName,
+        p.price AS price,
+        p.volume_24h AS volume24h,
+        p.funding_rate AS fundingRate,
+        p.open_interest AS openInterest
+      FROM exchange_pairs p
+      JOIN exchange_platforms ep ON ep.id = p.exchange_id
+      WHERE p.token_id = ?
+        AND ep.market_type = 'perps'
+      ORDER BY COALESCE(p.open_interest, 0) DESC, COALESCE(p.volume_24h, 0) DESC, ep.name ASC
+    `,
+    [profile.tokenId]
+  );
+
+  const totalVolume = itemRows.reduce((sum, row) => sum + (toNullableNumber(row.volume24h) ?? 0), 0);
+  const latestSeriesDate = [...seriesRows]
+    .map(row => row.snapshotDate)
+    .filter(Boolean)
+    .sort()
+    .at(-1) ?? null;
+
+  return {
+    tokenId: profile.tokenId,
+    updatedAt: latestSeriesDate,
+    series: seriesRows.map(row => ({
+      snapshotDate: row.snapshotDate,
+      totalOpenInterest: toNullableNumber(row.totalOpenInterest),
+      fundingRate: toNullableNumber(row.fundingRate),
+    })),
+    items: itemRows.map(row => {
+      const volume24h = toNullableNumber(row.volume24h);
+
+      return {
+        exchangeId: row.exchangeId,
+        exchangeName: row.exchangeName,
+        exchangeLogoUrl: row.exchangeLogoUrl,
+        marketType: row.marketType,
+        pairName: row.pairName,
+        price: toNullableNumber(row.price),
+        volume24h,
+        marketShare: totalVolume > 0 && volume24h != null ? (volume24h / totalVolume) * 100 : null,
+        fundingRate: toNullableNumber(row.fundingRate),
+        openInterest: toNullableNumber(row.openInterest),
+      };
+    }),
+  };
+}
+
+export async function getExchangeHoldersViewBySymbol(
+  symbol: string,
+  exchangeSlug: string,
+  timeframe: "1h" | "4h" | "12h" | "1d" = "1d"
+): Promise<ExchangeHoldersViewResult | null> {
+  const currentPool = getPool();
+  const profile = await getTokenProfileBySymbol(symbol);
+
+  if (!profile) return null;
+
+  const normalizedExchangeSlug = exchangeSlug.trim().toLowerCase();
+  if (!normalizedExchangeSlug) return null;
+
+  const [exchangeRows] = await currentPool.query<
+    (RowDataPacket & {
+      exchangeId: number;
+      exchangeName: string;
+      marketType: string | null;
+      latestPrice: number | null;
+      latestVolume24h: number | null;
+      latestOpenInterest: number | null;
+      latestFundingRate: number | null;
+    })[]
+  >(
+    `
+      SELECT
+        ep.id AS exchangeId,
+        ep.name AS exchangeName,
+        ep.market_type AS marketType,
+        p.price AS latestPrice,
+        p.volume_24h AS latestVolume24h,
+        p.open_interest AS latestOpenInterest,
+        p.funding_rate AS latestFundingRate
+      FROM exchange_pairs p
+      JOIN exchange_platforms ep ON ep.id = p.exchange_id
+      WHERE p.token_id = ?
+        AND LOWER(REPLACE(ep.name, ' ', '-')) = ?
+        AND ep.market_type = 'perps'
+      ORDER BY COALESCE(p.open_interest, 0) DESC, COALESCE(p.volume_24h, 0) DESC, p.id DESC
+      LIMIT 1
+    `,
+    [profile.tokenId, normalizedExchangeSlug]
+  );
+
+  const exchange = exchangeRows[0];
+  if (!exchange) return null;
+
+  const bucketExpression =
+    timeframe === "1h"
+      ? "DATE_FORMAT(DATE_ADD(f.snapshot_ts, INTERVAL 8 HOUR), '%Y-%m-%d %H:00:00')"
+      : timeframe === "4h"
+        ? "DATE_FORMAT(DATE(DATE_ADD(f.snapshot_ts, INTERVAL 8 HOUR)) + INTERVAL FLOOR(HOUR(DATE_ADD(f.snapshot_ts, INTERVAL 8 HOUR)) / 4) * 4 HOUR, '%Y-%m-%d %H:00:00')"
+        : timeframe === "12h"
+          ? "DATE_FORMAT(DATE(DATE_ADD(f.snapshot_ts, INTERVAL 8 HOUR)) + INTERVAL FLOOR(HOUR(DATE_ADD(f.snapshot_ts, INTERVAL 8 HOUR)) / 12) * 12 HOUR, '%Y-%m-%d %H:00:00')"
+          : "DATE_FORMAT(DATE(DATE_ADD(f.snapshot_ts, INTERVAL 8 HOUR)), '%Y-%m-%d 00:00:00')";
+
+  const lookbackExpression =
+    timeframe === "1h"
+      ? "DATE_SUB(UTC_TIMESTAMP(), INTERVAL 24 HOUR)"
+      : timeframe === "4h"
+        ? "DATE_SUB(UTC_TIMESTAMP(), INTERVAL 7 DAY)"
+        : timeframe === "12h"
+          ? "DATE_SUB(UTC_TIMESTAMP(), INTERVAL 30 DAY)"
+          : "DATE_SUB(UTC_TIMESTAMP(), INTERVAL 180 DAY)";
+
+  const [seriesRows] = await currentPool.query<
+    (RowDataPacket & {
+      snapshotDate: string;
+      openInterest: number | null;
+      fundingRate: number | null;
+    })[]
+  >(
+    `
+      SELECT
+        ${bucketExpression} AS snapshotDate,
+        AVG(f.open_interest) AS openInterest,
+        AVG(f.funding_rate) AS fundingRate
+      FROM funding_rate_daily f
+      WHERE f.token_id = ?
+        AND f.exchange_id = ?
+        AND f.snapshot_ts >= ${lookbackExpression}
+      GROUP BY ${bucketExpression}
+      ORDER BY snapshotDate DESC
+      LIMIT 60
+    `,
+    [profile.tokenId, exchange.exchangeId]
+  );
+
+  const latestSeriesDate = seriesRows
+    .map(row => row.snapshotDate)
+    .filter(Boolean)
+    .sort()
+    .at(-1) ?? null;
+
+  return {
+    tokenId: profile.tokenId,
+    exchangeId: exchange.exchangeId,
+    exchangeName: exchange.exchangeName,
+    marketType: exchange.marketType,
+    updatedAt: latestSeriesDate,
+    latestPrice: toNullableNumber(exchange.latestPrice),
+    latestVolume24h: toNullableNumber(exchange.latestVolume24h),
+    latestOpenInterest: toNullableNumber(exchange.latestOpenInterest),
+    latestFundingRate: toNullableNumber(exchange.latestFundingRate),
+    series: seriesRows
+      .map(row => ({
+        snapshotDate: row.snapshotDate,
+        openInterest: toNullableNumber(row.openInterest),
+        fundingRate: toNullableNumber(row.fundingRate),
+      }))
+      .sort((left, right) => new Date(left.snapshotDate).getTime() - new Date(right.snapshotDate).getTime()),
+  };
+}
+
+export async function getTokenFundingViewBySymbol(symbol: string): Promise<TokenFundingViewResult | null> {
+  const currentPool = getPool();
+  const profile = await getTokenProfileBySymbol(symbol);
+
+  if (!profile) return null;
+
+  const [roundRows] = await currentPool.query<
+    (RowDataPacket & {
+      id: number;
+      kind: string | null;
+      roundType: string | null;
+      roundDate: string | null;
+      raise: number | null;
+      valuation: number | null;
+      announcementUrl: string | null;
+      showOnlyYear: number | boolean | null;
+      tokensForSale: number | null;
+      priceUsd: number | null;
+      lockupPeriod: string | null;
+      roi: number | null;
+      athRoi: number | null;
+      isHidden: number | boolean | null;
+      investorsJson: string | null;
+      rawJson: string | null;
+    })[]
+  >(
+    `
+      SELECT
+        id AS id,
+        kind AS kind,
+        round_type AS roundType,
+        round_date AS roundDate,
+        raise AS raise,
+        valuation AS valuation,
+        announcement_url AS announcementUrl,
+        show_only_year AS showOnlyYear,
+        tokens_for_sale AS tokensForSale,
+        price_usd AS priceUsd,
+        lockup_period AS lockupPeriod,
+        roi AS roi,
+        ath_roi AS athRoi,
+        is_hidden AS isHidden,
+        investors_json AS investorsJson,
+        raw_json AS rawJson
+      FROM token_funding_rounds
+      WHERE token_id = ?
+      ORDER BY round_date DESC, id DESC
+    `,
+    [profile.tokenId]
+  );
+
+  const [teamRows] = await currentPool.query<
+    (RowDataPacket & {
+      id: number;
+      name: string;
+      logoUrl: string | null;
+      jobsJson: string | null;
+      isFormer: number | boolean | null;
+      linksJson: string | null;
+      sortOrder: number | null;
+    })[]
+  >(
+    `
+      SELECT
+        id AS id,
+        name AS name,
+        logo_url AS logoUrl,
+        jobs_json AS jobsJson,
+        is_former AS isFormer,
+        links_json AS linksJson,
+        sort_order AS sortOrder
+      FROM token_team_members
+      WHERE token_id = ?
+      ORDER BY sort_order ASC, id ASC
+    `,
+    [profile.tokenId]
+  );
+
+  const rounds = roundRows
+    .map(row => ({
+      ...extractFundingRawMeta(row.rawJson),
+      id: row.id,
+      kind: row.kind,
+      roundType: row.roundType,
+      roundDate: row.roundDate,
+      raise: toNullableNumber(row.raise),
+      valuation: toNullableNumber(row.valuation),
+      announcementUrl: row.announcementUrl,
+      showOnlyYear: Boolean(row.showOnlyYear),
+      tokensForSale: toNullableNumber(row.tokensForSale),
+      priceUsd: toNullableNumber(row.priceUsd),
+      lockupPeriod: row.lockupPeriod,
+      roi: toNullableNumber(row.roi),
+      athRoi: toNullableNumber(row.athRoi),
+      isHidden: Boolean(row.isHidden),
+      investors: extractInvestorNames(row.investorsJson),
+    }))
+    .filter(row => !row.isHidden);
+
+  const uniqueInvestors = new Set<string>();
+  rounds.forEach(round => {
+    round.investors.forEach(investor => uniqueInvestors.add(investor));
+  });
+
+  const latestRound = rounds[0] ?? null;
+
+  return {
+    tokenId: profile.tokenId,
+    summary: {
+      totalRaised: rounds.reduce((sum, row) => sum + (row.raise ?? 0), 0) || null,
+      latestRound: latestRound?.roundType ?? latestRound?.kind ?? null,
+      latestRoundDate: latestRound?.roundDate ?? null,
+      investorCount: uniqueInvestors.size,
+    },
+    rounds,
+    teamMembers: teamRows.map(row => ({
+      id: row.id,
+      name: row.name,
+      logoUrl: row.logoUrl,
+      jobs: extractJobs(row.jobsJson),
+      isFormer: Boolean(row.isFormer),
+      links: extractLinks(row.linksJson),
+      sortOrder: Number(row.sortOrder ?? 0),
+    })),
+  };
+}
+
+export async function getOnchainFundFlowBySymbol(
+  symbol: string,
+  options?: {
+    date?: string;
+    depth?: number;
+    limitPerLayer?: number;
+  }
+): Promise<OnchainFundFlowResult | null> {
+  const currentPool = getPool();
+  const bigQuery = getBigQueryClient();
+  const dataset = process.env.BIGQUERY_DATASET;
+  const normalizedSymbol = symbol.trim().toUpperCase();
+  const fallbackToken = fallbackOnchainTokens[normalizedSymbol] ?? null;
+  let profile: TokenProfileResult | null = null;
+
+  try {
+    profile = await getTokenProfileBySymbol(symbol);
+  } catch {
+    profile = null;
+  }
+
+  if (!dataset || (!profile && !fallbackToken)) return null;
+
+  const depth = Math.min(Math.max(options?.depth ?? 3, 1), 4);
+  const limitPerLayer = Math.min(Math.max(options?.limitPerLayer ?? 36, 5), 120);
+  const date = options?.date?.trim();
+  const resolvedTokenId = profile?.tokenId ?? fallbackToken?.tokenId ?? 0;
+  let tokenAddressRows: Array<{ tokenAddressId: number | null; address: string }> = [];
+
+  if (profile) {
+    try {
+      const [rows] = await currentPool.query<
+        (RowDataPacket & {
+          tokenAddressId: number;
+          address: string;
+        })[]
+      >(
+        `
+          SELECT
+            ta.id AS tokenAddressId,
+            ta.address AS address
+          FROM token_address ta
+          WHERE ta.token_id = ?
+          ORDER BY ta.id DESC
+        `,
+        [profile.tokenId]
+      );
+
+      tokenAddressRows = rows.map(row => ({
+        tokenAddressId: row.tokenAddressId,
+        address: String(row.address).toLowerCase(),
+      }));
+    } catch {
+      tokenAddressRows = [];
+    }
+  }
+
+  if (tokenAddressRows.length === 0 && fallbackToken) {
+    tokenAddressRows = fallbackToken.addresses.map(address => ({
+      tokenAddressId: null,
+      address: address.toLowerCase(),
+    }));
+  }
+
+  const dedupedTokenAddresses = Array.from(new Map(tokenAddressRows.map(row => [row.address, row])).values());
+
+  if (dedupedTokenAddresses.length === 0) {
+    return {
+      tokenId: resolvedTokenId,
+      tokenAddressId: null,
+      totalAmount: 0,
+      nodes: [],
+      links: [],
+      summaries: [],
+    };
+  }
+
+  const countsQuery = `
+    SELECT
+      LOWER(token_address) AS tokenAddress,
+      COUNT(*) AS flowCount
+    FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.token_transfer_raw\`
+    WHERE LOWER(token_address) IN UNNEST(@addresses)
+    ${date ? "AND DATE(block_time) <= @selectedDate" : ""}
+    GROUP BY tokenAddress
+    ORDER BY flowCount DESC
+  `;
+  const [countRows] = await bigQuery.query({
+    query: countsQuery,
+    params: {
+      addresses: dedupedTokenAddresses.map(row => row.address),
+      ...(date ? { selectedDate: date } : {}),
+    },
+    useLegacySql: false,
+  });
+
+  const chosenAddress =
+    dedupedTokenAddresses.find(row =>
+      countRows.some(
+        countRow => String((countRow as { tokenAddress?: string }).tokenAddress ?? "").toLowerCase() === row.address
+      )
+    ) ?? dedupedTokenAddresses[0];
+
+  const chosenCountRow = countRows.find(
+    row => String((row as { tokenAddress?: string }).tokenAddress ?? "").toLowerCase() === chosenAddress.address
+  ) as { flowCount?: string | number } | undefined;
+
+  if (!chosenCountRow || Number(chosenCountRow.flowCount ?? 0) === 0) {
+    return {
+      tokenId: resolvedTokenId,
+      tokenAddressId: chosenAddress.tokenAddressId,
+      totalAmount: 0,
+      nodes: [],
+      links: [],
+      summaries: [],
+    };
+  }
+
+  const transferQuery = `
+    SELECT
+      block_time,
+      from_address,
+      to_address,
+      amount,
+      txhash
+    FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.token_transfer_raw\`
+    WHERE LOWER(token_address) = @tokenAddress
+    ${date ? "AND DATE(block_time) <= @selectedDate" : ""}
+    ORDER BY block_time ASC, id ASC
+    LIMIT 5000
+  `;
+  const [transferRows] = await bigQuery.query({
+    query: transferQuery,
+    params: {
+      tokenAddress: chosenAddress.address,
+      ...(date ? { selectedDate: date } : {}),
+    },
+    useLegacySql: false,
+  });
+
+  const uniqueAddresses = Array.from(
+    new Set(
+      transferRows.flatMap(row => [
+        String((row as { from_address?: string }).from_address ?? "").toLowerCase(),
+        String((row as { to_address?: string }).to_address ?? "").toLowerCase(),
+      ]).filter(Boolean)
+    )
+  );
+
+  const walletQuery = `
+    SELECT
+      LOWER(address) AS address,
+      tag_label,
+      tags_base,
+      is_contract
+    FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.wallet_info\`
+    WHERE LOWER(address) IN UNNEST(@addresses)
+  `;
+  const [walletRows] = uniqueAddresses.length
+    ? await bigQuery.query({
+        query: walletQuery,
+        params: { addresses: uniqueAddresses },
+        useLegacySql: false,
+      })
+    : [[]];
+
+  const walletMeta = new Map<
+    string,
+    {
+      label: string;
+      kind: string;
+      isContract: boolean;
+    }
+  >();
+  walletRows.forEach(row => {
+    const address = String((row as { address?: string }).address ?? "").toLowerCase();
+    if (!address) return;
+    const tagLabel = (row as { tag_label?: string | null }).tag_label ?? null;
+    const tagsBase = (row as { tags_base?: string | null }).tags_base ?? null;
+    const isContract = Boolean((row as { is_contract?: boolean | null }).is_contract);
+    walletMeta.set(address, {
+      label: formatAddressTagLabel(tagLabel ?? tagsBase),
+      kind: tagsBase ?? (isContract ? "合约地址" : "普通地址"),
+      isContract,
+    });
+  });
+
+  const holderBalanceQuery = `
+    SELECT
+      LOWER(holder_address) AS holderAddress,
+      balance
+    FROM (
+      SELECT
+        holder_address,
+        balance,
+        ROW_NUMBER() OVER (
+          PARTITION BY LOWER(holder_address)
+          ORDER BY snapshot_date DESC, created_at DESC
+        ) AS rowNum
+      FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.token_holder_snapshot\`
+      WHERE LOWER(token_address) = @tokenAddress
+      ${date ? "AND snapshot_date <= DATE(@selectedDate)" : ""}
+      AND LOWER(holder_address) IN UNNEST(@addresses)
+    )
+    WHERE rowNum = 1
+  `;
+  const [holderBalanceRows] = uniqueAddresses.length
+    ? await bigQuery.query({
+        query: holderBalanceQuery,
+        params: {
+          tokenAddress: chosenAddress.address,
+          addresses: uniqueAddresses,
+          ...(date ? { selectedDate: date } : {}),
+        },
+        useLegacySql: false,
+      })
+    : [[]];
+
+  const holderBalanceMap = new Map<string, number | null>();
+  holderBalanceRows.forEach(row => {
+    const address = String((row as { holderAddress?: string }).holderAddress ?? "").toLowerCase();
+    if (!address) return;
+    holderBalanceMap.set(address, toNullableNumber((row as { balance?: string | number | null }).balance));
+  });
+
+  const normalizedRows = transferRows
+    .map(row => ({
+      time:
+        typeof (row as { block_time?: { value?: string } | string }).block_time === "object"
+          ? ((row as { block_time?: { value?: string } }).block_time?.value ?? null)
+          : String((row as { block_time?: string }).block_time ?? ""),
+      fromAddress: String((row as { from_address?: string }).from_address ?? "").toLowerCase(),
+      toAddress: String((row as { to_address?: string }).to_address ?? "").toLowerCase(),
+      amount: toNullableNumber((row as { amount?: string | number }).amount) ?? 0,
+      txhash: String((row as { txhash?: string }).txhash ?? ""),
+    }))
+    .filter(row => row.amount > 0 && row.fromAddress && row.toAddress);
+
+  if (normalizedRows.length === 0) {
+    return {
+      tokenId: resolvedTokenId,
+      tokenAddressId: chosenAddress.tokenAddressId,
+      totalAmount: 0,
+      nodes: [],
+      links: [],
+      summaries: [],
+    };
+  }
+
+  const rootAddress =
+    normalizedRows.find(row => row.fromAddress === "0x0000000000000000000000000000000000000000")?.fromAddress ??
+    normalizedRows[0]?.fromAddress ??
+    chosenAddress.address;
+  const nodeMap = new Map<
+    string,
+    {
+      id: string;
+      layer: number;
+      address: string;
+      label: string;
+      amount: number;
+      currentBalance: number | null;
+      kind: string;
+      outgoingCount: number;
+    }
+  >();
+  const aggregatedLinks = new Map<
+    string,
+    {
+      source: string;
+      target: string;
+      amount: number;
+      time: string | null;
+      txhash: string | null;
+    }
+  >();
+  const childRowsMap = new Map<string, typeof normalizedRows>();
+
+  normalizedRows.forEach(row => {
+    const current = childRowsMap.get(row.fromAddress) ?? [];
+    current.push(row);
+    childRowsMap.set(row.fromAddress, current);
+  });
+
+  nodeMap.set(rootAddress, {
+    id: `addr:${rootAddress}`,
+    layer: 0,
+    address: rootAddress,
+    label: "0 地址",
+    amount: 0,
+    currentBalance: holderBalanceMap.get(rootAddress) ?? null,
+    kind: "铸造源头",
+    outgoingCount: 0,
+  });
+
+  let frontier = [rootAddress];
+  const layerTitles = ["0 地址", "第一层", "第二层", "第三层", "第四层"];
+
+  for (let layer = 1; layer <= depth; layer += 1) {
+    const layerIncoming = new Map<string, number>();
+    const layerLinks = new Map<
+      string,
+      {
+        source: string;
+        target: string;
+        amount: number;
+        time: string | null;
+        txhash: string | null;
+      }
+    >();
+
+    frontier.forEach(sourceAddress => {
+      const sourceRows = childRowsMap.get(sourceAddress) ?? [];
+      sourceRows.forEach(row => {
+        if (row.toAddress === rootAddress) return;
+        const key = `${row.fromAddress}->${row.toAddress}`;
+        const existing = layerLinks.get(key);
+        if (existing) {
+          existing.amount += row.amount;
+        } else {
+          layerLinks.set(key, {
+            source: row.fromAddress,
+            target: row.toAddress,
+            amount: row.amount,
+            time: row.time,
+            txhash: row.txhash,
+          });
+        }
+
+        layerIncoming.set(row.toAddress, (layerIncoming.get(row.toAddress) ?? 0) + row.amount);
+      });
+    });
+
+    const selectedAddresses = Array.from(layerIncoming.entries())
+      .sort((left, right) => right[1] - left[1])
+      .slice(0, limitPerLayer)
+      .map(([address]) => address);
+    const selectedSet = new Set(selectedAddresses);
+
+    Array.from(layerIncoming.entries())
+      .filter(([address]) => selectedSet.has(address))
+      .forEach(([address, amount]) => {
+        if (nodeMap.has(address)) return;
+        const meta = walletMeta.get(address);
+        const outgoingCount = new Set((childRowsMap.get(address) ?? []).map(row => row.toAddress)).size;
+        nodeMap.set(address, {
+          id: `addr:${address}`,
+          layer,
+          address,
+          label: meta?.label ?? "普通地址",
+          amount,
+          currentBalance: holderBalanceMap.get(address) ?? null,
+          kind:
+            meta?.kind && meta.kind !== "普通地址"
+              ? formatAddressTagLabel(meta.kind)
+              : meta?.isContract
+                ? "合约地址"
+                : "普通地址",
+          outgoingCount,
+        });
+      });
+
+    Array.from(layerLinks.values())
+      .filter(link => selectedSet.has(link.target))
+      .forEach(link => {
+        aggregatedLinks.set(`${link.source}->${link.target}`, {
+          source: `addr:${link.source}`,
+          target: `addr:${link.target}`,
+          amount: link.amount,
+          time: link.time,
+          txhash: link.txhash,
+        });
+      });
+
+    frontier = selectedAddresses;
+    if (frontier.length === 0) break;
+  }
+
+  const rootOutgoingAmount = Array.from(aggregatedLinks.values())
+    .filter(link => link.source === `addr:${rootAddress}`)
+    .reduce((sum, link) => sum + link.amount, 0);
+  const rootNode = nodeMap.get(rootAddress);
+  if (rootNode) {
+    rootNode.amount = rootOutgoingAmount;
+    rootNode.outgoingCount = new Set((childRowsMap.get(rootAddress) ?? []).map(row => row.toAddress)).size;
+  }
+
+  const nodes = Array.from(nodeMap.values()).sort((left, right) => left.layer - right.layer || right.amount - left.amount);
+  const summaries = Array.from({ length: depth + 1 }, (_, layer) => {
+    const layerNodes = nodes.filter(node => node.layer === layer);
+    return {
+      layer,
+      title: layerTitles[layer] ?? `第${layer}层`,
+      count: layerNodes.length,
+      totalAmount: layerNodes.reduce((sum, node) => sum + node.amount, 0),
+    };
+  });
+
+  return {
+    tokenId: resolvedTokenId,
+    tokenAddressId: chosenAddress.tokenAddressId,
+    totalAmount: rootOutgoingAmount,
+    nodes,
+    links: Array.from(aggregatedLinks.values()),
+    summaries,
+  };
+}
+
+export async function getOnchainHoldersBySymbol(
+  symbol: string,
+  options?: {
+    date?: string;
+    page?: number;
+    pageSize?: number;
+  }
+): Promise<OnchainHolderListResult | null> {
+  const currentPool = getPool();
+  const bigQuery = getBigQueryClient();
+  const dataset = process.env.BIGQUERY_DATASET;
+  const normalizedSymbol = symbol.trim().toUpperCase();
+  const fallbackToken = fallbackOnchainTokens[normalizedSymbol] ?? null;
+  let profile: TokenProfileResult | null = null;
+
+  try {
+    profile = await getTokenProfileBySymbol(symbol);
+  } catch {
+    profile = null;
+  }
+
+  if (!dataset || (!profile && !fallbackToken)) return null;
+
+  const page = Math.max(options?.page ?? 1, 1);
+  const pageSize = Math.min(Math.max(options?.pageSize ?? 20, 10), 100);
+  const offset = (page - 1) * pageSize;
+  const date = options?.date?.trim();
+  const resolvedTokenId = profile?.tokenId ?? fallbackToken?.tokenId ?? 0;
+  let tokenAddressRows: Array<{ tokenAddressId: number | null; address: string }> = [];
+
+  if (profile) {
+    try {
+      const [rows] = await currentPool.query<
+        (RowDataPacket & {
+          tokenAddressId: number;
+          address: string;
+        })[]
+      >(
+        `
+          SELECT
+            ta.id AS tokenAddressId,
+            ta.address AS address
+          FROM token_address ta
+          WHERE ta.token_id = ?
+          ORDER BY ta.id DESC
+        `,
+        [profile.tokenId]
+      );
+
+      tokenAddressRows = rows.map(row => ({
+        tokenAddressId: row.tokenAddressId,
+        address: String(row.address).toLowerCase(),
+      }));
+    } catch {
+      tokenAddressRows = [];
+    }
+  }
+
+  if (tokenAddressRows.length === 0 && fallbackToken) {
+    tokenAddressRows = fallbackToken.addresses.map(address => ({
+      tokenAddressId: null,
+      address: address.toLowerCase(),
+    }));
+  }
+
+  const dedupedTokenAddresses = Array.from(new Map(tokenAddressRows.map(row => [row.address, row])).values());
+  if (dedupedTokenAddresses.length === 0) {
+    return {
+      tokenId: resolvedTokenId,
+      tokenAddressId: null,
+      tokenAddress: null,
+      snapshotDate: null,
+      total: 0,
+      page,
+      pageSize,
+      items: [],
+    };
+  }
+
+  const countsQuery = `
+    SELECT
+      LOWER(token_address) AS tokenAddress,
+      COUNT(*) AS holderCount
+    FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.token_holder_snapshot\`
+    WHERE LOWER(token_address) IN UNNEST(@addresses)
+    ${date ? "AND snapshot_date <= DATE(@selectedDate)" : ""}
+    GROUP BY tokenAddress
+    ORDER BY holderCount DESC
+  `;
+  const [countRows] = await bigQuery.query({
+    query: countsQuery,
+    params: {
+      addresses: dedupedTokenAddresses.map(row => row.address),
+      ...(date ? { selectedDate: date } : {}),
+    },
+    useLegacySql: false,
+  });
+
+  const chosenAddress =
+    dedupedTokenAddresses.find(row =>
+      countRows.some(
+        countRow => String((countRow as { tokenAddress?: string }).tokenAddress ?? "").toLowerCase() === row.address
+      )
+    ) ?? dedupedTokenAddresses[0];
+
+  const snapshotQuery = `
+    SELECT
+      MAX(snapshot_date) AS snapshotDate
+    FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.token_holder_snapshot\`
+    WHERE LOWER(token_address) = @tokenAddress
+    ${date ? "AND snapshot_date <= DATE(@selectedDate)" : ""}
+  `;
+  const [snapshotRows] = await bigQuery.query({
+    query: snapshotQuery,
+    params: {
+      tokenAddress: chosenAddress.address,
+      ...(date ? { selectedDate: date } : {}),
+    },
+    useLegacySql: false,
+  });
+
+  const snapshotDate = String((snapshotRows[0] as { snapshotDate?: { value?: string } | string | null })?.snapshotDate instanceof Object
+    ? ((snapshotRows[0] as { snapshotDate?: { value?: string } }).snapshotDate?.value ?? "")
+    : ((snapshotRows[0] as { snapshotDate?: string | null })?.snapshotDate ?? "")
+  ).trim();
+
+  if (!snapshotDate) {
+    return {
+      tokenId: resolvedTokenId,
+      tokenAddressId: chosenAddress.tokenAddressId,
+      tokenAddress: chosenAddress.address,
+      snapshotDate: null,
+      total: 0,
+      page,
+      pageSize,
+      items: [],
+    };
+  }
+
+  const totalQuery = `
+    SELECT COUNT(*) AS total
+    FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.token_holder_snapshot\`
+    WHERE LOWER(token_address) = @tokenAddress
+      AND snapshot_date = DATE(@snapshotDate)
+  `;
+  const [totalRows] = await bigQuery.query({
+    query: totalQuery,
+    params: {
+      tokenAddress: chosenAddress.address,
+      snapshotDate,
+    },
+    useLegacySql: false,
+  });
+  const total = Number((totalRows[0] as { total?: string | number }).total ?? 0);
+
+  const holdersQuery = `
+    SELECT
+      LOWER(holder_address) AS holderAddress,
+      balance,
+      balance_rank AS balanceRank,
+      balance_change24h AS balanceChange24h,
+      balance_change7d AS balanceChange7d,
+      is_new AS isNew
+    FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.token_holder_snapshot\`
+    WHERE LOWER(token_address) = @tokenAddress
+      AND snapshot_date = DATE(@snapshotDate)
+    ORDER BY balance_rank ASC, SAFE_CAST(balance AS NUMERIC) DESC
+    LIMIT @limit
+    OFFSET @offset
+  `;
+  const [holderRows] = await bigQuery.query({
+    query: holdersQuery,
+    params: {
+      tokenAddress: chosenAddress.address,
+      snapshotDate,
+      limit: pageSize,
+      offset,
+    },
+    useLegacySql: false,
+  });
+
+  const addresses = holderRows
+    .map(row => String((row as { holderAddress?: string }).holderAddress ?? "").toLowerCase())
+    .filter(Boolean);
+
+  const walletQuery = `
+    SELECT
+      LOWER(address) AS address,
+      tag_label,
+      tags_base,
+      is_contract
+    FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.wallet_info\`
+    WHERE LOWER(address) IN UNNEST(@addresses)
+  `;
+  const [walletRows] = addresses.length
+    ? await bigQuery.query({
+        query: walletQuery,
+        params: { addresses },
+        useLegacySql: false,
+      })
+    : [[]];
+
+  const walletMeta = new Map<
+    string,
+    {
+      label: string;
+      kind: string;
+      isContract: boolean;
+    }
+  >();
+  walletRows.forEach(row => {
+    const address = String((row as { address?: string }).address ?? "").toLowerCase();
+    if (!address) return;
+    const tagLabel = (row as { tag_label?: string | null }).tag_label ?? null;
+    const tagsBase = (row as { tags_base?: string | null }).tags_base ?? null;
+    const isContract = Boolean((row as { is_contract?: boolean | null }).is_contract);
+    walletMeta.set(address, {
+      label: formatAddressTagLabel(tagLabel ?? tagsBase),
+      kind: tagsBase ?? (isContract ? "合约地址" : "普通地址"),
+      isContract,
+    });
+  });
+
+  return {
+    tokenId: resolvedTokenId,
+    tokenAddressId: chosenAddress.tokenAddressId,
+    tokenAddress: chosenAddress.address,
+    snapshotDate,
+    total,
+    page,
+    pageSize,
+    items: holderRows.map(row => {
+      const address = String((row as { holderAddress?: string }).holderAddress ?? "").toLowerCase();
+      const meta = walletMeta.get(address);
+      return {
+        address,
+        label: meta?.label ?? "普通地址",
+        kind:
+          meta?.kind && meta.kind !== "普通地址"
+            ? formatAddressTagLabel(meta.kind)
+            : meta?.isContract
+              ? "合约地址"
+              : "普通地址",
+        isContract: Boolean(meta?.isContract),
+        balance: toNullableNumber((row as { balance?: string | number | null }).balance),
+        rank: toNullableNumber((row as { balanceRank?: number | string | null }).balanceRank),
+        balanceChange24h: toNullableNumber((row as { balanceChange24h?: number | string | null }).balanceChange24h),
+        balanceChange7d: toNullableNumber((row as { balanceChange7d?: number | string | null }).balanceChange7d),
+        isNew: Boolean((row as { isNew?: boolean | null }).isNew),
+      };
+    }),
+  };
+}
+
+export async function listAvailableOnchainTokens(limit = 20): Promise<AvailableOnchainTokenResult> {
+  const currentPool = getPool();
+  const bigQuery = getBigQueryClient();
+  const dataset = process.env.BIGQUERY_DATASET;
+
+  if (!dataset) {
+    return { items: [] };
+  }
+
+  const cappedLimit = Math.min(Math.max(limit, 5), 100);
+  const activityQuery = `
+    WITH transfer_counts AS (
+      SELECT token_id AS tokenId, COUNT(*) AS transferCount
+      FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.token_transfer_raw\`
+      GROUP BY tokenId
+    ),
+    holder_counts AS (
+      SELECT token_id AS tokenId, COUNT(*) AS holderCount
+      FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.token_holder_snapshot\`
+      GROUP BY tokenId
+    )
+    SELECT
+      COALESCE(t.tokenId, h.tokenId) AS tokenId,
+      COALESCE(t.transferCount, 0) AS transferCount,
+      COALESCE(h.holderCount, 0) AS holderCount
+    FROM transfer_counts t
+    FULL OUTER JOIN holder_counts h
+      ON t.tokenId = h.tokenId
+    ORDER BY transferCount DESC, holderCount DESC
+    LIMIT @limit
+  `;
+  const [activityRows] = await bigQuery.query({
+    query: activityQuery,
+    params: { limit: cappedLimit },
+    useLegacySql: false,
+  });
+
+  const tokenIds = activityRows
+    .map(row => Number((row as { tokenId?: string | number }).tokenId ?? 0))
+    .filter(tokenId => Number.isFinite(tokenId) && tokenId > 0);
+
+  if (tokenIds.length === 0) {
+    return { items: [] };
+  }
+
+  const placeholders = tokenIds.map(() => "?").join(", ");
+  const [profileRows] = await currentPool.query<
+    (RowDataPacket & {
+      tokenId: number;
+      symbol: string;
+      name: string;
+      tokenAddressId: number | null;
+      tokenAddress: string | null;
+    })[]
+  >(
+    `
+      SELECT
+        tp.id AS tokenId,
+        tp.symbol AS symbol,
+        tp.name AS name,
+        ta.id AS tokenAddressId,
+        ta.address AS tokenAddress
+      FROM token_profiles tp
+      LEFT JOIN (
+        SELECT ta1.*
+        FROM token_address ta1
+        JOIN (
+          SELECT token_id, MAX(id) AS maxId
+          FROM token_address
+          GROUP BY token_id
+        ) latest
+          ON latest.token_id = ta1.token_id
+         AND latest.maxId = ta1.id
+      ) ta ON ta.token_id = tp.id
+      WHERE tp.id IN (${placeholders})
+    `,
+    tokenIds
+  );
+
+  const profileMap = new Map(profileRows.map(row => [row.tokenId, row]));
+
+  return {
+    items: activityRows
+      .map(row => {
+        const tokenId = Number((row as { tokenId?: string | number }).tokenId ?? 0);
+        const profile = profileMap.get(tokenId);
+        if (!profile) return null;
+        return {
+          tokenId,
+          symbol: profile.symbol,
+          name: profile.name,
+          tokenAddressId: profile.tokenAddressId,
+          tokenAddress: profile.tokenAddress,
+          transferCount: Number((row as { transferCount?: string | number }).transferCount ?? 0),
+          holderCount: Number((row as { holderCount?: string | number }).holderCount ?? 0),
+        };
+      })
+      .filter((item): item is NonNullable<typeof item> => Boolean(item)),
+  };
+}

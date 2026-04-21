@@ -1,0 +1,21 @@
+CREATE TABLE `positionData` (
+	`id` int AUTO_INCREMENT NOT NULL,
+	`coinId` varchar(64) NOT NULL,
+	`exchangeId` varchar(64) NOT NULL,
+	`timestamp` timestamp NOT NULL,
+	`openInterestBtc` bigint,
+	`openInterestUsdt` bigint,
+	`longShortRatio` int,
+	`longAccountRatio` int,
+	`shortAccountRatio` int,
+	`topTraderLongRatio` int,
+	`topTraderShortRatio` int,
+	`netInflow` bigint,
+	`buyVolume` bigint,
+	`sellVolume` bigint,
+	`basis` bigint,
+	`premiumIndex` int,
+	`fundingRate` int,
+	`createdAt` timestamp NOT NULL DEFAULT (now()),
+	CONSTRAINT `positionData_id` PRIMARY KEY(`id`)
+);

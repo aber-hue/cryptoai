@@ -1,0 +1,2173 @@
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { trpc } from "@/lib/trpc";
+import { cn } from "@/lib/utils";
+import { ArrowDownRight, ArrowUpRight, ChevronDown, Copy, Database, Droplets, Expand, RefreshCw, Search, TrendingDown, TrendingUp, X } from "lucide-react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  Legend,
+  Line,
+  LineChart,
+  ReferenceLine,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+
+type TrendPoint = {
+  date: string;
+  shortDate: string;
+  controlRate: number;
+  holderCount: number;
+  exchangeNetFlow: number;
+  netFlowRatio: number;
+  dexAccIdx: number;
+  whaleNetOutflow: number;
+  depthSkew: number;
+};
+
+type TopChangeRow = {
+  address: string;
+  label: string;
+  changeBalance: number;
+  currentBalance?: number;
+  firstSeen?: string;
+  href: string;
+};
+
+type TagNetChange = {
+  label: string;
+  value: number;
+};
+
+type Snapshot = {
+  tokenName: string;
+  tokenSymbol: string;
+  priceUsd: number;
+  priceChange24h: number;
+  totalSupply: number;
+  circulatingSupply: number;
+  marketCap: number;
+  fdv: number;
+  holderCount: number;
+  holderCountChange1d: number;
+  controlRate: number;
+  controlRateChange1d: number;
+  top10Ratio: number;
+  top50Ratio: number;
+  top100Ratio: number;
+  othersRatio: number;
+  explicitControl: number;
+  implicitControl: number;
+  indirectControl: number;
+  controlBalanceTotal: number;
+  top10Balance: number;
+  top50Balance: number;
+  top100Balance: number;
+  exchangeInflow: number;
+  exchangeOutflow: number;
+  exchangeNetFlow: number;
+  netFlowRatio: number;
+  netFlowStreak: number;
+  exchangeCoverageCount: number;
+  totalBuyVolume: number;
+  totalSellVolume: number;
+  buyAddressCount: number;
+  sellAddressCount: number;
+  top5BuyVolume: number;
+  top5SellVolume: number;
+  buyConcentration: number;
+  sellConcentration: number;
+  dexAccIdx: number;
+  whaleAddressCount: number;
+  whaleTotalBalance: number;
+  whaleTotalOutflow: number;
+  whaleTotalInflow: number;
+  whaleNetOutflow: number;
+  whaleToExchange: number;
+  whaleToNewAddress: number;
+  whaleToDexRouter: number;
+  whaleInternalTransfer: number;
+  whaleOutRatio: number;
+  tagNetChanges: TagNetChange[];
+  increaseRows: TopChangeRow[];
+  decreaseRows: TopChangeRow[];
+};
+
+type TokenDashboard = {
+  symbol: string;
+  logo: string;
+  name: string;
+  dates: Record<string, Snapshot>;
+  trend90d: TrendPoint[];
+};
+
+type FlowNode = {
+  id: string;
+  layer: number;
+  address: string;
+  label: string;
+  amount: number;
+  currentBalance?: number | null;
+  kind: string;
+  outgoingCount: number;
+};
+
+type FlowLink = {
+  source: string;
+  target: string;
+  amount: number;
+};
+
+type FlowLayerSummary = {
+  layer: number;
+  title: string;
+  count: number;
+  totalAmount: number;
+};
+
+type FlowGraph = {
+  nodes: FlowNode[];
+  links: FlowLink[];
+  summaries: FlowLayerSummary[];
+  totalAmount: number;
+};
+
+
+const ACCUMULATION_POSITIVE = "#2563EB";
+const DISTRIBUTION_NEGATIVE = "#F59E0B";
+const RISE_RED = "#EF4444";
+const FALL_GREEN = "#10B981";
+const DEEP_BLUE = "#1E40AF";
+const SLATE = "#64748B";
+
+const dashboardDates = ["2026-04-15", "2026-04-14", "2026-04-13"];
+
+function range(days: number) {
+  return Array.from({ length: days }, (_, index) => index);
+}
+
+function formatDateShort(date: Date) {
+  const month = date.getMonth() + 1;
+  const day = date.getDate();
+  return `${month}/${day}`;
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function createSeededRandom(seed: number) {
+  let current = seed >>> 0;
+
+  return () => {
+    current += 0x6d2b79f5;
+    let temp = Math.imul(current ^ (current >>> 15), 1 | current);
+    temp ^= temp + Math.imul(temp ^ (temp >>> 7), 61 | temp);
+    return ((temp ^ (temp >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function shortAddress(prefix: string, index: number) {
+  const seed = `${prefix}${(index + 1).toString(16).padStart(6, "0")}${(index * 73 + 19).toString(16).padStart(6, "0")}`;
+  const full = `${seed}${seed}${seed}${seed}`.slice(0, 40);
+  return `0x${full}`;
+}
+
+function formatAddressDisplay(address: string) {
+  if (address.length <= 14) return address;
+  return `${address.slice(0, 8)}...${address.slice(-6)}`;
+}
+
+function formatBscScanAddress(address: string) {
+  return `https://bscscan.com/address/${address}`;
+}
+
+function buildFlowGraph(symbol: string) {
+  const rng = createSeededRandom(symbol.split("").reduce((sum, char) => sum + char.charCodeAt(0), 0) + 97);
+  const layerCounts = [1, 5, 30, 100, 200];
+  const layerTitles = ["0 地址", "第一层", "第二层", "第三层", "第四层"];
+  const layerKinds = [
+    ["Zero Address"],
+    ["部署者", "团队钱包", "空投合约", "流动性池", "早期分发"],
+    ["做市商", "新钱包", "Smart Money", "DEX Router", "CEX Deposit", "Bridge"],
+    ["归集地址", "活跃交易者", "中继钱包", "机器人地址", "临时地址"],
+    ["散户地址", "终端地址", "主属集群", "跨链落点", "沉淀地址"],
+  ];
+
+  const allLayers: FlowNode[][] = [];
+  const links: FlowLink[] = [];
+  const totalAmount = 48_600_000;
+
+  const rootNode: FlowNode = {
+    id: "L0-000",
+    layer: 0,
+    address: "0x0000000000000000000000000000000000000000",
+    label: "0 地址",
+    amount: totalAmount,
+    kind: "铸造源头",
+    outgoingCount: 5,
+  };
+  allLayers.push([rootNode]);
+
+  for (let layer = 1; layer < layerCounts.length; layer += 1) {
+    const parents = allLayers[layer - 1];
+    const targetCount = layerCounts[layer];
+    const baseChildren = Math.floor(targetCount / parents.length);
+    let remainder = targetCount % parents.length;
+    const children: FlowNode[] = [];
+
+    parents.forEach((parent, parentIndex) => {
+      const childCount = baseChildren + (remainder > 0 ? 1 : 0);
+      remainder = Math.max(remainder - 1, 0);
+      const outRatio = layer === 1 ? 1 : clamp(0.82 + rng() * 0.12, 0.78, 0.96);
+      const distributable = parent.amount * outRatio;
+      const weights = Array.from({ length: childCount }, () => 0.5 + rng() * 1.8);
+      const weightSum = weights.reduce((sum, value) => sum + value, 0);
+
+      weights.forEach((weight, childIndex) => {
+        const globalIndex = children.length;
+        const amount = distributable * (weight / weightSum);
+        const kindPool = layerKinds[layer];
+        const kind = kindPool[(parentIndex + childIndex) % kindPool.length];
+        const id = `L${layer}-${globalIndex.toString().padStart(3, "0")}`;
+        const address = shortAddress(`${layer}${parentIndex.toString(16)}`, globalIndex);
+
+        const node: FlowNode = {
+          id,
+          layer,
+          address,
+          label: layer <= 2 ? `${kind} ${globalIndex + 1}` : `L${layer}-${globalIndex + 1}`,
+          amount: Math.round(amount),
+          kind,
+          outgoingCount: layer === layerCounts.length - 1 ? 0 : 0,
+        };
+
+        children.push(node);
+        links.push({
+          source: parent.id,
+          target: id,
+          amount: Math.round(amount),
+        });
+      });
+    });
+
+    allLayers.push(
+      children
+        .sort((left, right) => right.amount - left.amount)
+        .map((node, index, list) => {
+          const childCount =
+            layer === layerCounts.length - 1
+              ? 0
+              : Math.floor(layerCounts[layer + 1] / list.length) + (index < layerCounts[layer + 1] % list.length ? 1 : 0);
+          return { ...node, outgoingCount: childCount };
+        })
+    );
+  }
+
+  const nodes = allLayers.flat();
+  const summaries = allLayers.map((layerNodes, index) => ({
+    layer: index,
+    title: layerTitles[index],
+    count: layerNodes.length,
+    totalAmount: layerNodes.reduce((sum, node) => sum + node.amount, 0),
+  }));
+
+  return {
+    nodes,
+    links,
+    summaries,
+    totalAmount,
+  } satisfies FlowGraph;
+}
+
+function buildTrend90d(seed: {
+  controlBase: number;
+  holdersBase: number;
+  netFlowBase: number;
+  dexBase: number;
+  whaleBase: number;
+  depthBase: number;
+}) {
+  const today = new Date("2026-04-15T00:00:00");
+
+  return range(90).map(offset => {
+    const date = new Date(today);
+    date.setDate(today.getDate() - (89 - offset));
+    const wave = Math.sin((offset + 1) / 6);
+    const slowWave = Math.cos((offset + 3) / 11);
+    const trend = (offset - 45) / 45;
+    const controlRate = Number((seed.controlBase + wave * 1.9 + slowWave * 1.2 + trend * 0.7).toFixed(2));
+    const holderCount = Math.round(seed.holdersBase + offset * 118 + wave * 540 + slowWave * 360);
+    const exchangeNetFlow = Math.round(seed.netFlowBase + wave * 1_500_000 - slowWave * 980_000 + trend * 1_100_000);
+    const netFlowRatio = Number((exchangeNetFlow / 410_000_000 * 100).toFixed(2));
+    const dexAccIdx = Number(clamp(seed.dexBase + wave * 0.18 - slowWave * 0.08 + trend * 0.06, 0.58, 1.62).toFixed(2));
+    const whaleNetOutflow = Math.round(seed.whaleBase + slowWave * 1_200_000 + wave * 720_000 - trend * 800_000);
+    const depthSkew = Number(clamp(seed.depthBase + wave * 0.09 + slowWave * 0.04, 0.72, 1.42).toFixed(2));
+
+    return {
+      date: date.toISOString().slice(0, 10),
+      shortDate: formatDateShort(date),
+      controlRate,
+      holderCount,
+      exchangeNetFlow,
+      netFlowRatio,
+      dexAccIdx,
+      whaleNetOutflow,
+      depthSkew,
+    };
+  });
+}
+
+function seriesSlice(trend90d: TrendPoint[], metric: keyof TrendPoint, days: number) {
+  return trend90d.slice(-days).map(point => ({
+    date: point.shortDate,
+    value: Number(point[metric]),
+  }));
+}
+
+function buildTokenDashboard(config: {
+  symbol: string;
+  logo: string;
+  name: string;
+  priceUsd: number;
+  totalSupply: number;
+  circulatingSupply: number;
+  marketCap: number;
+  fdv: number;
+  controlRate: number;
+  holderCount: number;
+  exchangeNetFlow: number;
+  netFlowRatio: number;
+  depthBuy2Total: number;
+  depthSell2Total: number;
+  dexAccIdx: number;
+  whaleNetOutflow: number;
+  tagDirection: number;
+}) {
+  const trend90d = buildTrend90d({
+    controlBase: config.controlRate,
+    holdersBase: config.holderCount - 10_200,
+    netFlowBase: config.exchangeNetFlow - 1_800_000,
+    dexBase: config.dexAccIdx,
+    whaleBase: config.whaleNetOutflow - 1_400_000,
+    depthBase: config.depthBuy2Total / config.depthSell2Total,
+  });
+
+  const snapshots = dashboardDates.reduce<Record<string, Snapshot>>((accumulator, date, index) => {
+    const priceShift = index * 0.96;
+    const holderShift = index * 188;
+    const controlShift = index * 0.35;
+    const exchangeShift = index * 1_240_000;
+    const netFlowValue = config.exchangeNetFlow - exchangeShift;
+    const basePrice = config.priceUsd - priceShift;
+
+    accumulator[date] = {
+      tokenName: config.name,
+      tokenSymbol: config.symbol,
+      priceUsd: Number(basePrice.toFixed(4)),
+      priceChange24h: Number((index === 0 ? 7.84 : index === 1 ? 4.38 : -2.12).toFixed(2)),
+      totalSupply: config.totalSupply,
+      circulatingSupply: config.circulatingSupply - index * 800_000,
+      marketCap: config.marketCap - index * 6_500_000,
+      fdv: config.fdv - index * 8_200_000,
+      holderCount: config.holderCount - holderShift,
+      holderCountChange1d: index === 0 ? 482 : index === 1 ? 236 : -118,
+      controlRate: Number((config.controlRate - controlShift).toFixed(2)),
+      controlRateChange1d: Number((index === 0 ? 0.84 : index === 1 ? 0.22 : -0.31).toFixed(2)),
+      top10Ratio: Number((22.6 - index * 0.4).toFixed(2)),
+      top50Ratio: Number((39.8 - index * 0.5).toFixed(2)),
+      top100Ratio: Number((52.7 - index * 0.6).toFixed(2)),
+      othersRatio: Number((47.3 + index * 0.6).toFixed(2)),
+      explicitControl: 46_200_000 - index * 300_000,
+      implicitControl: 28_900_000 - index * 180_000,
+      indirectControl: 11_400_000 - index * 150_000,
+      controlBalanceTotal: 86_500_000 - index * 630_000,
+      top10Balance: 54_800_000 - index * 540_000,
+      top50Balance: 96_300_000 - index * 800_000,
+      top100Balance: 127_400_000 - index * 920_000,
+      exchangeInflow: 6_800_000 - index * 480_000,
+      exchangeOutflow: 10_200_000 - index * 630_000,
+      exchangeNetFlow: netFlowValue,
+      netFlowRatio: Number((config.netFlowRatio - index * 0.21).toFixed(2)),
+      netFlowStreak: index === 0 ? -4 : -3,
+      exchangeCoverageCount: 126,
+      totalBuyVolume: 26_400_000 - index * 1_100_000,
+      totalSellVolume: 18_700_000 + index * 920_000,
+      buyAddressCount: 12_860 - index * 240,
+      sellAddressCount: 8_240 + index * 110,
+      top5BuyVolume: 8_900_000 - index * 320_000,
+      top5SellVolume: 6_400_000 + index * 290_000,
+      buyConcentration: Number((0.34 - index * 0.01).toFixed(2)),
+      sellConcentration: Number((0.26 + index * 0.01).toFixed(2)),
+      dexAccIdx: Number((config.dexAccIdx - index * 0.05).toFixed(2)),
+      whaleAddressCount: 100,
+      whaleTotalBalance: 132_400_000 - index * 880_000,
+      whaleTotalOutflow: 9_200_000 - index * 620_000,
+      whaleTotalInflow: 5_600_000 + index * 410_000,
+      whaleNetOutflow: config.whaleNetOutflow - index * 920_000,
+      whaleToExchange: 3_200_000 - index * 240_000,
+      whaleToNewAddress: 2_450_000 - index * 190_000,
+      whaleToDexRouter: 1_760_000 - index * 120_000,
+      whaleInternalTransfer: 1_790_000 - index * 70_000,
+      whaleOutRatio: Number((6.94 - index * 0.22).toFixed(2)),
+      tagNetChanges: [
+        { label: "Team Wallet", value: config.tagDirection * (2_600_000 - index * 200_000) },
+        { label: "已知做市商", value: config.tagDirection * (1_400_000 - index * 160_000) },
+        { label: "疑似做市商", value: -config.tagDirection * (620_000 - index * 80_000) },
+        { label: "老鼠仓集群", value: -config.tagDirection * (1_950_000 - index * 150_000) },
+        { label: "空投猎人", value: -config.tagDirection * (860_000 - index * 70_000) },
+      ],
+      increaseRows: [
+        {
+          address: "0x7A91...0Fc2",
+          label: "新鲸鱼地址",
+          changeBalance: 2_840_000 - index * 180_000,
+          firstSeen: "2026-04-15 08:13",
+          href: "https://etherscan.io/address/0x7A9100000000000000000000000000000000Fc2",
+        },
+        {
+          address: "0x6C31...D2a0",
+          label: "疑似做市商",
+          changeBalance: 1_940_000 - index * 120_000,
+          firstSeen: "2026-04-15 07:50",
+          href: "https://etherscan.io/address/0x6C310000000000000000000000000000000D2a0",
+        },
+        {
+          address: "0x11e2...A992",
+          label: "Smart Money",
+          changeBalance: 1_620_000 - index * 100_000,
+          firstSeen: "2026-04-15 01:42",
+          href: "https://etherscan.io/address/0x11e2000000000000000000000000000000A992",
+        },
+      ],
+      decreaseRows: [
+        {
+          address: "0x93b0...1E12",
+          label: "早期投资人",
+          changeBalance: 3_260_000 - index * 200_000,
+          currentBalance: 8_300_000 - index * 500_000,
+          href: "https://etherscan.io/address/0x93b00000000000000000000000000000001E12",
+        },
+        {
+          address: "0xA1f2...4bd8",
+          label: "老鼠仓集群",
+          changeBalance: 2_280_000 - index * 180_000,
+          currentBalance: 4_900_000 - index * 260_000,
+          href: "https://etherscan.io/address/0xA1f20000000000000000000000000000004bd8",
+        },
+        {
+          address: "0xDc88...392E",
+          label: "空投猎人",
+          changeBalance: 1_760_000 - index * 140_000,
+          currentBalance: 2_840_000 - index * 180_000,
+          href: "https://etherscan.io/address/0xDc88000000000000000000000000000000392E",
+        },
+      ],
+    };
+
+    return accumulator;
+  }, {});
+
+  return {
+    symbol: config.symbol,
+    logo: config.logo,
+    name: config.name,
+    dates: snapshots,
+    trend90d,
+  };
+}
+
+const tokenDashboards: TokenDashboard[] = [
+  buildTokenDashboard({
+    symbol: "BSB",
+    logo: "B",
+    name: "BSB",
+    priceUsd: 0.074,
+    totalSupply: 100_000_000,
+    circulatingSupply: 78_000_000,
+    marketCap: 5_770_000,
+    fdv: 7_400_000,
+    controlRate: 31.4,
+    holderCount: 18_460,
+    exchangeNetFlow: -860_000,
+    netFlowRatio: -1.1,
+    depthBuy2Total: 1_420_000,
+    depthSell2Total: 1_110_000,
+    dexAccIdx: 1.07,
+    whaleNetOutflow: 1_280_000,
+    tagDirection: 1,
+  }),
+  buildTokenDashboard({
+    symbol: "GENIUS",
+    logo: "G",
+    name: "Genius",
+    priceUsd: 1.2842,
+    totalSupply: 242_000_000,
+    circulatingSupply: 164_800_000,
+    marketCap: 211_600_000,
+    fdv: 310_800_000,
+    controlRate: 35.74,
+    holderCount: 42_860,
+    exchangeNetFlow: -3_400_000,
+    netFlowRatio: -2.06,
+    depthBuy2Total: 3_840_000,
+    depthSell2Total: 2_920_000,
+    dexAccIdx: 1.31,
+    whaleNetOutflow: 3_600_000,
+    tagDirection: 1,
+  }),
+  buildTokenDashboard({
+    symbol: "CRMON",
+    logo: "C",
+    name: "CRMon",
+    priceUsd: 0.8421,
+    totalSupply: 420_000_000,
+    circulatingSupply: 285_000_000,
+    marketCap: 239_900_000,
+    fdv: 353_700_000,
+    controlRate: 28.44,
+    holderCount: 36_540,
+    exchangeNetFlow: 2_620_000,
+    netFlowRatio: 0.92,
+    depthBuy2Total: 2_980_000,
+    depthSell2Total: 3_420_000,
+    dexAccIdx: 0.88,
+    whaleNetOutflow: -1_280_000,
+    tagDirection: -1,
+  }),
+  buildTokenDashboard({
+    symbol: "APPON",
+    logo: "A",
+    name: "AppOn",
+    priceUsd: 2.4135,
+    totalSupply: 128_000_000,
+    circulatingSupply: 74_200_000,
+    marketCap: 178_600_000,
+    fdv: 308_900_000,
+    controlRate: 41.82,
+    holderCount: 21_940,
+    exchangeNetFlow: -980_000,
+    netFlowRatio: -1.32,
+    depthBuy2Total: 2_340_000,
+    depthSell2Total: 1_840_000,
+    dexAccIdx: 1.18,
+    whaleNetOutflow: 1_920_000,
+    tagDirection: 1,
+  }),
+];
+
+const trendConfig = [
+  { key: "controlRate", label: "控盘率", color: DEEP_BLUE },
+  { key: "netFlowRatio", label: "净流入比例", color: DISTRIBUTION_NEGATIVE },
+  { key: "whaleNetOutflow", label: "大户净转出", color: RISE_RED },
+] as const;
+
+function compactNumber(value: number, fractionDigits = 2) {
+  const absolute = Math.abs(value);
+  if (absolute >= 100_000_000) return `${(value / 100_000_000).toFixed(fractionDigits)}亿`;
+  if (absolute >= 10_000) return `${(value / 10_000).toFixed(fractionDigits)}万`;
+  if (absolute >= 1_000) return `${(value / 1_000).toFixed(fractionDigits)}K`;
+  return value.toFixed(fractionDigits);
+}
+
+function compactCurrency(value: number) {
+  const absolute = Math.abs(value);
+  if (absolute >= 1_000_000_000) return `$${(value / 1_000_000_000).toFixed(2)}B`;
+  if (absolute >= 1_000_000) return `$${(value / 1_000_000).toFixed(2)}M`;
+  if (absolute >= 1_000) return `$${(value / 1_000).toFixed(2)}K`;
+  return `$${value.toFixed(2)}`;
+}
+
+function formatPercent(value: number) {
+  return `${value.toFixed(2)}%`;
+}
+
+function percentTone(value: number, invert = false) {
+  if (value === 0) return "text-[#64748B]";
+  const positive = invert ? value < 0 : value > 0;
+  return positive ? "text-[#EF4444]" : "text-[#10B981]";
+}
+
+function ValueDelta({ value, invert }: { value: number; invert?: boolean }) {
+  const positive = invert ? value < 0 : value > 0;
+  const Icon = positive ? ArrowUpRight : ArrowDownRight;
+
+  return (
+    <span className={cn("inline-flex items-center gap-1 text-xs font-medium", percentTone(value, invert))}>
+      <Icon className="h-3.5 w-3.5" />
+      {value > 0 ? "+" : ""}
+      {formatPercent(value)}
+    </span>
+  );
+}
+
+function MiniSparkline({
+  values,
+  color,
+  className,
+}: {
+  values: number[];
+  color: string;
+  className?: string;
+}) {
+  const width = 120;
+  const height = 36;
+  const padding = 4;
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const rangeValue = max - min || 1;
+  const points = values
+    .map((value, index) => {
+      const x = padding + (index / (values.length - 1 || 1)) * (width - padding * 2);
+      const y = height - padding - ((value - min) / rangeValue) * (height - padding * 2);
+      return `${x},${y}`;
+    })
+    .join(" ");
+
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} className={cn("h-9 w-full", className)} aria-hidden>
+      <polyline fill="none" stroke={color} strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round" points={points} />
+    </svg>
+  );
+}
+
+function DashboardCard({
+  title,
+  subtitle,
+  action,
+  children,
+  className,
+}: {
+  title: string;
+  subtitle?: string;
+  action?: ReactNode;
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <Card className={cn("rounded-[24px] border border-white/80 bg-white/90 shadow-[0_14px_36px_rgba(71,85,105,0.08)]", className)}>
+      <CardContent className="p-5">
+        <div className="mb-5 flex items-start justify-between gap-3">
+          <div>
+            <div className="text-sm font-semibold text-[#0F172A]">{title}</div>
+            {subtitle ? <div className="mt-1 text-xs text-[#64748B]">{subtitle}</div> : null}
+          </div>
+          {action}
+        </div>
+        {children}
+      </CardContent>
+    </Card>
+  );
+}
+
+function MetricTile({
+  label,
+  value,
+  delta,
+  tooltip,
+  sparkline,
+  valueClassName,
+}: {
+  label: string;
+  value: string;
+  delta?: number;
+  tooltip?: string;
+  sparkline?: number[];
+  valueClassName?: string;
+}) {
+  return (
+    <div className="rounded-[20px] border border-[#E2E8F0] bg-[#F8FAFC] p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div className="text-xs font-medium text-[#64748B]">{label}</div>
+        {typeof delta === "number" ? <ValueDelta value={delta} /> : null}
+      </div>
+      <div className={cn("mt-2 text-2xl font-semibold text-[#0F172A]", valueClassName)} title={tooltip}>
+        {value}
+      </div>
+      {sparkline ? <MiniSparkline values={sparkline} color={DEEP_BLUE} className="mt-3" /> : null}
+    </div>
+  );
+}
+
+const FundFlowCanvas = memo(function FundFlowCanvas({
+  graph,
+  minAmount,
+  collapsedNodeIds,
+  onToggleCollapse,
+  viewportHeight = 980,
+}: {
+  graph: FlowGraph;
+  minAmount: number;
+  collapsedNodeIds: Set<string>;
+  onToggleCollapse: (nodeId: string) => void;
+  viewportHeight?: number;
+}) {
+  const [copiedNodeId, setCopiedNodeId] = useState<string | null>(null);
+
+  const {
+    visibleNodeIds,
+    visibleLinks,
+    visibleNodes,
+    nodesByLayer,
+    canvasHeight,
+    canvasWidth,
+    layerX,
+    nodePositions,
+  } = useMemo(() => {
+    const childrenMap = new Map<string, FlowLink[]>();
+
+    graph.links.forEach(link => {
+      const current = childrenMap.get(link.source) ?? [];
+      current.push(link);
+      childrenMap.set(link.source, current);
+    });
+
+    const visibleNodeIds = new Set<string>();
+    const visibleLinks: FlowLink[] = [];
+    const rootNodeId = graph.nodes.find(node => node.layer === 0)?.id;
+
+    const walk = (nodeId: string, visiting = new Set<string>()) => {
+      if (visiting.has(nodeId)) return;
+      const nextVisiting = new Set(visiting);
+      nextVisiting.add(nodeId);
+      visibleNodeIds.add(nodeId);
+      if (collapsedNodeIds.has(nodeId)) return;
+      const children = (childrenMap.get(nodeId) ?? []).filter(link => link.amount >= minAmount);
+      children.forEach(link => {
+        visibleLinks.push(link);
+        walk(link.target, nextVisiting);
+      });
+    };
+
+    if (rootNodeId) {
+      walk(rootNodeId);
+    }
+
+    const visibleNodes = graph.nodes.filter(node => visibleNodeIds.has(node.id));
+    const nodesByLayer = graph.summaries.map(summary =>
+      visibleNodes.filter(node => node.layer === summary.layer).sort((left, right) => right.amount - left.amount)
+    );
+
+    const layerGap = 360;
+    const baseX = 70;
+    const layerX = graph.summaries.map((_, index) => baseX + index * layerGap);
+    const nodeWidth = 220;
+    const verticalPadding = 70;
+    const canvasHeight = Math.max(
+      1400,
+      ...nodesByLayer.map((nodes, layer) => {
+        const nodeHeight = layer === 0 ? 42 : 62;
+        const gap = layer === 0 ? 20 : 10;
+        return nodes.length * nodeHeight + Math.max(0, nodes.length - 1) * gap + verticalPadding * 2;
+      })
+    );
+    const canvasWidth = layerX[layerX.length - 1] + nodeWidth + 200;
+
+    const nodePositions = new Map<string, { x: number; y: number; width: number; height: number; layer: number; node: FlowNode }>();
+    nodesByLayer.forEach((layerNodes, layerIndex) => {
+      const gap = layerIndex === 0 ? 20 : 10;
+      let currentY = verticalPadding;
+      layerNodes.forEach(node => {
+        const height =
+          layerIndex === 0 ? 42 : Math.max(62, Math.min(74, 62 + (graph.totalAmount ? node.amount / graph.totalAmount : 0) * 96));
+        nodePositions.set(node.id, {
+          x: layerX[layerIndex],
+          y: currentY,
+          width: layerIndex === 0 ? 150 : nodeWidth,
+          height,
+          layer: layerIndex,
+          node,
+        });
+        currentY += height + gap;
+      });
+    });
+
+    return {
+      visibleNodeIds,
+      visibleLinks,
+      visibleNodes,
+      nodesByLayer,
+      canvasHeight,
+      canvasWidth,
+      layerX,
+      nodePositions,
+    };
+  }, [graph, minAmount, collapsedNodeIds]);
+
+  const handleCopyAddress = async (nodeId: string, address: string) => {
+    try {
+      await navigator.clipboard.writeText(address);
+      setCopiedNodeId(nodeId);
+      window.setTimeout(() => {
+        setCopiedNodeId(current => (current === nodeId ? null : current));
+      }, 1500);
+    } catch {
+      setCopiedNodeId(null);
+    }
+  };
+
+  return (
+    <div className="rounded-[24px] border border-[#E2E8F0] bg-[#FCFDFF] p-4">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <div className="text-sm font-semibold text-[#0F172A]">0 地址起始的四层分发路径</div>
+          <div className="mt-1 text-xs text-[#64748B]">点击节点可展开 / 收起下游子树</div>
+        </div>
+        <div className="text-sm text-[#64748B]">当前可见地址 {visibleNodes.length} · 当前可见边 {visibleLinks.length}</div>
+      </div>
+
+      <div className="overflow-auto rounded-[20px] border border-[#E2E8F0] bg-white" style={{ height: viewportHeight }}>
+        <svg width={canvasWidth} height={canvasHeight} className="block">
+          {graph.summaries.map((summary, index) => (
+            <g key={summary.layer}>
+              <text x={layerX[index]} y={30} fill="#1E40AF" fontSize="14" fontWeight="700">
+                {summary.title}
+              </text>
+              <text x={layerX[index]} y={49} fill="#64748B" fontSize="11">
+                {nodesByLayer[index].length} / {summary.count} 个地址
+              </text>
+            </g>
+          ))}
+
+          {visibleLinks.map(link => {
+            const source = nodePositions.get(link.source);
+            const target = nodePositions.get(link.target);
+            if (!source || !target) return null;
+            const startX = source.x + source.width;
+            const startY = source.y + source.height / 2;
+            const endX = target.x;
+            const endY = target.y + target.height / 2;
+            const controlX = (startX + endX) / 2;
+            const strokeWidth = Math.max(1.2, Math.min(7, link.amount / graph.totalAmount * 120));
+            const midX = (startX + endX) / 2;
+            const midY = (startY + endY) / 2;
+            const ratioText = `${((link.amount / graph.totalAmount) * 100).toFixed(2)}%`;
+
+            return (
+              <g key={`${link.source}-${link.target}`}>
+                <path
+                  d={`M ${startX} ${startY} C ${controlX} ${startY}, ${controlX} ${endY}, ${endX} ${endY}`}
+                  fill="none"
+                  stroke="#93C5FD"
+                  strokeOpacity={0.22}
+                  strokeWidth={strokeWidth}
+                />
+                <g>
+                  <rect x={midX - 38} y={midY - 12} width={76} height={24} rx={12} ry={12} fill="#FFFFFF" opacity={0.94} />
+                  <text x={midX} y={midY - 1} textAnchor="middle" fill="#334155" fontSize="9" fontWeight="700">
+                    {compactNumber(link.amount, 1)}
+                  </text>
+                  <text x={midX} y={midY + 8} textAnchor="middle" fill="#64748B" fontSize="8">
+                    {ratioText}
+                  </text>
+                </g>
+              </g>
+            );
+          })}
+
+          {Array.from(nodePositions.values()).map(({ node, x, y, width, height, layer }) => {
+            const fill = layer === 0 ? "#1D4ED8" : layer === 1 ? "#2563EB" : layer === 2 ? "#4F8FF7" : layer === 3 ? "#76ABFA" : "#8CB8FB";
+            const isCollapsed = collapsedNodeIds.has(node.id);
+            const formattedAddress = formatAddressDisplay(node.address);
+            const ratioText = `${((node.amount / graph.totalAmount) * 100).toFixed(2)}%`;
+            const balanceText = `持币 ${compactNumber(node.currentBalance ?? 0, 1)}`;
+            const darkText = false;
+            const titleText = layer === 0 ? node.label : node.kind.length > 10 ? `${node.kind.slice(0, 10)}…` : node.kind;
+            const metricText = `${compactNumber(node.amount, 1)} · ${ratioText}`;
+
+            return (
+              <g key={node.id} style={{ cursor: "default" }}>
+                <rect
+                  x={x}
+                  y={y}
+                  rx={8}
+                  ry={8}
+                  width={width}
+                  height={height}
+                  fill={fill}
+                  opacity={0.96}
+                  stroke="#ffffff"
+                  strokeWidth={1}
+                />
+                {layer > 0 ? (
+                  <>
+                    <text x={x + 12} y={y + 18} fill={darkText ? "#0F172A" : "#FFFFFF"} fontSize="9.5" fontWeight="700">
+                      {titleText}
+                    </text>
+                    <text
+                      x={x + width - 66}
+                      y={y + 18}
+                      textAnchor="end"
+                      fill={darkText ? "#334155" : "#DBEAFE"}
+                      fontSize="8.2"
+                      fontWeight="600"
+                    >
+                      {balanceText}
+                    </text>
+                    <text
+                      x={x + 12}
+                      y={y + 37}
+                      fill={darkText ? "#1E293B" : "#FFFFFF"}
+                      fontSize="8.8"
+                      fontWeight="600"
+                      style={{ cursor: "pointer" }}
+                      onClick={event => {
+                        event.stopPropagation();
+                        window.open(formatBscScanAddress(node.address), "_blank", "noopener,noreferrer");
+                      }}
+                    >
+                      {formattedAddress}
+                    </text>
+                    <text x={x + 12} y={y + 58} fill={darkText ? "#334155" : "#E2E8F0"} fontSize="8.8">
+                      {metricText}
+                    </text>
+                    <g
+                      onClick={event => {
+                        event.stopPropagation();
+                        handleCopyAddress(node.id, node.address);
+                      }}
+                      style={{ cursor: "pointer" }}
+                    >
+                      {copiedNodeId === node.id ? (
+                        <text x={x + width - 22} y={y + 38} fill="#FFFFFF" fontSize="11" fontWeight="700">
+                          ✓
+                        </text>
+                      ) : (
+                        <text x={x + width - 22} y={y + 38} fill="#FFFFFF" fontSize="11" fontWeight="700">
+                          ⧉
+                        </text>
+                      )}
+                    </g>
+                  </>
+                ) : (
+                  <>
+                    <text x={x + 10} y={y + 17} fill="#FFFFFF" fontSize="9.2" fontWeight="700">
+                      0 地址
+                    </text>
+                    <text x={x + 10} y={y + 31} fill="#DBEAFE" fontSize="8.5">
+                      {compactNumber(node.amount, 1)} · 100%
+                    </text>
+                  </>
+                )}
+                {node.outgoingCount > 0 ? (
+                  <g
+                    onClick={event => {
+                      event.stopPropagation();
+                      onToggleCollapse(node.id);
+                    }}
+                    style={{ cursor: "pointer" }}
+                  >
+                    <rect x={x + width - 9} y={y + height / 2 - 9} width={18} height={18} rx={9} ry={9} fill="#FFFFFF" opacity={0.95} />
+                    <text x={x + width - 3} y={y + height / 2 + 4} fill="#1E40AF" fontSize="12" fontWeight="700">
+                      {isCollapsed ? "+" : "-"}
+                    </text>
+                  </g>
+                ) : null}
+              </g>
+            );
+          })}
+        </svg>
+      </div>
+    </div>
+  );
+});
+
+export default function OnChainBoard() {
+  const [selectedSymbol, setSelectedSymbol] = useState("BSB");
+  const [tokenQuery, setTokenQuery] = useState("BSB");
+  const [activeView, setActiveView] = useState<"overview" | "fund-flow" | "holders">("overview");
+  const [selectedDate, setSelectedDate] = useState("2026-04-15");
+  const [isFlowFullscreenOpen, setIsFlowFullscreenOpen] = useState(false);
+  const [flowMinAmount, setFlowMinAmount] = useState(0);
+  const [collapsedNodeIds, setCollapsedNodeIds] = useState<Set<string>>(new Set());
+  const [holderPage, setHolderPage] = useState(1);
+  const [trendDays, setTrendDays] = useState<30 | 60 | 90>(30);
+  const [visibleTrendKeys, setVisibleTrendKeys] = useState<string[]>(["controlRate", "netFlowRatio"]);
+  const [copiedHolderTokenAddress, setCopiedHolderTokenAddress] = useState(false);
+  const [isTokenPickerOpen, setIsTokenPickerOpen] = useState(false);
+  const tokenPickerRef = useRef<HTMLDivElement | null>(null);
+  const onchainTokensQuery = trpc.onchain.listTokens.useQuery(
+    { limit: 60 },
+    {
+      staleTime: 5 * 60 * 1000,
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: false,
+    }
+  );
+  const fundFlowQuery = trpc.onchain.getFundFlow.useQuery(
+    {
+      symbol: selectedSymbol,
+      date: selectedDate,
+      depth: 4,
+      limitPerLayer: 36,
+    },
+    {
+      enabled: activeView === "fund-flow",
+      staleTime: 5 * 60 * 1000,
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: false,
+    }
+  );
+  const holdersQuery = trpc.onchain.getHolders.useQuery(
+    {
+      symbol: selectedSymbol,
+      date: selectedDate,
+      page: holderPage,
+      pageSize: 20,
+    },
+    {
+      enabled: activeView === "holders",
+      staleTime: 5 * 60 * 1000,
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: false,
+    }
+  );
+
+  const flowTokenOptions = useMemo(() => {
+    const items = onchainTokensQuery.data?.items ?? [];
+    if (items.length > 0) {
+      return items.map(item => ({
+        symbol: item.symbol,
+        name: item.name,
+        tokenId: item.tokenId,
+        transferCount: item.transferCount,
+        holderCount: item.holderCount,
+      }));
+    }
+
+    return [
+      {
+        symbol: "BSB",
+        name: "BSB",
+        tokenId: 0,
+        transferCount: 0,
+        holderCount: 0,
+      },
+    ];
+  }, [onchainTokensQuery.data?.items]);
+
+  useEffect(() => {
+    if (typeof document === "undefined") return undefined;
+    const previousOverflow = document.body.style.overflow;
+    if (isFlowFullscreenOpen) {
+      document.body.style.overflow = "hidden";
+    }
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [isFlowFullscreenOpen]);
+
+  useEffect(() => {
+    if (!isFlowFullscreenOpen || typeof window === "undefined") return undefined;
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setIsFlowFullscreenOpen(false);
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isFlowFullscreenOpen]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!tokenPickerRef.current?.contains(event.target as Node)) {
+        setIsTokenPickerOpen(false);
+      }
+    };
+    window.addEventListener("mousedown", handlePointerDown);
+    return () => window.removeEventListener("mousedown", handlePointerDown);
+  }, []);
+
+  useEffect(() => {
+    if (flowTokenOptions.length === 0) return;
+    const hasSelected = flowTokenOptions.some(token => token.symbol === selectedSymbol);
+    if (!hasSelected) {
+      setSelectedSymbol(flowTokenOptions[0].symbol);
+      setTokenQuery(flowTokenOptions[0].symbol);
+    }
+  }, [flowTokenOptions, selectedSymbol]);
+
+  const selectedTokenMeta = flowTokenOptions.find(item => item.symbol === selectedSymbol) ?? flowTokenOptions[0];
+  const recommendedFlowSymbols = flowTokenOptions.slice(0, 3).map(token => token.symbol);
+  const dashboard =
+    tokenDashboards.find(item => item.symbol === selectedSymbol) ??
+    tokenDashboards.find(item => item.symbol === selectedTokenMeta?.symbol) ??
+    tokenDashboards[0];
+  const snapshot = dashboard.dates[selectedDate] ?? dashboard.dates["2026-04-15"];
+  const trendWindow = dashboard.trend90d.slice(-trendDays);
+
+  const controlSpark = seriesSlice(dashboard.trend90d, "controlRate", 7).map(item => item.value);
+  const whaleSpark = seriesSlice(dashboard.trend90d, "whaleNetOutflow", 7).map(item => item.value);
+  const holderTrendData = dashboard.trend90d.slice(-30).map(point => ({
+    date: point.shortDate,
+    holderCount: point.holderCount,
+  }));
+  const controlRateTrendData = dashboard.trend90d.slice(-30).map(point => ({
+    date: point.shortDate,
+    controlRate: point.controlRate,
+  }));
+
+  const topNData = [
+    { name: "Top 10", ratio: snapshot.top10Ratio, color: "#1D4ED8" },
+    { name: "11-50", ratio: Number((snapshot.top50Ratio - snapshot.top10Ratio).toFixed(2)), color: "#3B82F6" },
+    { name: "51-100", ratio: Number((snapshot.top100Ratio - snapshot.top50Ratio).toFixed(2)), color: "#93C5FD" },
+    { name: "Others", ratio: snapshot.othersRatio, color: "#E2E8F0" },
+  ];
+
+  const exchangeHistoryData = trendWindow.map(point => ({
+    date: point.shortDate,
+    value: point.exchangeNetFlow,
+    fill: point.exchangeNetFlow >= 0 ? RISE_RED : FALL_GREEN,
+  }));
+
+  const dexCompareData = [
+    { name: "买入", value: snapshot.totalBuyVolume, fill: RISE_RED },
+    { name: "卖出", value: snapshot.totalSellVolume, fill: FALL_GREEN },
+  ];
+  const dexTrendData = trendWindow.map((point, index) => {
+    const base = 18_000_000 + index * 120_000;
+    const buyVolume = Math.round(base * point.dexAccIdx);
+    const sellVolume = Math.round(base * (2.02 - point.dexAccIdx));
+    return {
+      date: point.shortDate,
+      buyVolume,
+      sellVolume,
+    };
+  });
+
+  const whaleFlowData = [
+    {
+      name: "今日流向",
+      交易所: snapshot.whaleToExchange,
+      新地址: snapshot.whaleToNewAddress,
+      "DEX Router": snapshot.whaleToDexRouter,
+      内部转账: snapshot.whaleInternalTransfer,
+    },
+  ];
+
+  const combinedTrendData = trendWindow.map(point => ({
+    date: point.shortDate,
+    controlRate: point.controlRate,
+    netFlowRatio: point.netFlowRatio,
+    whaleNetOutflow: point.whaleNetOutflow,
+  }));
+
+  const normalizedTokenQuery = tokenQuery.trim().toLowerCase();
+  const tokenMatches = flowTokenOptions.filter(token => {
+    if (!normalizedTokenQuery) return true;
+    const exactSelected =
+      token.symbol.toLowerCase() === selectedSymbol.toLowerCase() &&
+      normalizedTokenQuery === selectedSymbol.toLowerCase();
+    if (exactSelected) return true;
+    return token.symbol.toLowerCase().includes(normalizedTokenQuery) || token.name.toLowerCase().includes(normalizedTokenQuery);
+  });
+  const visibleTokenOptions =
+    isTokenPickerOpen && normalizedTokenQuery === selectedSymbol.toLowerCase() ? flowTokenOptions : tokenMatches;
+  const fundFlowGraph: FlowGraph = fundFlowQuery.data
+    ? {
+        nodes: fundFlowQuery.data.nodes,
+        links: fundFlowQuery.data.links.map(link => ({
+          source: link.source,
+          target: link.target,
+          amount: link.amount,
+        })),
+        summaries: fundFlowQuery.data.summaries,
+        totalAmount: fundFlowQuery.data.totalAmount,
+      }
+    : {
+        nodes: [],
+        links: [],
+        summaries: [
+          { layer: 0, title: "0 地址", count: 0, totalAmount: 0 },
+          { layer: 1, title: "第一层", count: 0, totalAmount: 0 },
+          { layer: 2, title: "第二层", count: 0, totalAmount: 0 },
+          { layer: 3, title: "第三层", count: 0, totalAmount: 0 },
+          { layer: 4, title: "第四层", count: 0, totalAmount: 0 },
+        ],
+        totalAmount: 0,
+      };
+  const hasFundFlowResult = Boolean(fundFlowQuery.data);
+  const hasFundFlowNodes = fundFlowGraph.nodes.length > 0;
+
+  useEffect(() => {
+    setCollapsedNodeIds(new Set());
+    setFlowMinAmount(0);
+  }, [selectedSymbol, selectedDate]);
+
+  useEffect(() => {
+    setHolderPage(1);
+  }, [selectedSymbol, selectedDate]);
+
+  const handleRefresh = () => {
+    fundFlowQuery.refetch();
+  };
+
+  const handleCopyHolderTokenAddress = async () => {
+    if (!holdersQuery.data?.tokenAddress) return;
+    try {
+      await navigator.clipboard.writeText(holdersQuery.data.tokenAddress);
+      setCopiedHolderTokenAddress(true);
+      window.setTimeout(() => setCopiedHolderTokenAddress(false), 1200);
+    } catch {
+      setCopiedHolderTokenAddress(false);
+    }
+  };
+
+  const handleTokenSearch = () => {
+    const match = tokenMatches[0];
+    if (match) {
+      setSelectedSymbol(match.symbol);
+      setTokenQuery(match.symbol);
+      setIsTokenPickerOpen(false);
+    }
+  };
+
+  const toggleCollapsedNode = (nodeId: string) => {
+    setCollapsedNodeIds(current => {
+      const next = new Set(current);
+      if (next.has(nodeId)) {
+        next.delete(nodeId);
+      } else {
+        next.add(nodeId);
+      }
+      return next;
+    });
+  };
+
+  return (
+    <div className="space-y-6 pb-8">
+      <section className="rounded-[28px] border border-white/80 bg-[linear-gradient(135deg,rgba(255,255,255,0.92),rgba(239,246,255,0.88))] p-5 shadow-[0_16px_40px_rgba(30,64,175,0.08)]">
+        <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+          <div>
+            <h1 className="text-3xl font-semibold tracking-tight text-[#0F172A]">链上数据分析看板</h1>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-[minmax(0,420px)_auto_auto] xl:items-center">
+            <div ref={tokenPickerRef} className="relative min-w-[280px]">
+              <label className="flex items-center gap-3 rounded-[18px] border border-[#DBEAFE] bg-white px-4 py-3 text-sm shadow-[0_6px_18px_rgba(148,163,184,0.08)]">
+                <Search className="h-4 w-4 text-[#64748B]" />
+                <input
+                  value={tokenQuery}
+                  onFocus={() => setIsTokenPickerOpen(true)}
+                  onChange={event => {
+                    setTokenQuery(event.target.value);
+                    setIsTokenPickerOpen(true);
+                  }}
+                  onKeyDown={event => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      handleTokenSearch();
+                    }
+                    if (event.key === "Escape") {
+                      setIsTokenPickerOpen(false);
+                    }
+                  }}
+                  placeholder="搜索或选择代币 Symbol / 名称"
+                  className="w-full bg-transparent font-medium text-[#0F172A] outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={() => setIsTokenPickerOpen(open => !open)}
+                  className="shrink-0 text-[#64748B] transition hover:text-[#1D4ED8]"
+                  aria-label="展开代币下拉"
+                >
+                  <ChevronDown className={cn("h-4 w-4 transition-transform", isTokenPickerOpen && "rotate-180")} />
+                </button>
+              </label>
+
+              {isTokenPickerOpen ? (
+                <div className="absolute left-0 right-0 top-[calc(100%+8px)] z-30 overflow-hidden rounded-[20px] border border-[#DBEAFE] bg-white shadow-[0_20px_40px_rgba(15,23,42,0.12)]">
+                  <div className="flex items-center justify-between border-b border-[#EFF6FF] px-4 py-2 text-xs text-[#64748B]">
+                    <span>可下拉选择链上有数据的代币</span>
+                    <span>{visibleTokenOptions.length} 个结果</span>
+                  </div>
+                  <div className="max-h-[320px] overflow-y-auto py-2">
+                    {visibleTokenOptions.length > 0 ? (
+                      visibleTokenOptions.slice(0, 20).map(token => (
+                        <button
+                          key={token.symbol}
+                          type="button"
+                          onClick={() => {
+                            setSelectedSymbol(token.symbol);
+                            setTokenQuery(token.symbol);
+                            setIsTokenPickerOpen(false);
+                          }}
+                          className={cn(
+                            "flex w-full items-center justify-between px-4 py-2.5 text-left transition hover:bg-[#F8FBFF]",
+                            token.symbol === selectedSymbol && "bg-[#EFF6FF]"
+                          )}
+                        >
+                          <div className="min-w-0">
+                            <div className="font-medium text-[#0F172A]">{token.symbol}</div>
+                            <div className="truncate text-xs text-[#64748B]">{token.name}</div>
+                          </div>
+                          <div className="ml-4 shrink-0 text-right text-[11px] text-[#94A3B8]">
+                            <div>{token.transferCount.toLocaleString()} transfers</div>
+                            <div>{token.holderCount.toLocaleString()} holders</div>
+                          </div>
+                        </button>
+                      ))
+                    ) : (
+                      <div className="px-4 py-6 text-sm text-[#64748B]">没有匹配的代币，试试别的 symbol 或名称。</div>
+                    )}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+
+            <Button className="h-[50px] rounded-[18px] bg-[#1E40AF] px-5 hover:bg-[#1D4ED8]" onClick={handleTokenSearch}>
+              <Search className="mr-2 h-4 w-4" />
+              搜索
+            </Button>
+
+            <Button className="h-[50px] rounded-[18px] bg-[#1E40AF] px-5 hover:bg-[#1D4ED8]" onClick={handleRefresh}>
+              <RefreshCw className="mr-2 h-4 w-4" />
+              刷新
+            </Button>
+          </div>
+        </div>
+
+        <div className="mt-4 flex flex-wrap items-center gap-3 text-sm text-[#64748B]">
+          {tokenMatches.slice(0, 3).map(token => (
+            <button
+              key={token.symbol}
+              onClick={() => {
+                setSelectedSymbol(token.symbol);
+                setTokenQuery(token.symbol);
+              }}
+              className={cn(
+                "rounded-full px-3 py-1.5 transition",
+                token.symbol === selectedSymbol ? "bg-[#DBEAFE] text-[#1D4ED8]" : "bg-white text-[#475569]"
+              )}
+            >
+              {token.symbol} · {token.name}
+            </button>
+          ))}
+          <span className="inline-flex items-center gap-2 rounded-full bg-white px-3 py-1.5">
+            <Database className="h-4 w-4 text-[#1D4ED8]" />
+            数据日期：{selectedDate}
+          </span>
+        </div>
+      </section>
+
+      <div className="flex flex-wrap gap-2 px-1">
+        {[
+          { key: "overview", label: "总览" },
+          { key: "fund-flow", label: "资金流图" },
+          { key: "holders", label: "Holder" },
+        ].map(item => (
+          <button
+            key={item.key}
+            onClick={() => setActiveView(item.key as "overview" | "fund-flow" | "holders")}
+            className={cn(
+              "rounded-full px-4 py-2 text-sm font-medium transition",
+              activeView === item.key
+                ? "bg-[#1E40AF] text-white shadow-[0_8px_18px_rgba(30,64,175,0.24)]"
+                : "bg-white text-[#475569] hover:bg-[#EFF6FF]"
+            )}
+          >
+            {item.label}
+          </button>
+        ))}
+      </div>
+
+      {activeView === "fund-flow" ? (
+        <div className="space-y-6">
+          <div className="flex gap-3 overflow-x-auto pb-1">
+            {fundFlowGraph.summaries.map(summary => (
+              <Card key={summary.layer} className="min-w-[170px] flex-1 rounded-[18px] border border-white/80 bg-white/90 shadow-[0_10px_24px_rgba(71,85,105,0.08)]">
+                <CardContent className="p-3">
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#64748B]">{summary.title}</div>
+                  <div className="mt-1 text-xl font-semibold text-[#0F172A]">{summary.count}</div>
+                  <div className="mt-1 text-xs text-[#475569]">流转 {compactNumber(summary.totalAmount)}</div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+
+          <div className="rounded-[24px] border border-white/80 bg-white/90 p-4 shadow-[0_14px_36px_rgba(71,85,105,0.08)]">
+            <div className="mb-4 flex flex-wrap items-center gap-3">
+              <div className="rounded-[18px] border border-[#DBEAFE] bg-[#F8FBFF] px-4 py-3">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#1D4ED8]">金额筛选</div>
+                <div className="mt-1 text-lg font-semibold text-[#0F172A]">{compactNumber(flowMinAmount)}</div>
+              </div>
+              <div className="min-w-[280px] flex-1 rounded-[18px] border border-[#E2E8F0] bg-white px-4 py-3">
+                <input
+                  type="range"
+                  min={0}
+                  max={1_200_000}
+                  step={20_000}
+                  value={flowMinAmount}
+                  onChange={event => setFlowMinAmount(Number(event.target.value))}
+                  className="w-full"
+                />
+                <div className="mt-1 text-xs text-[#64748B]">只展示大于当前阈值的转账边，点击节点右上角 `+ / -` 可展开或收起子地址</div>
+              </div>
+              <Button
+                variant="secondary"
+                className="h-11 rounded-full"
+                onClick={() => setIsFlowFullscreenOpen(true)}
+                disabled={fundFlowQuery.isLoading || fundFlowGraph.nodes.length === 0}
+              >
+                <Expand className="mr-2 h-4 w-4" />
+                全屏查看
+              </Button>
+            </div>
+            {fundFlowQuery.isLoading ? (
+              <div className="flex h-[720px] items-center justify-center rounded-[24px] border border-[#E2E8F0] bg-[#FCFDFF] text-sm text-[#64748B]">
+                正在加载真实资金流向...
+              </div>
+            ) : fundFlowQuery.error ? (
+              <div className="flex h-[720px] flex-col items-center justify-center rounded-[24px] border border-[#E2E8F0] bg-[#FCFDFF] px-6 text-center">
+                <div className="text-base font-semibold text-[#0F172A]">资金流向加载失败</div>
+                <div className="mt-2 max-w-[720px] text-sm text-[#64748B]">
+                  当前没有成功取回 {selectedSymbol} 的资金流结果。你可以点右上角刷新重试，或者先切到推荐币种继续查看。
+                </div>
+                <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
+                  {recommendedFlowSymbols.map(symbol => (
+                    <button
+                      key={symbol}
+                      type="button"
+                      onClick={() => {
+                        setSelectedSymbol(symbol);
+                        setTokenQuery(symbol);
+                      }}
+                      className="rounded-full border border-[#BFDBFE] bg-[#EFF6FF] px-4 py-2 text-sm font-medium text-[#1D4ED8]"
+                    >
+                      查看 {symbol}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : !hasFundFlowResult ? (
+              <div className="flex h-[720px] flex-col items-center justify-center rounded-[24px] border border-[#E2E8F0] bg-[#FCFDFF] px-6 text-center">
+                <div className="text-base font-semibold text-[#0F172A]">当前未取到 {selectedSymbol} 的资金流结果</div>
+                <div className="mt-2 max-w-[720px] text-sm text-[#64748B]">
+                  这通常意味着当前币种还没有映射到可用的链上合约地址，或者数据源暂时没有返回结果。
+                </div>
+                <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
+                  {recommendedFlowSymbols.map(symbol => (
+                    <button
+                      key={symbol}
+                      type="button"
+                      onClick={() => {
+                        setSelectedSymbol(symbol);
+                        setTokenQuery(symbol);
+                      }}
+                      className="rounded-full border border-[#BFDBFE] bg-[#EFF6FF] px-4 py-2 text-sm font-medium text-[#1D4ED8]"
+                    >
+                      试试 {symbol}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : !hasFundFlowNodes ? (
+              <div className="flex h-[720px] flex-col items-center justify-center rounded-[24px] border border-[#E2E8F0] bg-[#FCFDFF] px-6 text-center">
+                <div className="text-base font-semibold text-[#0F172A]">{selectedSymbol} 当前没有可展示的资金流路径</div>
+                <div className="mt-2 max-w-[720px] text-sm text-[#64748B]">
+                  当前币种已经取回结果，但在所选日期和当前阈值下还没有可画出的分发路径。你可以先保持金额筛选为 0，或者切到推荐币种查看真实样例。
+                </div>
+                <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
+                  {recommendedFlowSymbols.map(symbol => (
+                    <button
+                      key={symbol}
+                      type="button"
+                      onClick={() => {
+                        setSelectedSymbol(symbol);
+                        setTokenQuery(symbol);
+                      }}
+                      className="rounded-full border border-[#BFDBFE] bg-[#EFF6FF] px-4 py-2 text-sm font-medium text-[#1D4ED8]"
+                    >
+                      查看 {symbol}
+                    </button>
+                  ))}
+                </div>
+                <div className="mt-3 text-xs text-[#94A3B8]">
+                  推荐样例：{recommendedFlowSymbols.join(" / ")}
+                </div>
+              </div>
+            ) : !isFlowFullscreenOpen ? (
+              <FundFlowCanvas
+                graph={fundFlowGraph}
+                minAmount={flowMinAmount}
+                collapsedNodeIds={collapsedNodeIds}
+                onToggleCollapse={toggleCollapsedNode}
+              />
+            ) : (
+              <div className="flex h-[720px] items-center justify-center rounded-[24px] border border-[#E2E8F0] bg-[#FCFDFF] text-sm text-[#64748B]">
+                已切换到全屏查看
+              </div>
+            )}
+          </div>
+
+        </div>
+      ) : null}
+
+      {activeView === "holders" ? (
+        <div className="space-y-6">
+          <div className="grid gap-3 md:grid-cols-4">
+            <Card className="rounded-[18px] border border-white/80 bg-white/90 shadow-[0_10px_24px_rgba(71,85,105,0.08)]">
+              <CardContent className="p-3.5">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#64748B]">Snapshot</div>
+                <div className="mt-1 text-base font-semibold text-[#0F172A]">{holdersQuery.data?.snapshotDate ?? "—"}</div>
+              </CardContent>
+            </Card>
+            <Card className="rounded-[18px] border border-white/80 bg-white/90 shadow-[0_10px_24px_rgba(71,85,105,0.08)]">
+              <CardContent className="p-3.5">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#64748B]">总 Holder</div>
+                <div className="mt-1 text-base font-semibold text-[#0F172A]">{holdersQuery.data?.total?.toLocaleString() ?? "—"}</div>
+              </CardContent>
+            </Card>
+            <Card className="rounded-[18px] border border-white/80 bg-white/90 shadow-[0_10px_24px_rgba(71,85,105,0.08)]">
+              <CardContent className="p-3.5">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#64748B]">Token Address</div>
+                {holdersQuery.data?.tokenAddress ? (
+                  <div className="mt-1 flex items-center gap-2">
+                    <a
+                      href={formatBscScanAddress(holdersQuery.data.tokenAddress)}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="min-w-0 truncate text-sm font-semibold text-[#1D4ED8] hover:text-[#1E40AF] hover:underline"
+                      title={holdersQuery.data.tokenAddress}
+                    >
+                      {formatAddressDisplay(holdersQuery.data.tokenAddress)}
+                    </a>
+                    <button
+                      type="button"
+                      onClick={handleCopyHolderTokenAddress}
+                      className="shrink-0 text-[#64748B] transition hover:text-[#1D4ED8]"
+                      title={copiedHolderTokenAddress ? "已复制" : "复制地址"}
+                    >
+                      <Copy className="h-4 w-4" />
+                    </button>
+                  </div>
+                ) : (
+                  <div className="mt-1 text-sm font-semibold text-[#0F172A]">—</div>
+                )}
+              </CardContent>
+            </Card>
+            <Card className="rounded-[18px] border border-white/80 bg-white/90 shadow-[0_10px_24px_rgba(71,85,105,0.08)]">
+              <CardContent className="p-3.5">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#64748B]">分页</div>
+                <div className="mt-1 text-base font-semibold text-[#0F172A]">
+                  {holdersQuery.data ? `${holdersQuery.data.page} / ${Math.max(1, Math.ceil(holdersQuery.data.total / holdersQuery.data.pageSize))}` : "—"}
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+
+          <div className="rounded-[24px] border border-white/80 bg-white/90 p-4 shadow-[0_14px_36px_rgba(71,85,105,0.08)]">
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <div className="text-lg font-semibold text-[#0F172A]">Holder 列表</div>
+                <div className="mt-1 text-sm text-[#64748B]">展示当前币种最近一期快照中的地址余额、标签和变化信息</div>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="secondary"
+                  className="h-10 rounded-full"
+                  disabled={holderPage <= 1 || holdersQuery.isLoading}
+                  onClick={() => setHolderPage(current => Math.max(1, current - 1))}
+                >
+                  上一页
+                </Button>
+                <Button
+                  variant="secondary"
+                  className="h-10 rounded-full"
+                  disabled={
+                    holdersQuery.isLoading ||
+                    !holdersQuery.data ||
+                    holderPage >= Math.max(1, Math.ceil(holdersQuery.data.total / holdersQuery.data.pageSize))
+                  }
+                  onClick={() =>
+                    setHolderPage(current =>
+                      holdersQuery.data ? Math.min(Math.ceil(holdersQuery.data.total / holdersQuery.data.pageSize), current + 1) : current
+                    )
+                  }
+                >
+                  下一页
+                </Button>
+              </div>
+            </div>
+
+            {holdersQuery.isLoading ? (
+              <div className="flex h-[520px] items-center justify-center rounded-[20px] border border-[#E2E8F0] bg-[#FCFDFF] text-sm text-[#64748B]">
+                正在加载 Holder 数据...
+              </div>
+            ) : holdersQuery.error ? (
+              <div className="flex h-[520px] items-center justify-center rounded-[20px] border border-[#E2E8F0] bg-[#FCFDFF] text-sm text-[#64748B]">
+                Holder 数据加载失败
+              </div>
+            ) : !holdersQuery.data || holdersQuery.data.items.length === 0 ? (
+              <div className="flex h-[520px] items-center justify-center rounded-[20px] border border-[#E2E8F0] bg-[#FCFDFF] text-sm text-[#64748B]">
+                当前币种暂无 Holder 快照数据
+              </div>
+            ) : (
+              <div className="overflow-hidden rounded-[20px] border border-[#E2E8F0] bg-white">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>#</TableHead>
+                      <TableHead>地址</TableHead>
+                      <TableHead>标签</TableHead>
+                      <TableHead>类型</TableHead>
+                      <TableHead className="text-right">余额</TableHead>
+                      <TableHead className="text-right">24h 变化</TableHead>
+                      <TableHead className="text-right">7d 变化</TableHead>
+                      <TableHead className="text-center">新地址</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {holdersQuery.data.items.map((item, index) => (
+                      <TableRow key={`${item.address}-${index}`}>
+                        <TableCell>{(((holdersQuery.data?.page ?? 1) - 1) * (holdersQuery.data?.pageSize ?? 20) + index + 1).toLocaleString()}</TableCell>
+                        <TableCell>
+                          <button
+                            type="button"
+                            className="font-mono text-sm text-[#1D4ED8] underline"
+                            onClick={() => window.open(formatBscScanAddress(item.address), "_blank", "noopener,noreferrer")}
+                          >
+                            {formatAddressDisplay(item.address)}
+                          </button>
+                        </TableCell>
+                        <TableCell>{item.label}</TableCell>
+                        <TableCell>{item.kind}</TableCell>
+                        <TableCell className="text-right">{item.balance != null ? compactNumber(item.balance) : "—"}</TableCell>
+                        <TableCell className={cn("text-right", item.balanceChange24h != null && item.balanceChange24h >= 0 ? "text-[#2563EB]" : "text-[#F59E0B]")}>
+                          {item.balanceChange24h != null ? `${item.balanceChange24h >= 0 ? "+" : ""}${compactNumber(item.balanceChange24h)}` : "—"}
+                        </TableCell>
+                        <TableCell className={cn("text-right", item.balanceChange7d != null && item.balanceChange7d >= 0 ? "text-[#2563EB]" : "text-[#F59E0B]")}>
+                          {item.balanceChange7d != null ? `${item.balanceChange7d >= 0 ? "+" : ""}${compactNumber(item.balanceChange7d)}` : "—"}
+                        </TableCell>
+                        <TableCell className="text-center">{item.isNew ? "是" : "—"}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+          </div>
+        </div>
+      ) : null}
+
+      {isFlowFullscreenOpen && fundFlowGraph.nodes.length > 0 ? (
+        <div className="fixed inset-0 z-[120] bg-slate-950/38 backdrop-blur-[2px]">
+          <div className="absolute inset-3 flex min-h-0 flex-col overflow-hidden rounded-[28px] border border-white/60 bg-[#f4f8ff] shadow-[0_25px_80px_rgba(15,23,42,0.25)]">
+            <div className="flex shrink-0 items-center justify-between border-b border-[#D8E5F5] px-6 py-4">
+              <div>
+                <div className="text-xl font-semibold text-[#0F172A]">资金流图全屏查看</div>
+                <div className="mt-1 text-sm text-[#64748B]">
+                  {selectedSymbol} · {selectedDate} · 当前阈值 {compactNumber(flowMinAmount)}
+                </div>
+              </div>
+              <div className="flex items-center gap-3">
+                <div className="hidden text-sm text-[#64748B] lg:block">
+                  可见地址 {fundFlowGraph.nodes.length} · 总边 {fundFlowGraph.links.length}
+                </div>
+                <Button variant="secondary" className="h-11 rounded-full" onClick={() => setIsFlowFullscreenOpen(false)}>
+                  <X className="mr-2 h-4 w-4" />
+                  关闭
+                </Button>
+              </div>
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-hidden p-4">
+              <FundFlowCanvas
+                graph={fundFlowGraph}
+                minAmount={flowMinAmount}
+                collapsedNodeIds={collapsedNodeIds}
+                onToggleCollapse={toggleCollapsedNode}
+                viewportHeight={typeof window !== "undefined" ? Math.max(640, window.innerHeight - 170) : 760}
+              />
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {activeView === "overview" ? (
+        <>
+      <DashboardCard
+        title="A. 代币基础信息"
+        subtitle="顶部快览区"
+        action={<span className="rounded-full bg-[#EFF6FF] px-3 py-1 text-xs font-medium text-[#1D4ED8]">Snapshot</span>}
+      >
+        <div className="grid gap-5 xl:grid-cols-[minmax(0,1.3fr)_320px]">
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            <div className="rounded-[20px] border border-[#E2E8F0] bg-[linear-gradient(180deg,#ffffff_0%,#f8fbff_100%)] p-4 md:col-span-2">
+              <div className="flex items-center gap-4">
+                <div className="flex h-16 w-16 items-center justify-center rounded-[20px] bg-[#DBEAFE] text-2xl font-semibold text-[#1D4ED8]">
+                  {dashboard.logo}
+                </div>
+                <div>
+                  <div className="text-2xl font-semibold text-[#0F172A]">{snapshot.tokenName}</div>
+                  <div className="mt-1 text-sm text-[#64748B]">{snapshot.tokenSymbol}</div>
+                </div>
+              </div>
+              <div className="mt-5 flex flex-wrap items-end gap-3">
+                <div className="text-4xl font-semibold tracking-tight text-[#0F172A]">{compactCurrency(snapshot.priceUsd)}</div>
+                <div className={cn("pb-1 text-lg font-medium", percentTone(snapshot.priceChange24h))}>
+                  {snapshot.priceChange24h > 0 ? "+" : ""}
+                  {formatPercent(snapshot.priceChange24h)}
+                </div>
+              </div>
+            </div>
+
+            <MetricTile label="总发行量" value={compactNumber(snapshot.totalSupply)} tooltip={snapshot.totalSupply.toLocaleString()} />
+            <MetricTile
+              label="流通量"
+              value={`${compactNumber(snapshot.circulatingSupply)} / ${formatPercent(
+                snapshot.circulatingSupply / snapshot.totalSupply * 100
+              )}`}
+              tooltip={snapshot.circulatingSupply.toLocaleString()}
+            />
+            <MetricTile label="市值 / FDV" value={`${compactCurrency(snapshot.marketCap)} / ${compactCurrency(snapshot.fdv)}`} />
+            <MetricTile
+              label="持币人数"
+              value={snapshot.holderCount.toLocaleString()}
+              delta={snapshot.holderCountChange1d / Math.max(snapshot.holderCount - snapshot.holderCountChange1d, 1) * 100}
+            />
+            <MetricTile
+              label="控盘率"
+              value={formatPercent(snapshot.controlRate)}
+              delta={snapshot.controlRateChange1d}
+              sparkline={controlSpark}
+              valueClassName="text-[#1D4ED8]"
+            />
+          </div>
+
+          <div className="rounded-[22px] border border-[#E2E8F0] bg-[#F8FAFC] p-4">
+            <div className="text-sm font-semibold text-[#0F172A]">Top N 占比结构</div>
+            <div className="mt-4 space-y-4">
+              <div className="flex h-5 overflow-hidden rounded-full bg-[#E2E8F0]">
+                {topNData.map(item => (
+                  <div key={item.name} style={{ width: `${item.ratio}%`, backgroundColor: item.color }} />
+                ))}
+              </div>
+              <div className="space-y-3">
+                {topNData.map(item => (
+                  <div key={item.name} className="flex items-center justify-between text-sm">
+                    <div className="flex items-center gap-2 text-[#334155]">
+                      <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: item.color }} />
+                      {item.name}
+                    </div>
+                    <div className="font-medium text-[#0F172A]">{formatPercent(item.ratio)}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      </DashboardCard>
+
+      <div className="grid gap-6 xl:grid-cols-2">
+        <DashboardCard title="B. 控盘结构" subtitle="显性 / 隐性 / 间接 / 自由流通">
+          <div className="grid gap-5">
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              <MetricTile label="显性控盘" value={compactNumber(snapshot.explicitControl)} />
+              <MetricTile label="隐性控盘" value={compactNumber(snapshot.implicitControl)} />
+              <MetricTile label="间接控盘" value={compactNumber(snapshot.indirectControl)} />
+              <MetricTile label="合计控盘" value={compactNumber(snapshot.controlBalanceTotal)} />
+            </div>
+            <div className="rounded-[22px] border border-[#DBEAFE] bg-[#F8FBFF] p-4">
+              <div className="mb-4 flex items-center justify-between">
+                <div>
+                  <div className="text-sm font-semibold text-[#0F172A]">控盘率 30 天趋势</div>
+                  <div className="mt-1 text-xs text-[#64748B]">带坐标轴，便于看阶段变化</div>
+                </div>
+                <div className="text-3xl font-semibold text-[#1E3A8A]">{formatPercent(snapshot.controlRate)}</div>
+              </div>
+              <div className="h-[300px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={controlRateTrendData}>
+                    <CartesianGrid stroke="#E2E8F0" strokeDasharray="3 3" />
+                    <XAxis dataKey="date" tick={{ fill: "#64748B", fontSize: 12 }} />
+                    <YAxis tick={{ fill: "#64748B", fontSize: 12 }} domain={["dataMin - 1", "dataMax + 1"]} />
+                    <Tooltip formatter={(value: number) => formatPercent(value)} />
+                    <Line type="monotone" dataKey="controlRate" stroke={DEEP_BLUE} strokeWidth={3} dot={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          </div>
+        </DashboardCard>
+
+        <DashboardCard title="C. 持仓集中度" subtitle="Top 10 / 50 / 100 地址与持币人数趋势">
+          <div className="grid gap-5">
+            <div className="grid gap-3 sm:grid-cols-3">
+              <MetricTile label="Top 10 持有量" value={`${compactNumber(snapshot.top10Balance)} / ${formatPercent(snapshot.top10Ratio)}`} />
+              <MetricTile label="Top 50 持有量" value={`${compactNumber(snapshot.top50Balance)} / ${formatPercent(snapshot.top50Ratio)}`} />
+              <MetricTile label="Top 100 持有量" value={`${compactNumber(snapshot.top100Balance)} / ${formatPercent(snapshot.top100Ratio)}`} />
+            </div>
+            <div className="rounded-[22px] border border-[#E2E8F0] bg-[#F8FAFC] p-4">
+              <div className="mb-4 flex items-center justify-between">
+                <div>
+                  <div className="text-sm font-semibold text-[#0F172A]">持币人数 30 天柱形图</div>
+                  <div className="mt-1 text-xs text-[#64748B]">用日维度看新增持有人变化更直观</div>
+                </div>
+                <div className="text-3xl font-semibold text-[#1D4ED8]">{snapshot.holderCount.toLocaleString()}</div>
+              </div>
+              <div className="h-[320px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={holderTrendData}>
+                    <CartesianGrid stroke="#E2E8F0" strokeDasharray="3 3" />
+                    <XAxis dataKey="date" tick={{ fill: "#64748B", fontSize: 12 }} interval={2} />
+                    <YAxis tick={{ fill: "#64748B", fontSize: 12 }} tickFormatter={value => compactNumber(Number(value), 1)} />
+                    <Tooltip formatter={(value: number) => value.toLocaleString()} />
+                    <Bar dataKey="holderCount" fill="#3B82F6" radius={[6, 6, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          </div>
+        </DashboardCard>
+      </div>
+
+      <DashboardCard
+        title="D. 交易所流向（链上口径）"
+        subtitle={`数据口径：链上 Transfer 事件，交易所钱包标签已覆盖 ${snapshot.exchangeCoverageCount} 个地址`}
+      >
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+          <MetricTile label="今日流入" value={compactNumber(snapshot.exchangeInflow)} />
+          <MetricTile label="今日流出" value={compactNumber(snapshot.exchangeOutflow)} />
+          <MetricTile
+            label="净流入"
+            value={compactNumber(snapshot.exchangeNetFlow)}
+            valueClassName={snapshot.exchangeNetFlow >= 0 ? "text-[#EF4444]" : "text-[#10B981]"}
+          />
+          <MetricTile label="净流入 / 流通量" value={formatPercent(snapshot.netFlowRatio)} valueClassName={snapshot.netFlowRatio >= 0 ? "text-[#EF4444]" : "text-[#10B981]"} />
+          <MetricTile
+            label="连续净流动天数"
+            value={`${Math.abs(snapshot.netFlowStreak)} 天`}
+            valueClassName={snapshot.netFlowStreak >= 0 ? "text-[#EF4444]" : "text-[#10B981]"}
+          />
+        </div>
+        <div className="mt-5 h-[290px]">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={exchangeHistoryData}>
+              <CartesianGrid stroke="#E2E8F0" strokeDasharray="3 3" />
+              <XAxis dataKey="date" tick={{ fill: "#64748B", fontSize: 12 }} />
+              <YAxis tick={{ fill: "#64748B", fontSize: 12 }} tickFormatter={value => compactNumber(Number(value), 1)} />
+              <Tooltip formatter={(value: number) => compactNumber(value)} />
+              <ReferenceLine y={0} stroke="#94A3B8" />
+              <Bar dataKey="value" radius={[8, 8, 8, 8]}>
+                {exchangeHistoryData.map(item => (
+                  <Cell key={item.date} fill={item.fill} />
+                ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </DashboardCard>
+
+      <div className="grid gap-6 xl:grid-cols-2">
+        <DashboardCard title="F. DEX 买卖结构" subtitle="去掉吸筹指数，只保留更清楚的买卖对比图">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <MetricTile label="总买入量" value={compactCurrency(snapshot.totalBuyVolume)} />
+            <MetricTile label="总卖出量" value={compactCurrency(snapshot.totalSellVolume)} />
+            <MetricTile label="买入地址数" value={snapshot.buyAddressCount.toLocaleString()} />
+            <MetricTile label="卖出地址数" value={snapshot.sellAddressCount.toLocaleString()} />
+            <MetricTile label="Top5 买入量" value={compactCurrency(snapshot.top5BuyVolume)} />
+            <MetricTile label="Top5 卖出量" value={compactCurrency(snapshot.top5SellVolume)} />
+          </div>
+          <div className="mt-5 space-y-6">
+            <div className="rounded-[22px] border border-[#F1F5F9] bg-[#FCFDFF] p-4">
+              <div className="mb-4 text-sm font-semibold text-[#0F172A]">今日总买入 vs 总卖出</div>
+              <div className="h-[260px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={dexCompareData}>
+                    <CartesianGrid stroke="#E2E8F0" strokeDasharray="3 3" />
+                    <XAxis dataKey="name" tick={{ fill: "#64748B", fontSize: 12 }} />
+                    <YAxis tick={{ fill: "#64748B", fontSize: 12 }} tickFormatter={value => compactCurrency(Number(value))} />
+                    <Tooltip formatter={(value: number) => compactCurrency(value)} />
+                    <Bar dataKey="value" radius={[10, 10, 0, 0]}>
+                      {dexCompareData.map(item => (
+                        <Cell key={item.name} fill={item.fill} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+            <div className="rounded-[22px] border border-[#F1F5F9] bg-[#FCFDFF] p-4">
+              <div className="mb-4 text-sm font-semibold text-[#0F172A]">近 {trendDays} 天买卖量趋势</div>
+              <div className="h-[280px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={dexTrendData}>
+                    <CartesianGrid stroke="#E2E8F0" strokeDasharray="3 3" />
+                    <XAxis dataKey="date" tick={{ fill: "#64748B", fontSize: 12 }} />
+                    <YAxis tick={{ fill: "#64748B", fontSize: 12 }} tickFormatter={value => compactCurrency(Number(value))} />
+                    <Tooltip formatter={(value: number) => compactCurrency(value)} />
+                    <Legend />
+                    <Line type="monotone" dataKey="buyVolume" stroke={RISE_RED} strokeWidth={3} dot={false} name="买入量" />
+                    <Line type="monotone" dataKey="sellVolume" stroke={FALL_GREEN} strokeWidth={3} dot={false} name="卖出量" />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          </div>
+        </DashboardCard>
+
+        <DashboardCard title="G. 大户行为" subtitle="定义：持仓 Top 100 地址">
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+            <MetricTile label="大户地址数" value={snapshot.whaleAddressCount.toString()} />
+            <MetricTile label="大户总持仓" value={compactNumber(snapshot.whaleTotalBalance)} />
+            <MetricTile label="今日转出" value={compactNumber(snapshot.whaleTotalOutflow)} />
+            <MetricTile label="今日转入" value={compactNumber(snapshot.whaleTotalInflow)} />
+            <MetricTile
+              label="净转出"
+              value={compactNumber(snapshot.whaleNetOutflow)}
+              sparkline={whaleSpark}
+              valueClassName={snapshot.whaleNetOutflow >= 0 ? "text-[#F59E0B]" : "text-[#2563EB]"}
+            />
+          </div>
+          <div className="mt-5 space-y-6">
+            <div className="rounded-[22px] border border-[#F1F5F9] bg-[#FCFDFF] p-4">
+              <div className="mb-4 text-sm font-semibold text-[#0F172A]">大户流向分布</div>
+              <div className="h-[280px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={whaleFlowData}>
+                    <CartesianGrid stroke="#E2E8F0" strokeDasharray="3 3" />
+                    <XAxis dataKey="name" tick={{ fill: "#64748B", fontSize: 12 }} />
+                    <YAxis tick={{ fill: "#64748B", fontSize: 12 }} tickFormatter={value => compactNumber(Number(value), 1)} />
+                    <Tooltip formatter={(value: number) => compactNumber(value)} />
+                    <Legend />
+                    <Bar dataKey="交易所" stackId="a" fill="#EF4444" radius={[8, 8, 0, 0]} />
+                    <Bar dataKey="新地址" stackId="a" fill="#2563EB" radius={[8, 8, 0, 0]} />
+                    <Bar dataKey="DEX Router" stackId="a" fill="#10B981" radius={[8, 8, 0, 0]} />
+                    <Bar dataKey="内部转账" stackId="a" fill="#94A3B8" radius={[8, 8, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+            <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_260px]">
+              <div className="rounded-[22px] border border-[#F1F5F9] bg-[#FCFDFF] p-4">
+                <div className="mb-4 text-sm font-semibold text-[#0F172A]">大户净转出 30 天趋势</div>
+                <div className="h-[280px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={trendWindow.map(point => ({ date: point.shortDate, whaleNetOutflow: point.whaleNetOutflow }))}>
+                      <CartesianGrid stroke="#E2E8F0" strokeDasharray="3 3" />
+                      <XAxis dataKey="date" tick={{ fill: "#64748B", fontSize: 12 }} />
+                      <YAxis tick={{ fill: "#64748B", fontSize: 12 }} tickFormatter={value => compactNumber(Number(value), 1)} />
+                      <Tooltip formatter={(value: number) => compactNumber(value)} />
+                      <ReferenceLine y={0} stroke="#94A3B8" />
+                      <Line type="monotone" dataKey="whaleNetOutflow" stroke={DISTRIBUTION_NEGATIVE} strokeWidth={3} dot={false} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+              <div className="rounded-[20px] border border-[#E2E8F0] bg-[#F8FAFC] p-4 text-sm">
+                <div className="space-y-3">
+                  <div className="flex justify-between"><span className="text-[#64748B]">→ 交易所</span><span className="font-medium text-[#0F172A]">{compactNumber(snapshot.whaleToExchange)}</span></div>
+                  <div className="flex justify-between"><span className="text-[#64748B]">→ 新地址</span><span className="font-medium text-[#0F172A]">{compactNumber(snapshot.whaleToNewAddress)}</span></div>
+                  <div className="flex justify-between"><span className="text-[#64748B]">→ DEX Router</span><span className="font-medium text-[#0F172A]">{compactNumber(snapshot.whaleToDexRouter)}</span></div>
+                  <div className="flex justify-between"><span className="text-[#64748B]">转出比例</span><span className="font-medium text-[#0F172A]">{formatPercent(snapshot.whaleOutRatio)}</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </DashboardCard>
+      </div>
+
+      <DashboardCard title="H. 新增 / 流失 Top 10 持仓地址" subtitle="点击地址可跳转 Etherscan，后续可接地址深挖页">
+        <div className="grid gap-6 xl:grid-cols-2">
+          <div className="rounded-[22px] border border-[#DBEAFE] bg-[#F8FBFF] p-4">
+            <div className="mb-3 text-sm font-semibold text-[#0F172A]">今日新进 Top 的地址</div>
+            <Table>
+              <TableHeader>
+                <TableRow className="border-[#DBEAFE]">
+                  <TableHead>地址</TableHead>
+                  <TableHead>标签</TableHead>
+                  <TableHead className="text-right">新增余额</TableHead>
+                  <TableHead>首次出现</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {snapshot.increaseRows.map(row => (
+                  <TableRow key={row.address} className="border-[#E2E8F0]">
+                    <TableCell>
+                      <a className="font-medium text-[#1D4ED8] hover:underline" href={row.href} target="_blank" rel="noreferrer">
+                        {row.address}
+                      </a>
+                    </TableCell>
+                    <TableCell>{row.label}</TableCell>
+                    <TableCell className="text-right font-medium">{compactNumber(row.changeBalance)}</TableCell>
+                    <TableCell>{row.firstSeen}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+
+          <div className="rounded-[22px] border border-[#FDE68A] bg-[#FFFDF5] p-4">
+            <div className="mb-3 text-sm font-semibold text-[#0F172A]">今日 Top 中余额减少最多的地址</div>
+            <Table>
+              <TableHeader>
+                <TableRow className="border-[#FDE68A]">
+                  <TableHead>地址</TableHead>
+                  <TableHead>标签</TableHead>
+                  <TableHead className="text-right">减少余额</TableHead>
+                  <TableHead className="text-right">当前余额</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {snapshot.decreaseRows.map(row => (
+                  <TableRow key={row.address} className="border-[#E2E8F0]">
+                    <TableCell>
+                      <a className="font-medium text-[#1D4ED8] hover:underline" href={row.href} target="_blank" rel="noreferrer">
+                        {row.address}
+                      </a>
+                    </TableCell>
+                    <TableCell>{row.label}</TableCell>
+                    <TableCell className="text-right font-medium">{compactNumber(row.changeBalance)}</TableCell>
+                    <TableCell className="text-right">{compactNumber(row.currentBalance ?? 0)}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        </div>
+      </DashboardCard>
+
+      <DashboardCard title="I. 重点标签地址净变化" subtitle="筹码流向采用蓝 / 橙，避免涨跌红绿歧义">
+        <div className="space-y-4">
+          {snapshot.tagNetChanges.map(item => (
+            <div key={item.label} className="grid items-center gap-3 md:grid-cols-[180px_minmax(0,1fr)_100px]">
+              <div className="text-sm font-medium text-[#334155]">{item.label}</div>
+              <div className="relative h-4 overflow-hidden rounded-full bg-[#E2E8F0]">
+                <div
+                  className="absolute left-1/2 top-0 h-full"
+                  style={{
+                    width: `${Math.min(Math.abs(item.value) / 40_000, 50)}%`,
+                    transform: item.value >= 0 ? "translateX(0)" : "translateX(-100%)",
+                    backgroundColor: item.value >= 0 ? ACCUMULATION_POSITIVE : DISTRIBUTION_NEGATIVE,
+                  }}
+                />
+                <div className="absolute left-1/2 top-0 h-full w-px bg-white" />
+              </div>
+              <div className={cn("text-right text-sm font-semibold", item.value >= 0 ? "text-[#2563EB]" : "text-[#C2410C]")}>
+                {item.value > 0 ? "+" : ""}
+                {compactNumber(item.value)}
+              </div>
+            </div>
+          ))}
+        </div>
+      </DashboardCard>
+
+      <DashboardCard
+        title="J. 30 天多指标综合趋势"
+        subtitle='找"信号共振"：净流入、控盘率和大户净转出一起看'
+        action={
+          <div className="flex items-center gap-2 rounded-full bg-[#F8FAFC] p-1">
+            {[30, 60, 90].map(days => (
+              <button
+                key={days}
+                onClick={() => setTrendDays(days as 30 | 60 | 90)}
+                className={cn(
+                  "rounded-full px-3 py-1 text-xs font-medium transition",
+                  trendDays === days ? "bg-[#1E40AF] text-white" : "text-[#475569]"
+                )}
+              >
+                {days} 天
+              </button>
+            ))}
+          </div>
+        }
+      >
+        <div className="flex flex-wrap gap-3">
+          {trendConfig.map(item => (
+            <label key={item.key} className="inline-flex items-center gap-2 rounded-full border border-[#E2E8F0] bg-[#F8FAFC] px-3 py-2 text-sm text-[#334155]">
+              <Checkbox
+                checked={visibleTrendKeys.includes(item.key)}
+                onCheckedChange={checked =>
+                  setVisibleTrendKeys(current =>
+                    checked ? [...current, item.key] : current.filter(key => key !== item.key)
+                  )
+                }
+              />
+              <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: item.color }} />
+              {item.label}
+            </label>
+          ))}
+        </div>
+
+        <div className="mt-5 h-[360px]">
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={combinedTrendData}>
+              <CartesianGrid stroke="#E2E8F0" strokeDasharray="3 3" />
+              <XAxis dataKey="date" tick={{ fill: "#64748B", fontSize: 12 }} />
+              <YAxis yAxisId="left" tick={{ fill: "#64748B", fontSize: 12 }} />
+              <YAxis yAxisId="right" orientation="right" tick={{ fill: "#64748B", fontSize: 12 }} />
+              <Tooltip />
+              <Legend />
+              {visibleTrendKeys.includes("controlRate") ? (
+                <Line yAxisId="left" type="monotone" dataKey="controlRate" stroke={DEEP_BLUE} strokeWidth={2.4} dot={false} name="控盘率" />
+              ) : null}
+              {visibleTrendKeys.includes("netFlowRatio") ? (
+                <Line yAxisId="right" type="monotone" dataKey="netFlowRatio" stroke={DISTRIBUTION_NEGATIVE} strokeWidth={2.4} dot={false} name="净流入比例" />
+              ) : null}
+              {visibleTrendKeys.includes("whaleNetOutflow") ? (
+                <Line yAxisId="right" type="monotone" dataKey="whaleNetOutflow" stroke={RISE_RED} strokeWidth={2.4} dot={false} name="大户净转出" />
+              ) : null}
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      </DashboardCard>
+
+      <div className="grid gap-4 md:grid-cols-3">
+        <div className="rounded-[22px] border border-[#DBEAFE] bg-[#EFF6FF] p-4">
+          <div className="flex items-center gap-2 text-sm font-semibold text-[#1D4ED8]">
+            <TrendingUp className="h-4 w-4" />
+            吸筹信号
+          </div>
+          <div className="mt-2 text-sm leading-6 text-[#475569]">
+            {snapshot.exchangeNetFlow < 0 && snapshot.totalBuyVolume > snapshot.totalSellVolume
+              ? "交易所净流出且 DEX 买入量高于卖出量，说明链上承接相对更强。"
+              : "当前吸筹信号一般，建议继续观察交易所净流出和标签地址增持是否同步。"}
+          </div>
+        </div>
+        <div className="rounded-[22px] border border-[#FDE68A] bg-[#FFFBEA] p-4">
+          <div className="flex items-center gap-2 text-sm font-semibold text-[#B45309]">
+            <Droplets className="h-4 w-4" />
+            派发风险
+          </div>
+          <div className="mt-2 text-sm leading-6 text-[#475569]">
+            {snapshot.whaleNetOutflow > 0
+              ? "大户净转出仍在高位，若同步流向交易所和 DEX Router，需要警惕派发窗口。"
+              : "大户净转出尚未形成持续压力，风险更多来自局部地址减持。"}
+          </div>
+        </div>
+        <div className="rounded-[22px] border border-[#E2E8F0] bg-white p-4">
+          <div className="flex items-center gap-2 text-sm font-semibold text-[#0F172A]">
+            <TrendingDown className="h-4 w-4" />
+            人工判断提示
+          </div>
+          <div className="mt-2 text-sm leading-6 text-[#475569]">
+            看板只呈现原始信号，不做自动评分。建议重点对照净流向、标签地址净变化和大户路径。
+          </div>
+        </div>
+        </div>
+        </>
+      ) : null}
+    </div>
+  );
+}

@@ -1,0 +1,9 @@
+{
+  "query": "CREATE TABLE IF NOT EXISTS `tokenUnlocks` (\n  `id` int AUTO_INCREMENT NOT NULL,\n  `coinId` varchar(64) NOT NULL,\n  `unlockDate` timestamp NOT NULL,\n  `unlockAmount` bigint NOT NULL,\n  `percentageOfTotalSupply` int,\n  `recipientCategory` varchar(128),\n  `createdAt` timestamp NOT NULL DEFAULT (now()),\n  CONSTRAINT `tokenUnlocks_id` PRIMARY KEY(`id`)\n);",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway02.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 46UYhmpGTqE11Z9.d5fbaac102f4 --database V3tTn6AAnVkNBLqhLMoSeu --execute CREATE TABLE IF NOT EXISTS `tokenUnlocks` (\n  `id` int AUTO_INCREMENT NOT NULL,\n  `coinId` varchar(64) NOT NULL,\n  `unlockDate` timestamp NOT NULL,\n  `unlockAmount` bigint NOT NULL,\n  `percentageOfTotalSupply` int,\n  `recipientCategory` varchar(128),\n  `createdAt` timestamp NOT NULL DEFAULT (now()),\n  CONSTRAINT `tokenUnlocks_id` PRIMARY KEY(`id`)\n);",
+  "rows": [],
+  "messages": [],
+  "stdout": "",
+  "stderr": "",
+  "execution_time_ms": 1514
+}
