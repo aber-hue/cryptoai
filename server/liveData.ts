@@ -1,6 +1,7 @@
 import { BigQuery } from "@google-cloud/bigquery";
 import { createPool, type Pool, type PoolOptions, type RowDataPacket } from "mysql2/promise";
 import { ENV } from "./_core/env";
+import { getFeaturePool } from "./featureDb";
 
 type MarketListInput = {
   query?: string;
@@ -11,6 +12,103 @@ type MarketListInput = {
   page?: number;
   pageSize?: number;
 };
+
+type MarketWatchlistItem = {
+  symbol: string;
+  tokenId: number | null;
+  tokenName: string | null;
+  createdAt: string;
+};
+
+let marketWatchlistTableReady: Promise<void> | null = null;
+
+async function ensureMarketWatchlistTable() {
+  if (!marketWatchlistTableReady) {
+    marketWatchlistTableReady = (async () => {
+      const featurePool = getFeaturePool();
+      await featurePool.query(`
+        CREATE TABLE IF NOT EXISTS market_watchlist_tokens (
+          id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+          token_symbol VARCHAR(32) NOT NULL,
+          token_id BIGINT NULL,
+          token_name VARCHAR(255) NULL,
+          created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          UNIQUE KEY uq_market_watchlist_symbol (token_symbol)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+      `);
+    })().catch(error => {
+      marketWatchlistTableReady = null;
+      throw error;
+    });
+  }
+
+  await marketWatchlistTableReady;
+}
+
+export async function listMarketWatchlist(): Promise<{ items: MarketWatchlistItem[] }> {
+  await ensureMarketWatchlistTable();
+  const featurePool = getFeaturePool();
+  const [rows] = await featurePool.query<
+    (RowDataPacket & {
+      symbol: string;
+      tokenId: number | null;
+      tokenName: string | null;
+      createdAt: string;
+    })[]
+  >(`
+    SELECT
+      token_symbol AS symbol,
+      token_id AS tokenId,
+      token_name AS tokenName,
+      created_at AS createdAt
+    FROM market_watchlist_tokens
+    ORDER BY created_at DESC, token_symbol ASC
+  `);
+
+  return {
+    items: rows.map(row => ({
+      symbol: row.symbol,
+      tokenId: row.tokenId != null ? Number(row.tokenId) : null,
+      tokenName: row.tokenName,
+      createdAt: row.createdAt,
+    })),
+  };
+}
+
+export async function toggleMarketWatchlist(input: {
+  symbol: string;
+  tokenId?: number | null;
+  tokenName?: string | null;
+}) {
+  await ensureMarketWatchlistTable();
+  const featurePool = getFeaturePool();
+  const symbol = input.symbol.trim().toUpperCase();
+
+  const [existingRows] = await featurePool.query<(RowDataPacket & { id: number })[]>(
+    `SELECT id FROM market_watchlist_tokens WHERE token_symbol = ? LIMIT 1`,
+    [symbol]
+  );
+
+  if (existingRows[0]) {
+    await featurePool.query(`DELETE FROM market_watchlist_tokens WHERE token_symbol = ?`, [symbol]);
+    return { watched: false as const };
+  }
+
+  await featurePool.query(
+    `
+      INSERT INTO market_watchlist_tokens (token_symbol, token_id, token_name)
+      VALUES (?, ?, ?)
+      ON DUPLICATE KEY UPDATE
+        token_id = VALUES(token_id),
+        token_name = VALUES(token_name),
+        updated_at = CURRENT_TIMESTAMP
+    `,
+    [symbol, input.tokenId ?? null, input.tokenName?.trim() || null]
+  );
+
+  return { watched: true as const };
+}
 
 function getMarketTypeFilterValues(marketType: MarketListInput["marketType"]) {
   if (marketType === "spot") {
@@ -176,6 +274,7 @@ type ExchangeDepthViewResult = {
   exchangeId: number;
   exchangeName: string;
   marketType: string | null;
+  timeframe: "1h" | "4h" | "12h" | "1d";
   points: Array<{
     snapshotDate: string;
     buyDepth: number | null;
@@ -357,6 +456,7 @@ type AvailableOnchainTokenResult = {
     tokenAddress: string | null;
     transferCount: number;
     holderCount: number;
+    dexActionCount: number;
   }>;
 };
 
@@ -484,15 +584,15 @@ function toNullableNumber(value: unknown) {
 function getKlineRangeConfig(range: TokenKlineRange) {
   switch (range) {
     case "1m":
-      return { period: "daily", count: 30 };
+      return { period: "hourly", interval: "1h", count: 24 * 30, bucketHours: 1 };
     case "3m":
-      return { period: "daily", count: 90 };
+      return { period: "hourly", interval: "4h", count: 6 * 90, bucketHours: 4 };
     case "6m":
-      return { period: "daily", count: 180 };
+      return { period: "daily", interval: "1d", count: 180, bucketHours: 24 };
     case "1y":
-      return { period: "weekly", count: 52 };
+      return { period: "daily", interval: "1d", count: 365, bucketHours: 24 };
     default:
-      return { period: "daily", count: 90 };
+      return { period: "hourly", interval: "4h", count: 6 * 90, bucketHours: 4 };
   }
 }
 
@@ -509,6 +609,47 @@ function getCoinGeckoDays(range: TokenKlineRange) {
     default:
       return "90";
   }
+}
+
+function getLatestComparableKlinePrice(
+  points: Array<{
+    open: number | null;
+    high: number | null;
+    low: number | null;
+    close: number | null;
+  }>
+) {
+  for (let index = points.length - 1; index >= 0; index -= 1) {
+    const point = points[index];
+    const price = point.close ?? point.high ?? point.open ?? point.low;
+    if (price != null && Number.isFinite(price)) {
+      return price;
+    }
+  }
+
+  return null;
+}
+
+function isKlineSeriesConsistentWithCurrentPrice(
+  points: Array<{
+    open: number | null;
+    high: number | null;
+    low: number | null;
+    close: number | null;
+  }>,
+  currentPrice: number | null
+) {
+  if (currentPrice == null || !Number.isFinite(currentPrice) || currentPrice <= 0) {
+    return true;
+  }
+
+  const latestPrice = getLatestComparableKlinePrice(points);
+  if (latestPrice == null || !Number.isFinite(latestPrice) || latestPrice <= 0) {
+    return true;
+  }
+
+  const ratio = Math.max(latestPrice, currentPrice) / Math.min(latestPrice, currentPrice);
+  return ratio <= 50;
 }
 
 function normalizeCoinMarketCapOhlcvResponse(payload: any) {
@@ -594,7 +735,7 @@ async function fetchCoinMarketCapKline(identifier: string, range: TokenKlineRang
     throw new Error("CMC_API_KEY is not configured");
   }
 
-  const { period, count } = getKlineRangeConfig(range);
+  const { period, interval, count } = getKlineRangeConfig(range);
   const url = new URL("https://pro-api.coinmarketcap.com/v2/cryptocurrency/ohlcv/historical");
   if (/^\d+$/.test(identifier)) {
     url.searchParams.set("id", identifier);
@@ -602,6 +743,9 @@ async function fetchCoinMarketCapKline(identifier: string, range: TokenKlineRang
     url.searchParams.set("slug", identifier);
   }
   url.searchParams.set("time_period", period);
+  if (interval) {
+    url.searchParams.set("interval", interval);
+  }
   url.searchParams.set("count", `${count}`);
   url.searchParams.set("convert", "USD");
 
@@ -748,6 +892,67 @@ function formatAddressTagLabel(value: string | null | undefined) {
     .replace(/[._]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function bucketKlinePoints(
+  points: Array<{
+    time: string;
+    open: number | null;
+    high: number | null;
+    low: number | null;
+    close: number | null;
+    volume: number | null;
+    marketCap: number | null;
+  }>,
+  bucketHours: number
+) {
+  if (bucketHours <= 1) return points;
+
+  const bucketMs = bucketHours * 60 * 60 * 1000;
+  const groups = new Map<
+    number,
+    Array<{
+      time: string;
+      open: number | null;
+      high: number | null;
+      low: number | null;
+      close: number | null;
+      volume: number | null;
+      marketCap: number | null;
+    }>
+  >();
+
+  points.forEach(point => {
+    const timestamp = new Date(point.time).getTime();
+    if (!Number.isFinite(timestamp)) return;
+    const bucketStart = Math.floor(timestamp / bucketMs) * bucketMs;
+    const bucket = groups.get(bucketStart) ?? [];
+    bucket.push(point);
+    groups.set(bucketStart, bucket);
+  });
+
+  return Array.from(groups.entries())
+    .sort((left, right) => left[0] - right[0])
+    .map(([bucketStart, bucket]) => {
+      const sortedBucket = [...bucket].sort(
+        (left, right) => new Date(left.time).getTime() - new Date(right.time).getTime()
+      );
+      const first = sortedBucket[0];
+      const last = sortedBucket[sortedBucket.length - 1];
+      const highs = sortedBucket.map(item => item.high ?? item.open ?? item.close ?? item.low).filter((value): value is number => value != null);
+      const lows = sortedBucket.map(item => item.low ?? item.open ?? item.close ?? item.high).filter((value): value is number => value != null);
+      const volume = sortedBucket.reduce((sum, item) => sum + (item.volume ?? 0), 0);
+
+      return {
+        time: new Date(bucketStart).toISOString(),
+        open: first.open ?? first.close ?? first.high ?? first.low,
+        high: highs.length ? Math.max(...highs) : null,
+        low: lows.length ? Math.min(...lows) : null,
+        close: last.close ?? last.open ?? last.high ?? last.low,
+        volume: volume > 0 ? volume : null,
+        marketCap: last.marketCap ?? null,
+      };
+    });
 }
 
 function safeParseJsonArray(value: string | null | undefined) {
@@ -1433,21 +1638,23 @@ export async function getTokenKlineBySymbol(
 
   const cmcIdentifier = String(profile.coinMarketCapId ?? "").trim();
   const cgIdentifier = String(profile.coinGeckoId ?? "").trim();
+  const { bucketHours } = getKlineRangeConfig(range);
 
   const errors: string[] = [];
 
   if (cmcIdentifier) {
     try {
       const points = await fetchCoinMarketCapKline(cmcIdentifier, range);
-      if (points.length > 0) {
+      const normalizedPoints = bucketKlinePoints(points, bucketHours);
+      if (normalizedPoints.length > 0 && isKlineSeriesConsistentWithCurrentPrice(normalizedPoints, profile.currentPrice)) {
         return {
           tokenId: profile.tokenId,
           source: "coinmarketcap",
           range,
-          points,
+          points: normalizedPoints,
         };
       }
-      errors.push("CMC returned no points");
+      errors.push(normalizedPoints.length > 0 ? "CMC kline mismatched current price" : "CMC returned no points");
     } catch (error) {
       errors.push(error instanceof Error ? error.message : "CMC request failed");
     }
@@ -1456,15 +1663,16 @@ export async function getTokenKlineBySymbol(
   if (cgIdentifier) {
     try {
       const points = await fetchCoinGeckoKline(cgIdentifier, range);
-      if (points.length > 0) {
+      const normalizedPoints = bucketKlinePoints(points, bucketHours);
+      if (normalizedPoints.length > 0 && isKlineSeriesConsistentWithCurrentPrice(normalizedPoints, profile.currentPrice)) {
         return {
           tokenId: profile.tokenId,
           source: "coingecko",
           range,
-          points,
+          points: normalizedPoints,
         };
       }
-      errors.push("CoinGecko returned no points");
+      errors.push(normalizedPoints.length > 0 ? "CoinGecko kline mismatched current price" : "CoinGecko returned no points");
     } catch (error) {
       errors.push(error instanceof Error ? error.message : "CoinGecko request failed");
     }
@@ -1846,7 +2054,8 @@ export async function getTokenDepthTrendBySymbol(
 
 export async function getExchangeDepthViewBySymbol(
   symbol: string,
-  exchangeSlug: string
+  exchangeSlug: string,
+  timeframe: "1h" | "4h" | "12h" | "1d" = "1h"
 ): Promise<ExchangeDepthViewResult | null> {
   const currentPool = getPool();
   const profile = await getTokenProfileBySymbol(symbol);
@@ -1875,6 +2084,24 @@ export async function getExchangeDepthViewBySymbol(
   const exchange = exchangeRows[0];
   if (!exchange) return null;
 
+  const bucketExpression =
+    timeframe === "1h"
+      ? "DATE_FORMAT(DATE_ADD(s.snapshot_ts, INTERVAL 8 HOUR), '%Y-%m-%d %H:00:00')"
+      : timeframe === "4h"
+        ? "DATE_FORMAT(DATE(DATE_ADD(s.snapshot_ts, INTERVAL 8 HOUR)) + INTERVAL FLOOR(HOUR(DATE_ADD(s.snapshot_ts, INTERVAL 8 HOUR)) / 4) * 4 HOUR, '%Y-%m-%d %H:00:00')"
+        : timeframe === "12h"
+          ? "DATE_FORMAT(DATE(DATE_ADD(s.snapshot_ts, INTERVAL 8 HOUR)) + INTERVAL FLOOR(HOUR(DATE_ADD(s.snapshot_ts, INTERVAL 8 HOUR)) / 12) * 12 HOUR, '%Y-%m-%d %H:00:00')"
+          : "DATE_FORMAT(DATE(DATE_ADD(s.snapshot_ts, INTERVAL 8 HOUR)), '%Y-%m-%d 00:00:00')";
+
+  const lookbackExpression =
+    timeframe === "1h"
+      ? "DATE_SUB(UTC_TIMESTAMP(), INTERVAL 30 DAY)"
+      : timeframe === "4h"
+        ? "DATE_SUB(UTC_TIMESTAMP(), INTERVAL 90 DAY)"
+        : timeframe === "12h"
+          ? "DATE_SUB(UTC_TIMESTAMP(), INTERVAL 180 DAY)"
+          : "DATE_SUB(UTC_TIMESTAMP(), INTERVAL 365 DAY)";
+
   const [pointRows] = await currentPool.query<
     (RowDataPacket & {
       snapshotDate: string;
@@ -1884,14 +2111,15 @@ export async function getExchangeDepthViewBySymbol(
   >(
     `
       SELECT
-        DATE(snapshot_ts) AS snapshotDate,
-        SUM(bid_amt) AS buyDepth,
-        SUM(ask_amt) AS sellDepth
-      FROM token_trade_depth_daily
-      WHERE token_id = ?
-        AND exchange_id = ?
-      GROUP BY DATE(snapshot_ts)
-      ORDER BY DATE(snapshot_ts) ASC
+        ${bucketExpression} AS snapshotDate,
+        AVG(s.depth_buy_2) AS buyDepth,
+        AVG(s.depth_sell_2) AS sellDepth
+      FROM token_trade_depth_snapshot s
+      WHERE s.token_id = ?
+        AND s.exchange_id = ?
+        AND s.snapshot_ts >= ${lookbackExpression}
+      GROUP BY ${bucketExpression}
+      ORDER BY snapshotDate ASC
     `,
     [profile.tokenId, exchange.exchangeId]
   );
@@ -1901,6 +2129,7 @@ export async function getExchangeDepthViewBySymbol(
     exchangeId: exchange.exchangeId,
     exchangeName: exchange.exchangeName,
     marketType: exchange.marketType,
+    timeframe,
     points: pointRows.map(row => {
       const buyDepth = toNullableNumber(row.buyDepth);
       const sellDepth = toNullableNumber(row.sellDepth);
@@ -2947,15 +3176,32 @@ export async function listAvailableOnchainTokens(limit = 20): Promise<AvailableO
       SELECT token_id AS tokenId, COUNT(*) AS holderCount
       FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.token_holder_snapshot\`
       GROUP BY tokenId
+    ),
+    dex_counts AS (
+      SELECT token_id AS tokenId, COUNT(*) AS dexActionCount
+      FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.token_dex_action_raw\`
+      GROUP BY tokenId
+    ),
+    activity_ids AS (
+      SELECT tokenId FROM transfer_counts
+      UNION DISTINCT
+      SELECT tokenId FROM holder_counts
+      UNION DISTINCT
+      SELECT tokenId FROM dex_counts
     )
     SELECT
-      COALESCE(t.tokenId, h.tokenId) AS tokenId,
+      ids.tokenId AS tokenId,
       COALESCE(t.transferCount, 0) AS transferCount,
-      COALESCE(h.holderCount, 0) AS holderCount
-    FROM transfer_counts t
-    FULL OUTER JOIN holder_counts h
-      ON t.tokenId = h.tokenId
-    ORDER BY transferCount DESC, holderCount DESC
+      COALESCE(h.holderCount, 0) AS holderCount,
+      COALESCE(d.dexActionCount, 0) AS dexActionCount
+    FROM activity_ids ids
+    LEFT JOIN transfer_counts t
+      ON ids.tokenId = t.tokenId
+    LEFT JOIN holder_counts h
+      ON ids.tokenId = h.tokenId
+    LEFT JOIN dex_counts d
+      ON ids.tokenId = d.tokenId
+    ORDER BY transferCount DESC, holderCount DESC, dexActionCount DESC, tokenId ASC
     LIMIT @limit
   `;
   const [activityRows] = await bigQuery.query({
@@ -3022,6 +3268,7 @@ export async function listAvailableOnchainTokens(limit = 20): Promise<AvailableO
           tokenAddress: profile.tokenAddress,
           transferCount: Number((row as { transferCount?: string | number }).transferCount ?? 0),
           holderCount: Number((row as { holderCount?: string | number }).holderCount ?? 0),
+          dexActionCount: Number((row as { dexActionCount?: string | number }).dexActionCount ?? 0),
         };
       })
       .filter((item): item is NonNullable<typeof item> => Boolean(item)),

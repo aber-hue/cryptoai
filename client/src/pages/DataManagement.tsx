@@ -25,10 +25,12 @@ import {
   ArrowUpDown,
   ArrowUp,
   ArrowDown,
+  Star,
   TrendingUp,
 } from "lucide-react";
 
 type BoardTab = "coins" | "announcements";
+type CoinScope = "all" | "watchlist";
 type SortDirection = "asc" | "desc";
 type SortField =
   | "rank"
@@ -237,6 +239,7 @@ function matchesSelectedExchange(
 export default function DataManagement() {
   const [, setLocation] = useLocation();
   const [tab, setTab] = useState<BoardTab>("coins");
+  const [coinScope, setCoinScope] = useState<CoinScope>("all");
   const [announcementView, setAnnouncementView] = useState<"card" | "list">("card");
   const [announcementType, setAnnouncementType] = useState<
     "all" | "listing" | "delisting" | "event" | "other"
@@ -260,6 +263,7 @@ export default function DataManagement() {
     page: 1,
     pageSize: 100,
   });
+  const watchlistQuery = trpc.market.getWatchlist.useQuery();
   const marketTokensErrorMessage =
     marketTokensQuery.error instanceof Error
       ? marketTokensQuery.error.message
@@ -283,6 +287,9 @@ export default function DataManagement() {
       : "上币监控数据请求失败，请稍后重试。";
 
   const filteredTokens = useMemo(() => {
+    const watchlistSymbols = new Set(
+      (watchlistQuery.data?.items ?? []).map(item => item.symbol.trim().toUpperCase())
+    );
     const filtered = (marketTokensQuery.data?.items ?? [])
       .filter(token => {
         const matchesExchange =
@@ -298,7 +305,10 @@ export default function DataManagement() {
             )
           );
 
-        return matchesExchange;
+        const matchesScope =
+          coinScope === "all" || watchlistSymbols.has(token.symbol.trim().toUpperCase());
+
+        return matchesExchange && matchesScope;
       })
       .map((token, index) => ({
         rank: index + 1,
@@ -321,6 +331,7 @@ export default function DataManagement() {
         })),
         recentVenue: token.recentVenue ?? "—",
         logoTone: "bg-[linear-gradient(135deg,#dbeafe,#bfdbfe)] text-[#1d4ed8]",
+        watched: watchlistSymbols.has(token.symbol.trim().toUpperCase()),
         raw: token,
       }));
 
@@ -355,7 +366,7 @@ export default function DataManagement() {
       ...token,
       rank: index + 1,
     }));
-  }, [marketTokensQuery.data?.items, marketType, selectedExchanges, sortDirection, sortField]);
+  }, [coinScope, marketTokensQuery.data?.items, marketType, selectedExchanges, sortDirection, sortField, watchlistQuery.data?.items]);
 
   const filteredAnnouncements = useMemo(() => {
     return (announcementsQuery.data?.items ?? [])
@@ -534,6 +545,7 @@ export default function DataManagement() {
   const shouldShowListingCards = announcementType === "listing" || announcementType === "all";
   const genericAnnouncementItems =
     announcementType === "all" ? filteredAnnouncements.filter(item => item.type !== "listing") : filteredAnnouncements;
+  const watchlistCount = watchlistQuery.data?.items.length ?? 0;
 
   return (
     <div className="space-y-5">
@@ -571,25 +583,37 @@ export default function DataManagement() {
       {tab === "coins" && (
         <Card className="overflow-hidden rounded-[30px] border border-white/70 bg-white/72 shadow-[0_18px_50px_rgba(83,102,138,0.10)] backdrop-blur-xl">
         <CardContent className="p-6">
-          <div className="flex flex-wrap items-start justify-between gap-4">
-            <div>
-              <h2 className="text-3xl font-semibold text-[oklch(var(--crypto-ink))]">筛选交易所</h2>
-            </div>
-            <div className="flex items-center gap-2">
-              <Button
-                variant="secondary"
-                className="h-10 rounded-xl bg-white"
-                onClick={() => setSelectedExchanges(exchangeOptions)}
-              >
-                全选
-              </Button>
-              <Button
-                variant="secondary"
-                className="h-10 rounded-xl bg-white"
-                onClick={() => setSelectedExchanges([])}
-              >
-                清除
-              </Button>
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <h2 className="text-3xl font-semibold text-[oklch(var(--crypto-ink))]">筛选交易所</h2>
+              </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex items-center gap-2 rounded-2xl border border-[#d8e0eb] bg-white p-1">
+                <button
+                  className={cn(
+                    "rounded-xl px-4 py-2 text-sm font-semibold transition-all",
+                    coinScope === "all"
+                      ? "bg-[linear-gradient(135deg,rgba(39,86,191,0.97),rgba(36,154,138,0.94))] text-white shadow-[0_10px_20px_rgba(49,102,187,0.22)]"
+                      : "text-muted-foreground"
+                  )}
+                  onClick={() => setCoinScope("all")}
+                >
+                  全部币种
+                </button>
+                <button
+                  className={cn(
+                    "flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold transition-all",
+                    coinScope === "watchlist"
+                      ? "bg-[linear-gradient(135deg,rgba(39,86,191,0.97),rgba(36,154,138,0.94))] text-white shadow-[0_10px_20px_rgba(49,102,187,0.22)]"
+                      : "text-muted-foreground"
+                  )}
+                  onClick={() => setCoinScope("watchlist")}
+                >
+                  <Star className={cn("h-4 w-4", coinScope === "watchlist" && "fill-current")} />
+                  关注列表
+                  <span className="text-xs opacity-80">({watchlistCount})</span>
+                </button>
+              </div>
             </div>
           </div>
 
@@ -708,17 +732,24 @@ export default function DataManagement() {
                     <td className="px-5 py-4 align-top">{token.rank}</td>
                     <td className="px-5 py-4 align-top">
                       <div className="flex items-start gap-3">
-                        {token.logoUrl ? (
-                          <img
-                            src={token.logoUrl}
-                            alt={token.symbol}
-                            className="h-8 w-8 rounded-full border border-[#d8e0eb] bg-white object-cover"
-                          />
-                        ) : (
-                          <div className={cn("flex h-8 w-8 items-center justify-center rounded-full text-xs font-semibold", token.logoTone)}>
-                            {(token.symbol?.[0] || token.name?.[0] || "?").slice(0, 2).toUpperCase()}
-                          </div>
-                        )}
+                        <div className="relative h-8 w-8 shrink-0 overflow-visible">
+                          {token.logoUrl ? (
+                            <img
+                              src={token.logoUrl}
+                              alt={token.symbol}
+                              className="h-8 w-8 rounded-full border border-[#d8e0eb] bg-white object-cover"
+                            />
+                          ) : (
+                            <div className={cn("flex h-8 w-8 items-center justify-center rounded-full text-xs font-semibold", token.logoTone)}>
+                              {(token.symbol?.[0] || token.name?.[0] || "?").slice(0, 2).toUpperCase()}
+                            </div>
+                          )}
+                          {token.watched ? (
+                            <div className="absolute -right-1 -top-1 inline-flex h-[18px] w-[18px] items-center justify-center rounded-full border border-white bg-[#fff3c4] text-[#d4a106] shadow-[0_4px_10px_rgba(244,176,0,0.18)]">
+                              <Star className="h-[10px] w-[10px] fill-current" />
+                            </div>
+                          ) : null}
+                        </div>
                         <div>
                           <div className="font-semibold">{token.symbol}</div>
                           <div className="text-muted-foreground">{token.name}</div>
@@ -804,7 +835,11 @@ export default function DataManagement() {
                 {!marketTokensQuery.isLoading && filteredTokens.length === 0 ? (
                   <tr>
                     <td colSpan={11} className="px-5 py-12 text-center text-sm text-muted-foreground">
-                      {marketTokensQuery.isError ? "市场数据加载失败，请查看上方错误信息" : "暂无符合条件的币种"}
+                      {marketTokensQuery.isError
+                        ? "市场数据加载失败，请查看上方错误信息"
+                        : coinScope === "watchlist"
+                          ? "当前关注列表为空"
+                          : "暂无符合条件的币种"}
                     </td>
                   </tr>
                 ) : null}

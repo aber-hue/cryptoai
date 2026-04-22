@@ -24,7 +24,9 @@ import {
   ArrowLeft,
   Activity,
   BarChart3,
+  Check,
   Clock3,
+  Copy,
   ExternalLink,
   GitBranch,
   Globe,
@@ -32,6 +34,7 @@ import {
   List,
   Package,
   ScanLine,
+  Star,
   Users,
 } from "lucide-react";
 import { Link, useLocation, useParams } from "wouter";
@@ -113,6 +116,38 @@ function formatPercentValue(value: number | null) {
 function shortAddress(address: string) {
   if (address.length <= 14) return address;
   return `${address.slice(0, 6)}...${address.slice(-6)}`;
+}
+
+function getBlockExplorerUrl(chainName: string | null | undefined, address: string | null | undefined) {
+  if (!chainName || !address) return null;
+
+  const normalizedChain = chainName.trim().toUpperCase();
+  if (normalizedChain.includes("BSC") || normalizedChain.includes("BNB")) {
+    return `https://bscscan.com/address/${address}`;
+  }
+  if (normalizedChain.includes("ARBITRUM")) {
+    return `https://arbiscan.io/address/${address}`;
+  }
+  if (normalizedChain.includes("BASE")) {
+    return `https://basescan.org/address/${address}`;
+  }
+  if (normalizedChain.includes("ETH")) {
+    return `https://etherscan.io/address/${address}`;
+  }
+  if (normalizedChain.includes("SOLANA") || normalizedChain.includes("SOL")) {
+    return `https://solscan.io/account/${address}`;
+  }
+  if (normalizedChain.includes("POLYGON") || normalizedChain.includes("MATIC")) {
+    return `https://polygonscan.com/address/${address}`;
+  }
+  if (normalizedChain.includes("AVALANCHE") || normalizedChain.includes("AVAX")) {
+    return `https://snowtrace.io/address/${address}`;
+  }
+  if (normalizedChain.includes("OPTIMISM")) {
+    return `https://optimistic.etherscan.io/address/${address}`;
+  }
+
+  return null;
 }
 
 function AssetLogo({
@@ -682,6 +717,7 @@ const listingTimelineRows = [
 export default function CoinDetail() {
   const { coinId } = useParams<{ coinId: string }>();
   const [location, setLocation] = useLocation();
+  const utils = trpc.useUtils();
   const searchParams = new URLSearchParams(typeof window !== "undefined" ? window.location.search : "");
   const initialTab = searchParams.get("tab");
   const initialDepthRange = searchParams.get("depthRange");
@@ -733,6 +769,13 @@ export default function CoinDetail() {
   const [listingView, setListingView] = useState<"timeline" | "list">("list");
   const [depthRange, setDepthRange] = useState<30 | 90 | 180 | 365>(initialDepthRangeDays);
   const [depthMarketType, setDepthMarketType] = useState<"spot" | "perps">(initialDepthMarketType);
+  const [copiedAddress, setCopiedAddress] = useState<string | null>(null);
+  const watchlistQuery = trpc.market.getWatchlist.useQuery();
+  const toggleWatchlistMutation = trpc.market.toggleWatchlist.useMutation({
+    onSuccess: async () => {
+      await utils.market.getWatchlist.invalidate();
+    },
+  });
   const tokenProfileQuery = trpc.token.getProfile.useQuery(
     { symbol: (coinId ?? fallbackToken.symbol).toUpperCase() },
     { enabled: Boolean(coinId ?? fallbackToken.symbol) }
@@ -783,6 +826,11 @@ export default function CoinDetail() {
     logoText: (tokenProfile?.symbol?.[0] || fallbackToken.logoText || "?").slice(0, 2).toUpperCase(),
   };
   const primaryAddress = tokenProfile?.addresses[0];
+  const primaryAddressExplorerUrl = getBlockExplorerUrl(primaryAddress?.chainName, primaryAddress?.address);
+  const watchlistSymbols = new Set(
+    (watchlistQuery.data?.items ?? []).map(item => item.symbol.trim().toUpperCase())
+  );
+  const isWatched = watchlistSymbols.has(token.symbol.trim().toUpperCase());
   const tokenTags = tokenProfile?.coinTags.length
     ? tokenProfile.coinTags
     : ["DeFi", "Layer 1", "Smart Contracts", "Interoperability"];
@@ -972,6 +1020,12 @@ export default function CoinDetail() {
       window.history.replaceState(null, "", nextUrl);
     }
   }, [activeTab, depthRange, depthMarketType, location]);
+
+  useEffect(() => {
+    if (!copiedAddress) return;
+    const timer = window.setTimeout(() => setCopiedAddress(null), 1500);
+    return () => window.clearTimeout(timer);
+  }, [copiedAddress]);
 
   const marketRows =
     depthItems.length > 0
@@ -1166,12 +1220,46 @@ export default function CoinDetail() {
                   <Link2 className="h-4 w-4" />
                   Contracts
                 </div>
-                <div className="rounded-xl bg-[oklch(var(--crypto-panel-soft))] px-3 py-2.5 font-mono text-sm text-[oklch(var(--crypto-ink))]">
-                  {primaryAddress ? shortAddress(primaryAddress.address) : "—"}
+                <div className="rounded-xl bg-[oklch(var(--crypto-panel-soft))] px-3 py-2.5 text-sm text-[oklch(var(--crypto-ink))]">
+                  {primaryAddress ? (
+                    <div className="flex items-start justify-between gap-3">
+                      {primaryAddressExplorerUrl ? (
+                        <a
+                          href={primaryAddressExplorerUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="break-all font-mono hover:text-[#0f66d8]"
+                        >
+                          {primaryAddress.address}
+                        </a>
+                      ) : (
+                        <div className="break-all font-mono">{primaryAddress.address}</div>
+                      )}
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          await navigator.clipboard.writeText(primaryAddress.address);
+                          setCopiedAddress(primaryAddress.address);
+                        }}
+                        className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-[#d8e0eb] bg-white px-2 py-1 text-xs text-[#344054] hover:border-[#b8c7da]"
+                      >
+                        {copiedAddress === primaryAddress.address ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                        {copiedAddress === primaryAddress.address ? "已复制" : "复制"}
+                      </button>
+                    </div>
+                  ) : (
+                    "—"
+                  )}
                 </div>
                 <div className="flex items-center gap-2 text-sm text-[oklch(var(--crypto-ink))]">
                   <ExternalLink className="h-4 w-4" />
-                  {primaryAddress?.chainName || "Block Explorer"}
+                  {primaryAddressExplorerUrl ? (
+                    <a href={primaryAddressExplorerUrl} target="_blank" rel="noreferrer" className="hover:text-[#0f66d8]">
+                      {primaryAddress?.chainName || "Block Explorer"}
+                    </a>
+                  ) : (
+                    <span>{primaryAddress?.chainName || "Block Explorer"}</span>
+                  )}
                 </div>
               </div>
             </div>
@@ -1203,25 +1291,45 @@ export default function CoinDetail() {
         <main className="space-y-6">
           <div className="space-y-4">
             <div className="flex items-start gap-4">
-              <AssetLogo
-                src={tokenProfile?.logoUrl}
-                alt={token.symbol}
-                fallback={token.logoText}
-                className="h-16 w-16 rounded-2xl"
-              />
-              <div className="min-w-0">
-                <div className="flex items-center gap-3">
-                  <h1 className="text-4xl font-semibold text-[oklch(var(--crypto-ink))]">{token.name}</h1>
-                  <Badge variant="secondary" className="rounded-full px-3 py-1">
-                    {token.symbol}
-                  </Badge>
+                <AssetLogo
+                  src={tokenProfile?.logoUrl}
+                  alt={token.symbol}
+                  fallback={token.logoText}
+                  className="h-16 w-16 rounded-2xl"
+                />
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-3">
+                    <h1 className="text-4xl font-semibold text-[oklch(var(--crypto-ink))]">{token.name}</h1>
+                    <Badge variant="secondary" className="rounded-full px-3 py-1">
+                      {token.symbol}
+                    </Badge>
+                    <button
+                      type="button"
+                      disabled={toggleWatchlistMutation.isPending}
+                      onClick={() =>
+                        toggleWatchlistMutation.mutate({
+                          symbol: token.symbol,
+                          tokenName: token.name,
+                        })
+                      }
+                      className={cn(
+                        "inline-flex h-9 items-center gap-2 rounded-full border px-3.5 text-sm font-medium transition-all",
+                        isWatched
+                          ? "border-[#f4d58d] bg-[#fff8e1] text-[#a16207]"
+                          : "border-[#d8e0eb] bg-white/90 text-[#475467] hover:border-[#c7d7ea] hover:text-[#101828]"
+                      )}
+                      aria-label={isWatched ? `取消关注 ${token.symbol}` : `关注 ${token.symbol}`}
+                    >
+                      <Star className={cn("h-4 w-4", isWatched && "fill-current")} />
+                      {isWatched ? "已关注" : "关注"}
+                    </button>
+                  </div>
+                  <div className="mt-2 text-lg text-muted-foreground">
+                    {tokenProfile?.description
+                      ? tokenProfile.description.slice(0, 180)
+                      : `${token.name} market depth, short-term price trend, and venue-level liquidity overview.`}
+                  </div>
                 </div>
-                <div className="mt-2 text-lg text-muted-foreground">
-                  {tokenProfile?.description
-                    ? tokenProfile.description.slice(0, 180)
-                    : `${token.name} market depth, short-term price trend, and venue-level liquidity overview.`}
-                </div>
-              </div>
             </div>
 
             <div className="flex flex-wrap gap-2">

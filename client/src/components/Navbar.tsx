@@ -7,9 +7,7 @@ import {
   CandlestickChart,
   Coins,
   Radar,
-  Search,
 } from "lucide-react";
-import { Input } from "@/components/ui/input";
 import { useLocation } from "wouter";
 import { cn } from "@/lib/utils";
 
@@ -17,16 +15,16 @@ export default function Navbar() {
   const [location] = useLocation();
   const workspaces = [
     { href: "/market", label: "Market Board", icon: CandlestickChart },
-    { href: "/", label: "Signal Board", icon: Radar },
-    { href: "/analysis", label: "Template Lab", icon: BrainCircuit },
     { href: "/onchain", label: "On-chain Board", icon: Activity },
+    { href: "/signals", label: "Signal Board", icon: Radar },
+    { href: "/analysis", label: "Template Lab", icon: BrainCircuit },
     { href: "/chat", label: "Free Chat", icon: Bot },
   ];
 
   return (
     <nav className="sticky top-0 z-50 w-full border-b border-white/60 bg-background/80 backdrop-blur-xl">
       <div className="container flex min-h-18 flex-wrap items-center gap-3 py-3">
-        <Link href="/" className="flex items-center gap-3">
+        <Link href="/market" className="flex items-center gap-3">
           <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-white/70 bg-[radial-gradient(circle_at_top,#fff_0%,#dfe7ff_44%,#bfd0ff_100%)] shadow-[0_12px_30px_rgba(69,97,197,0.16)]">
             <Coins className="h-5 w-5 text-[oklch(var(--crypto-ink))]" />
           </div>
@@ -45,6 +43,7 @@ export default function Navbar() {
             const active =
               item.href === "/market"
                 ? location === "/market" ||
+                  location === "/" ||
                   location.startsWith("/coin/") ||
                   location.startsWith("/depth/") ||
                   location.startsWith("/positions/")
@@ -66,14 +65,6 @@ export default function Navbar() {
               </Link>
             );
           })}
-        </div>
-        <div className="relative ml-auto hidden w-full max-w-sm md:order-3 md:block">
-          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            readOnly
-            value="Search symbol / address / signal"
-            className="h-11 rounded-2xl border-white/70 bg-white/70 pl-10 text-sm text-muted-foreground shadow-none"
-          />
         </div>
       </div>
     </nav>

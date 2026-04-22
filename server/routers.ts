@@ -18,10 +18,12 @@ import {
   getTokenListingViewBySymbol,
   getTokenProfileBySymbol,
   getTokenUnlockViewBySymbol,
+  listMarketWatchlist,
   listAvailableOnchainTokens,
   listMarketTokens,
   searchListingAnnouncements,
   searchAnnouncements,
+  toggleMarketWatchlist,
 } from "./liveData";
 
 export const appRouter = router({
@@ -210,6 +212,20 @@ export const appRouter = router({
       .query(async ({ input }) => {
         return await searchListingAnnouncements(input ?? {});
       }),
+    getWatchlist: publicProcedure.query(async () => {
+      return await listMarketWatchlist();
+    }),
+    toggleWatchlist: publicProcedure
+      .input(
+        z.object({
+          symbol: z.string().trim().min(1),
+          tokenId: z.number().int().positive().nullable().optional(),
+          tokenName: z.string().trim().nullable().optional(),
+        })
+      )
+      .mutation(async ({ input }) => {
+        return await toggleMarketWatchlist(input);
+      }),
   }),
 
   token: router({
@@ -276,10 +292,11 @@ export const appRouter = router({
         z.object({
           symbol: z.string().trim().min(1),
           exchangeSlug: z.string().trim().min(1),
+          timeframe: z.enum(["1h", "4h", "12h", "1d"]).optional(),
         })
       )
       .query(async ({ input }) => {
-        return await getExchangeDepthViewBySymbol(input.symbol, input.exchangeSlug);
+        return await getExchangeDepthViewBySymbol(input.symbol, input.exchangeSlug, input.timeframe ?? "1h");
       }),
     getHoldersView: publicProcedure
       .input(

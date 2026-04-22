@@ -148,6 +148,15 @@ type FlowGraph = {
   totalAmount: number;
 };
 
+type OnchainTokenOption = {
+  symbol: string;
+  name: string;
+  tokenId: number;
+  transferCount: number;
+  holderCount: number;
+  dexActionCount?: number;
+};
+
 
 const ACCUMULATION_POSITIVE = "#2563EB";
 const DISTRIBUTION_NEGATIVE = "#F59E0B";
@@ -155,6 +164,19 @@ const RISE_RED = "#EF4444";
 const FALL_GREEN = "#10B981";
 const DEEP_BLUE = "#1E40AF";
 const SLATE = "#64748B";
+
+const fallbackOnchainTokenOptions: OnchainTokenOption[] = [
+  { symbol: "GENIUS", name: "Genius", tokenId: 1522, transferCount: 65341, holderCount: 4181, dexActionCount: 0 },
+  { symbol: "ST", name: "Sentio", tokenId: 1248, transferCount: 63339, holderCount: 548, dexActionCount: 0 },
+  { symbol: "BSB", name: "Block Street", tokenId: 787, transferCount: 36087, holderCount: 1459, dexActionCount: 0 },
+  { symbol: "ARIA", name: "AriaAI", tokenId: 1467, transferCount: 23041, holderCount: 41278, dexActionCount: 0 },
+  { symbol: "UP", name: "Unitas Labs", tokenId: 1178, transferCount: 11495, holderCount: 807, dexActionCount: 0 },
+  { symbol: "EDGE", name: "edgeX", tokenId: 794, transferCount: 0, holderCount: 0, dexActionCount: 1 },
+  { symbol: "PRL", name: "Perle", tokenId: 1244, transferCount: 0, holderCount: 0, dexActionCount: 1 },
+  { symbol: "R2", name: "R2 Protocol", tokenId: 1295, transferCount: 0, holderCount: 0, dexActionCount: 1 },
+  { symbol: "BASED", name: "Based", tokenId: 1297, transferCount: 0, holderCount: 0, dexActionCount: 1 },
+  { symbol: "OPG", name: "OpenGradient", tokenId: 1584, transferCount: 0, holderCount: 0, dexActionCount: 1 },
+];
 
 const dashboardDates = ["2026-04-15", "2026-04-14", "2026-04-13"];
 
@@ -1039,7 +1061,7 @@ export default function OnChainBoard() {
     }
   );
 
-  const flowTokenOptions = useMemo(() => {
+  const flowTokenOptions = useMemo<OnchainTokenOption[]>(() => {
     const items = onchainTokensQuery.data?.items ?? [];
     if (items.length > 0) {
       return items.map(item => ({
@@ -1051,15 +1073,7 @@ export default function OnChainBoard() {
       }));
     }
 
-    return [
-      {
-        symbol: "BSB",
-        name: "BSB",
-        tokenId: 0,
-        transferCount: 0,
-        holderCount: 0,
-      },
-    ];
+    return fallbackOnchainTokenOptions;
   }, [onchainTokensQuery.data?.items]);
 
   useEffect(() => {

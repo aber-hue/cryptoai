@@ -21,8 +21,9 @@ function Router() {
       <div className="container">
         <main className="min-w-0 py-6 lg:py-8">
           <Switch>
-            <Route path={"/"} component={Home} />
+            <Route path={"/"} component={DataManagement} />
             <Route path={"/market"} component={DataManagement} />
+            <Route path={"/signals"} component={Home} />
             <Route path={"/coin/:coinId"} component={CoinDetail} />
             <Route path={"/depth/:exchangeId/:coinId"} component={ExchangeDepth} />
             <Route path={"/depth/:exchangeId"} component={ExchangeDepth} />

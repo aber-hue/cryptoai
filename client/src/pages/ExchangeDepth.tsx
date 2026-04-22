@@ -1,5 +1,6 @@
 import { Card, CardContent } from "@/components/ui/card";
 import { trpc } from "@/lib/trpc";
+import { cn } from "@/lib/utils";
 import {
   CartesianGrid,
   Legend,
@@ -11,7 +12,10 @@ import {
   YAxis,
 } from "recharts";
 import { ArrowLeft } from "lucide-react";
+import { useState } from "react";
 import { Link, useParams } from "wouter";
+
+const SHANGHAI_TIME_ZONE = "Asia/Shanghai";
 
 function formatDepth(value: number | null) {
   if (value == null || Number.isNaN(value)) return "—";
@@ -23,19 +27,65 @@ function formatDepth(value: number | null) {
 function formatDateLabel(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  const month = `${date.getMonth() + 1}`.padStart(2, "0");
-  const day = `${date.getDate()}`.padStart(2, "0");
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: SHANGHAI_TIME_ZONE,
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const month = parts.find(part => part.type === "month")?.value ?? "";
+  const day = parts.find(part => part.type === "day")?.value ?? "";
   return `${month}/${day}`;
 }
 
-function formatTableDate(value: string) {
+function formatDepthAxisLabel(value: string, timeframe: "1h" | "4h" | "12h" | "1d") {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toISOString().slice(0, 10);
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: SHANGHAI_TIME_ZONE,
+    month: "2-digit",
+    day: "2-digit",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(date);
+  const month = parts.find(part => part.type === "month")?.value ?? "";
+  const day = parts.find(part => part.type === "day")?.value ?? "";
+  const hour = parts.find(part => part.type === "hour")?.value ?? "";
+  const minute = parts.find(part => part.type === "minute")?.value ?? "";
+
+  if (timeframe === "1d") {
+    return `${month}/${day}`;
+  }
+
+  return `${month}/${day} ${hour}:${minute}`;
+}
+
+function formatTableDate(value: string, timeframe: "1h" | "4h" | "12h" | "1d") {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: SHANGHAI_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: timeframe === "1d" ? undefined : "2-digit",
+    minute: timeframe === "1d" ? undefined : "2-digit",
+    hour12: false,
+  }).formatToParts(date);
+  const year = parts.find(part => part.type === "year")?.value ?? "";
+  const month = parts.find(part => part.type === "month")?.value ?? "";
+  const day = parts.find(part => part.type === "day")?.value ?? "";
+  if (timeframe === "1d") {
+    return `${year}-${month}-${day}`;
+  }
+  const hour = parts.find(part => part.type === "hour")?.value ?? "";
+  const minute = parts.find(part => part.type === "minute")?.value ?? "";
+  return `${year}-${month}-${day} ${hour}:${minute}`;
 }
 
 export default function ExchangeDepth() {
   const { exchangeId, coinId } = useParams<{ exchangeId: string; coinId?: string }>();
+  const [depthGranularity, setDepthGranularity] = useState<"1h" | "4h" | "12h" | "1d">("1h");
   const searchParams = new URLSearchParams(typeof window !== "undefined" ? window.location.search : "");
   const returnTab = searchParams.get("tab") ?? "depth";
   const returnDepthRange = searchParams.get("depthRange");
@@ -43,7 +93,7 @@ export default function ExchangeDepth() {
   const normalizedSymbol = (coinId ?? "").toUpperCase();
 
   const depthQuery = trpc.token.getExchangeDepthView.useQuery(
-    { symbol: normalizedSymbol, exchangeSlug: exchangeId ?? "" },
+    { symbol: normalizedSymbol, exchangeSlug: exchangeId ?? "", timeframe: depthGranularity },
     { enabled: Boolean(coinId && exchangeId) }
   );
 
@@ -55,7 +105,7 @@ export default function ExchangeDepth() {
       .join(" ");
 
   const depthTrendData = (depthQuery.data?.points ?? []).map(item => ({
-    date: formatDateLabel(item.snapshotDate),
+    date: formatDepthAxisLabel(item.snapshotDate, depthGranularity),
     rawDate: item.snapshotDate,
     buyDepth: item.buyDepth,
     sellDepth: item.sellDepth,
@@ -91,8 +141,34 @@ export default function ExchangeDepth() {
 
       <Card className="rounded-[28px] border border-white/70 bg-white/78 shadow-[0_16px_40px_rgba(83,102,138,0.08)]">
         <CardContent className="p-6">
-          <div className="mb-5">
-            <h2 className="text-[1.55rem] font-semibold text-[oklch(var(--crypto-ink))]">深度趋势图</h2>
+          <div className="mb-5 flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <h2 className="text-[1.55rem] font-semibold text-[oklch(var(--crypto-ink))]">深度趋势图</h2>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {([
+                ["1h", "1H"],
+                ["4h", "4H"],
+                ["12h", "12H"],
+                ["1d", "1天"],
+              ] as const).map(([value, label]) => {
+                return (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => setDepthGranularity(value)}
+                    className={cn(
+                      "rounded-full border px-4 py-2 text-sm font-medium transition",
+                      depthGranularity === value
+                        ? "border-[#0f66d8] bg-[#0f66d8] text-white shadow-[0_10px_24px_rgba(15,102,216,0.18)]"
+                        : "border-[#d8e0eb] bg-white text-[#344054] hover:border-[#b8c7da]"
+                    )}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
           </div>
           {depthQuery.isError ? (
             <div className="mb-4 rounded-2xl border border-[#fecaca] bg-[#fff1f2] px-4 py-3 text-sm text-[#b42318]">
@@ -148,7 +224,7 @@ export default function ExchangeDepth() {
                 ) : (
                   latestFirstDepthRows.map(item => (
                     <tr key={item.rawDate} className="border-b border-[#e7edf4] hover:bg-[#f8fafc]">
-                      <td className="px-4 py-4">{formatTableDate(item.rawDate)}</td>
+                      <td className="px-4 py-4">{formatTableDate(item.rawDate, depthGranularity)}</td>
                       <td className="px-4 py-4 text-right font-mono text-[#00a86b]">{formatDepth(item.buyDepth)}</td>
                       <td className="px-4 py-4 text-right font-mono text-[#ff4d4f]">{formatDepth(item.sellDepth)}</td>
                       <td className="px-4 py-4 text-right font-mono font-semibold">{formatDepth(item.totalDepth)}</td>
