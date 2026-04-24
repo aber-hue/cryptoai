@@ -17,6 +17,7 @@ import type {
   ChatCitation,
   ChatExecutionStep,
   ChatInputMessage,
+  ChatSignalContext,
   ChatTaskType,
   ChatToolResult,
 } from "./types";
@@ -30,6 +31,7 @@ const taskTypeSchema = z.enum([
   "news_research",
   "onchain_holders",
   "onchain_fund_flow",
+  "signal_analysis",
   "full_checkup",
 ]);
 
@@ -55,11 +57,15 @@ const answerSchema = {
 } as const;
 
 export async function orchestrateChatMessage(
-  messages: ChatInputMessage[]
+  messages: ChatInputMessage[],
+  options?: {
+    workspace?: "free_chat" | "signal";
+    signalContext?: ChatSignalContext;
+  }
 ): Promise<ChatAnswerPayload> {
   const latestUserMessage = [...messages].reverse().find(message => message.role === "user")?.content?.trim() ?? "";
-  const detectedSymbol = extractSymbol(messages);
-  const taskType = classifyTask(latestUserMessage);
+  const detectedSymbol = options?.signalContext?.symbol ?? extractSymbol(messages);
+  const taskType = classifyTask(latestUserMessage, options);
   const executionSteps = buildExecutionSteps(taskType, detectedSymbol);
 
   if (!latestUserMessage) {
@@ -96,6 +102,7 @@ export async function orchestrateChatMessage(
         taskType,
         symbol: null,
         toolResults,
+        signalContext: options?.signalContext,
       });
 
       markStep(
@@ -163,6 +170,7 @@ export async function orchestrateChatMessage(
     taskType,
     symbol,
     toolResults,
+    signalContext: options?.signalContext,
   });
 
   markStep(
@@ -230,6 +238,12 @@ async function runPlannedTools(
     case "onchain_fund_flow":
       results.push(runOnchainFundFlowTool(symbol));
       break;
+    case "signal_analysis":
+      results.push(runUnlockTool(symbol));
+      results.push(runListingTool(symbol));
+      results.push(runDepthViewTool(symbol, marketType));
+      results.push(runDepthTrendTool(symbol, marketType));
+      break;
     case "full_checkup":
       results.push(runUnlockTool(symbol));
       results.push(runListingTool(symbol));
@@ -251,8 +265,16 @@ async function runPlannedTools(
   return settled.filter((item): item is ChatToolResult => Boolean(item));
 }
 
-function classifyTask(message: string): ChatTaskType {
+function classifyTask(
+  message: string,
+  options?: {
+    workspace?: "free_chat" | "signal";
+    signalContext?: ChatSignalContext;
+  }
+): ChatTaskType {
   const normalized = message.toLowerCase();
+  if (options?.workspace === "signal" || options?.signalContext) return "signal_analysis";
+  if (/\b(signal|setup|trigger|watch|watchlist)\b|信号|触发|观察位|埋伏|预警|规则/.test(normalized)) return "signal_analysis";
   if (/最新|新闻|news|headline|research|最近公告|搜一下|search/.test(normalized)) return "news_research";
   if (/全维度|全面|综合|体检|full check|overview|完整看一下/.test(normalized)) return "full_checkup";
   if (/解锁|unlock/.test(normalized)) return "unlock_analysis";
@@ -355,6 +377,7 @@ async function composeAnswer(params: {
   taskType: ChatTaskType;
   symbol: string | null;
   toolResults: ChatToolResult[];
+  signalContext?: ChatSignalContext;
 }) {
   const fallback = buildFallbackAnswer(params);
 
@@ -372,6 +395,7 @@ async function composeAnswer(params: {
             `用户问题: ${params.latestUserMessage}`,
             `任务类型: ${params.taskType}`,
             `Symbol: ${params.symbol ?? "N/A"}`,
+            `Signal上下文: ${JSON.stringify(params.signalContext ?? null, null, 2)}`,
             "数据上下文:",
             JSON.stringify(
               params.toolResults.map(tool => ({
@@ -427,6 +451,7 @@ function buildFallbackAnswer(params: {
   taskType: ChatTaskType;
   symbol: string | null;
   toolResults: ChatToolResult[];
+  signalContext?: ChatSignalContext;
 }) {
   if (params.toolResults.length === 0) {
     return {
@@ -441,11 +466,26 @@ function buildFallbackAnswer(params: {
   }
 
   const topSummaries = params.toolResults.slice(0, 4).map(tool => `- ${tool.summary}`).join("\n");
+  const signalContextLines = params.signalContext
+    ? [
+        `当前信号: ${params.signalContext.signalType}`,
+        `强度 ${(params.signalContext.strength * 100).toFixed(0)}%，紧急度 ${params.signalContext.urgency}`,
+        `看板结论: ${params.signalContext.summary}`,
+        params.signalContext.missingRule ? `缺口规则: ${params.signalContext.missingRule}` : null,
+        params.signalContext.gapText ? `规则差距: ${params.signalContext.gapText}` : null,
+      ]
+        .filter(Boolean)
+        .map(item => `- ${item}`)
+        .join("\n")
+    : "";
 
   return {
     message: [
       `${params.symbol ?? "该 token"} 这次我先基于内部数据做了一版 ${taskLabel(params.taskType)}结论。`,
       "",
+      signalContextLines ? "信号线程上下文：" : null,
+      signalContextLines || null,
+      signalContextLines ? "" : null,
       "已拿到的关键数据：",
       topSummaries,
       "",
@@ -460,6 +500,8 @@ function buildFallbackAnswer(params: {
 function suggestNextActions(taskType: ChatTaskType, symbol: string | null) {
   const resolvedSymbol = symbol ?? "该 token";
   switch (taskType) {
+    case "signal_analysis":
+      return [`拆解 ${resolvedSymbol} 当前信号由哪些数据触发`, `继续盯 ${resolvedSymbol} 还差哪条规则会让信号升级或失效`];
     case "unlock_analysis":
       return [`继续看 ${resolvedSymbol} 解锁前后的成交深度变化`, `对比 ${resolvedSymbol} 最近上线事件和解锁窗口是否重叠`];
     case "listing_research":
@@ -498,6 +540,8 @@ function taskLabel(taskType: ChatTaskType) {
       return "链上持仓分析";
     case "onchain_fund_flow":
       return "链上资金流分析";
+    case "signal_analysis":
+      return "信号拆解";
     case "full_checkup":
       return "全维度体检";
     default:

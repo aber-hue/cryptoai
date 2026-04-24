@@ -1,6 +1,7 @@
 import { eq, desc, and, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import { nanoid } from "nanoid";
+import { getFeatureDb } from "./featureDb";
 import { 
   InsertUser, 
   users, 
@@ -13,6 +14,10 @@ import {
   chatArtifacts,
   chatConversations,
   chatMessages,
+  signalEventActions,
+  signalEventMetrics,
+  signalEvents,
+  signalTemplates,
   InsertCoin,
   InsertExchange,
   InsertListing,
@@ -22,10 +27,18 @@ import {
   type InsertChatArtifact,
   type InsertChatConversation,
   type InsertChatMessage,
+  type InsertSignalEvent,
+  type InsertSignalEventAction,
+  type InsertSignalEventMetric,
+  type InsertSignalTemplate,
 } from "../drizzle/schema";
 import { ENV } from './_core/env';
 
 let _db: ReturnType<typeof drizzle> | null = null;
+
+async function getSignalDb() {
+  return getFeatureDb();
+}
 
 export async function getDb() {
   if (!_db && process.env.DATABASE_URL) {
@@ -424,6 +437,265 @@ export async function getChatArtifactById(id: string, ownerOpenId: string) {
     .limit(1);
 
   return rows[0] ?? null;
+}
+
+// ==================== Signal Persistence ====================
+
+export async function listSignalTemplates(input?: {
+  category?: string;
+  enabledOnly?: boolean;
+}) {
+  const db = await getSignalDb();
+  if (!db) return [];
+
+  const whereClauses = [];
+  if (input?.category?.trim()) {
+    whereClauses.push(eq(signalTemplates.category, input.category.trim()));
+  }
+  if (input?.enabledOnly) {
+    whereClauses.push(eq(signalTemplates.isEnabled, true));
+  }
+
+  return await db
+    .select()
+    .from(signalTemplates)
+    .where(whereClauses.length > 0 ? and(...whereClauses) : undefined)
+    .orderBy(signalTemplates.priority, signalTemplates.name);
+}
+
+export async function getSignalTemplateByType(signalType: string) {
+  const db = await getSignalDb();
+  if (!db) return null;
+
+  const rows = await db
+    .select()
+    .from(signalTemplates)
+    .where(eq(signalTemplates.signalType, signalType))
+    .limit(1);
+
+  return rows[0] ?? null;
+}
+
+export async function upsertSignalTemplate(input: InsertSignalTemplate) {
+  const db = await getSignalDb();
+  if (!db) return { id: input.id };
+
+  await db.insert(signalTemplates).values(input).onDuplicateKeyUpdate({
+    set: {
+      name: input.name,
+      category: input.category,
+      description: input.description ?? null,
+      direction: input.direction,
+      defaultWindow: input.defaultWindow ?? null,
+      defaultThresholdText: input.defaultThresholdText ?? null,
+      severityRule: input.severityRule ?? null,
+      source: input.source,
+      isEnabled: input.isEnabled ?? true,
+      priority: input.priority ?? 0,
+      updatedAt: new Date(),
+    },
+  });
+
+  return { id: input.id };
+}
+
+export async function listSignalEvents(input?: {
+  symbol?: string;
+  signalType?: string;
+  category?: string;
+  status?: "new" | "active" | "muted" | "expired";
+  limit?: number;
+}) {
+  const db = await getSignalDb();
+  if (!db) return [];
+
+  const whereClauses = [];
+  if (input?.symbol?.trim()) {
+    whereClauses.push(eq(signalEvents.symbol, input.symbol.trim().toUpperCase()));
+  }
+  if (input?.signalType?.trim()) {
+    whereClauses.push(eq(signalEvents.signalType, input.signalType.trim()));
+  }
+  if (input?.category?.trim()) {
+    whereClauses.push(eq(signalEvents.category, input.category.trim()));
+  }
+  if (input?.status) {
+    whereClauses.push(eq(signalEvents.status, input.status));
+  }
+
+  return await db
+    .select()
+    .from(signalEvents)
+    .where(whereClauses.length > 0 ? and(...whereClauses) : undefined)
+    .orderBy(desc(signalEvents.triggeredAt), desc(signalEvents.createdAt))
+    .limit(Math.min(Math.max(input?.limit ?? 50, 1), 200));
+}
+
+export async function getSignalEventById(id: string) {
+  const db = await getSignalDb();
+  if (!db) return null;
+
+  const eventRows = await db
+    .select()
+    .from(signalEvents)
+    .where(eq(signalEvents.id, id))
+    .limit(1);
+
+  const event = eventRows[0];
+  if (!event) return null;
+
+  const metrics = await db
+    .select()
+    .from(signalEventMetrics)
+    .where(eq(signalEventMetrics.signalEventId, id))
+    .orderBy(signalEventMetrics.sortOrder, signalEventMetrics.createdAt);
+
+  const actions = await db
+    .select()
+    .from(signalEventActions)
+    .where(eq(signalEventActions.signalEventId, id))
+    .orderBy(desc(signalEventActions.createdAt));
+
+  return {
+    event,
+    metrics,
+    actions,
+  };
+}
+
+export async function createSignalEvent(input: {
+  event: Omit<InsertSignalEvent, "id"> & { id?: string };
+  metrics?: Array<Omit<InsertSignalEventMetric, "id" | "signalEventId"> & { id?: string }>;
+}) {
+  const db = await getSignalDb();
+  const eventId = input.event.id ?? nanoid(16);
+  if (!db) return { id: eventId };
+
+  await db.insert(signalEvents).values({
+    ...input.event,
+    id: eventId,
+  });
+
+  if (input.metrics && input.metrics.length > 0) {
+    await db.insert(signalEventMetrics).values(
+      input.metrics.map((metric, index) => ({
+        ...metric,
+        id: metric.id ?? `${eventId}-metric-${index + 1}`,
+        signalEventId: eventId,
+      }))
+    );
+  }
+
+  return { id: eventId };
+}
+
+export async function upsertSignalEventWithMetrics(input: {
+  event: Omit<InsertSignalEvent, "id"> & { id?: string };
+  metrics?: Array<Omit<InsertSignalEventMetric, "id" | "signalEventId"> & { id?: string }>;
+}) {
+  const db = await getSignalDb();
+  const eventId = input.event.id ?? nanoid(16);
+  if (!db) return { id: eventId, created: true };
+
+  const existingRows = await db
+    .select({
+      id: signalEvents.id,
+      status: signalEvents.status,
+    })
+    .from(signalEvents)
+    .where(eq(signalEvents.dedupeKey, input.event.dedupeKey))
+    .limit(1);
+
+  const existing = existingRows[0];
+
+  if (!existing) {
+    await db.insert(signalEvents).values({
+      ...input.event,
+      id: eventId,
+    });
+
+    if (input.metrics && input.metrics.length > 0) {
+      await db.insert(signalEventMetrics).values(
+        input.metrics.map((metric, index) => ({
+          ...metric,
+          id: metric.id ?? `${eventId}-metric-${index + 1}`,
+          signalEventId: eventId,
+        }))
+      );
+    }
+
+    return { id: eventId, created: true };
+  }
+
+  await db
+    .update(signalEvents)
+    .set({
+      signalType: input.event.signalType,
+      tokenId: input.event.tokenId,
+      symbol: input.event.symbol,
+      title: input.event.title,
+      summary: input.event.summary ?? null,
+      category: input.event.category,
+      direction: input.event.direction,
+      window: input.event.window ?? null,
+      severity: input.event.severity,
+      source: input.event.source,
+      triggeredAt: input.event.triggeredAt,
+      expiresAt: input.event.expiresAt ?? null,
+      latestMetricValue: input.event.latestMetricValue ?? null,
+      baselineValue: input.event.baselineValue ?? null,
+      thresholdValue: input.event.thresholdValue ?? null,
+      changePct: input.event.changePct ?? null,
+      payloadJson: input.event.payloadJson ?? null,
+      updatedAt: new Date(),
+    })
+    .where(eq(signalEvents.id, existing.id));
+
+  await db.delete(signalEventMetrics).where(eq(signalEventMetrics.signalEventId, existing.id));
+
+  if (input.metrics && input.metrics.length > 0) {
+    await db.insert(signalEventMetrics).values(
+      input.metrics.map((metric, index) => ({
+        ...metric,
+        id: metric.id ?? `${existing.id}-metric-${index + 1}`,
+        signalEventId: existing.id,
+      }))
+    );
+  }
+
+  return { id: existing.id, created: false, status: existing.status };
+}
+
+export async function updateSignalEventStatus(input: {
+  signalEventId: string;
+  fromStatus?: "new" | "active" | "muted" | "expired" | null;
+  toStatus: "new" | "active" | "muted" | "expired";
+  actionType: "mark_active" | "mute" | "unmute" | "expire" | "reopen";
+  operatorOpenId?: string | null;
+  note?: string | null;
+}) {
+  const db = await getSignalDb();
+  if (!db) return;
+
+  await db
+    .update(signalEvents)
+    .set({
+      status: input.toStatus,
+      updatedAt: new Date(),
+    })
+    .where(eq(signalEvents.id, input.signalEventId));
+
+  const action: InsertSignalEventAction = {
+    id: `${input.signalEventId}-action-${nanoid(6)}`,
+    signalEventId: input.signalEventId,
+    actionType: input.actionType,
+    fromStatus: input.fromStatus ?? null,
+    toStatus: input.toStatus,
+    operatorOpenId: input.operatorOpenId ?? null,
+    note: input.note ?? null,
+  };
+
+  await db.insert(signalEventActions).values(action);
 }
 
 // ==================== TokenUnlock Queries ====================

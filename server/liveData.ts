@@ -528,14 +528,34 @@ function getBigQueryClient() {
 
   const projectId = process.env.BIGQUERY_PROJECT_ID;
   const keyFilename = process.env.BIGQUERY_CREDENTIALS_PATH;
-  if (!projectId || !keyFilename) {
-    throw new Error("BIGQUERY_PROJECT_ID or BIGQUERY_CREDENTIALS_PATH is not configured");
+  const credentialsJson =
+    process.env.BIGQUERY_CREDENTIALS_JSON ??
+    process.env.GOOGLE_CREDENTIALS_JSON ??
+    process.env.GCP_SERVICE_ACCOUNT_JSON ??
+    null;
+
+  if (!projectId || (!keyFilename && !credentialsJson)) {
+    throw new Error("BIGQUERY_PROJECT_ID and either BIGQUERY_CREDENTIALS_PATH or BIGQUERY_CREDENTIALS_JSON must be configured");
   }
 
-  bigQueryClient = new BigQuery({
-    projectId,
-    keyFilename,
-  });
+  if (credentialsJson) {
+    let credentials: Record<string, unknown>;
+    try {
+      credentials = JSON.parse(credentialsJson);
+    } catch (error) {
+      throw new Error(`Failed to parse BIGQUERY_CREDENTIALS_JSON: ${error instanceof Error ? error.message : "unknown error"}`);
+    }
+
+    bigQueryClient = new BigQuery({
+      projectId,
+      credentials,
+    });
+  } else {
+    bigQueryClient = new BigQuery({
+      projectId,
+      keyFilename,
+    });
+  }
 
   return bigQueryClient;
 }

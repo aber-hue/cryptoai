@@ -7,11 +7,34 @@ export type ChatTaskType =
   | "news_research"
   | "onchain_holders"
   | "onchain_fund_flow"
+  | "signal_analysis"
   | "full_checkup";
 
 export type ChatInputMessage = {
   role: "system" | "user" | "assistant";
   content: string;
+};
+
+export type ChatSignalContext = {
+  signalId: string;
+  signalType: string;
+  symbol: string;
+  name?: string;
+  summary: string;
+  urgency: "high" | "medium" | "low";
+  strength: number;
+  exchange?: string;
+  theme?: string;
+  marketPhase?: "active" | "upcoming";
+  triggeredAt?: string;
+  relativeTime?: string;
+  missingRule?: string;
+  gapText?: string;
+  rules?: Array<{
+    rule: string;
+    value: string;
+    source: string;
+  }>;
 };
 
 export type ChatExecutionStep = {

@@ -9,6 +9,7 @@ import CoinDetail from "./pages/CoinDetail";
 import ExchangeDepth from "./pages/ExchangeDepth";
 import ExchangeStrategy from "./pages/ExchangeStrategy";
 import DataAnalysis from "./pages/DataAnalysis";
+import StrategyTemplateDetail from "./pages/StrategyTemplateDetail";
 import OnChainBoard from "./pages/OnChainBoard";
 import DataManagement from "./pages/DataManagement";
 import ComponentShowcase from "./pages/ComponentShowcase";
@@ -29,6 +30,7 @@ function Router() {
             <Route path={"/depth/:exchangeId"} component={ExchangeDepth} />
             <Route path={"/positions/:exchangeId/:coinId"} component={ExchangeStrategy} />
             <Route path={"/analysis"} component={DataAnalysis} />
+            <Route path={"/analysis/:strategyId"} component={StrategyTemplateDetail} />
             <Route path={"/onchain"} component={OnChainBoard} />
             <Route path={"/chat"} component={ComponentShowcase} />
             <Route path={"/404"} component={NotFound} />

@@ -47,7 +47,7 @@ export default function Sidebar() {
           <div className="space-y-2">
             {workspaces.map((item) => {
               const Icon = item.icon;
-              const isActive = location === item.path;
+              const isActive = item.path === "/analysis" ? location === item.path || location.startsWith("/analysis/") : location === item.path;
 
               return (
                 <Link

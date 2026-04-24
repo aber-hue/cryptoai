@@ -1,4 +1,4 @@
-import { int, mysqlEnum, mysqlTable, text, timestamp, varchar, boolean, bigint, decimal } from "drizzle-orm/mysql-core";
+import { int, mysqlEnum, mysqlTable, text, timestamp, varchar, boolean, bigint, decimal, index, uniqueIndex } from "drizzle-orm/mysql-core";
 
 /**
  * Core user table backing auth flow.
@@ -216,3 +216,128 @@ export const chatArtifacts = mysqlTable("chatArtifacts", {
 
 export type ChatArtifact = typeof chatArtifacts.$inferSelect;
 export type InsertChatArtifact = typeof chatArtifacts.$inferInsert;
+
+/**
+ * Signal 模板定义表
+ */
+export const signalTemplates = mysqlTable(
+  "signalTemplates",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    signalType: varchar("signalType", { length: 128 }).notNull(),
+    name: varchar("name", { length: 255 }).notNull(),
+    category: varchar("category", { length: 64 }).notNull(),
+    description: text("description"),
+    direction: varchar("direction", { length: 32 }).notNull(),
+    defaultWindow: varchar("defaultWindow", { length: 32 }),
+    defaultThresholdText: varchar("defaultThresholdText", { length: 255 }),
+    severityRule: text("severityRule"),
+    source: varchar("source", { length: 64 }).notNull(),
+    isEnabled: boolean("isEnabled").default(true).notNull(),
+    priority: int("priority").default(0).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    signalTypeUnique: uniqueIndex("uq_signal_templates_signal_type").on(table.signalType),
+    categoryIdx: index("idx_signal_templates_category").on(table.category),
+    enabledIdx: index("idx_signal_templates_enabled").on(table.isEnabled),
+  })
+);
+
+export type SignalTemplate = typeof signalTemplates.$inferSelect;
+export type InsertSignalTemplate = typeof signalTemplates.$inferInsert;
+
+/**
+ * Signal 触发事件表
+ */
+export const signalEvents = mysqlTable(
+  "signalEvents",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    signalType: varchar("signalType", { length: 128 }).notNull(),
+    tokenId: bigint("tokenId", { mode: "number" }).notNull(),
+    symbol: varchar("symbol", { length: 32 }).notNull(),
+    title: varchar("title", { length: 255 }).notNull(),
+    summary: text("summary"),
+    category: varchar("category", { length: 64 }).notNull(),
+    direction: varchar("direction", { length: 32 }).notNull(),
+    window: varchar("window", { length: 32 }),
+    severity: mysqlEnum("severity", ["low", "medium", "high"]).notNull(),
+    status: mysqlEnum("status", ["new", "active", "muted", "expired"]).default("new").notNull(),
+    source: varchar("source", { length: 64 }).notNull(),
+    triggeredAt: timestamp("triggeredAt").notNull(),
+    expiresAt: timestamp("expiresAt"),
+    dedupeKey: varchar("dedupeKey", { length: 255 }).notNull(),
+    latestMetricValue: decimal("latestMetricValue", { precision: 36, scale: 12 }),
+    baselineValue: decimal("baselineValue", { precision: 36, scale: 12 }),
+    thresholdValue: decimal("thresholdValue", { precision: 36, scale: 12 }),
+    changePct: decimal("changePct", { precision: 18, scale: 6 }),
+    payloadJson: text("payloadJson"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    dedupeKeyUnique: uniqueIndex("uq_signal_events_dedupe_key").on(table.dedupeKey),
+    symbolIdx: index("idx_signal_events_symbol").on(table.symbol),
+    tokenIdx: index("idx_signal_events_token_id").on(table.tokenId),
+    typeIdx: index("idx_signal_events_signal_type").on(table.signalType),
+    statusIdx: index("idx_signal_events_status").on(table.status),
+    triggeredAtIdx: index("idx_signal_events_triggered_at").on(table.triggeredAt),
+    statusTriggeredIdx: index("idx_signal_events_status_triggered_at").on(table.status, table.triggeredAt),
+    typeTriggeredIdx: index("idx_signal_events_type_triggered_at").on(table.signalType, table.triggeredAt),
+  })
+);
+
+export type SignalEvent = typeof signalEvents.$inferSelect;
+export type InsertSignalEvent = typeof signalEvents.$inferInsert;
+
+/**
+ * Signal 事件指标明细表
+ */
+export const signalEventMetrics = mysqlTable(
+  "signalEventMetrics",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    signalEventId: varchar("signalEventId", { length: 64 }).notNull(),
+    metricKey: varchar("metricKey", { length: 128 }).notNull(),
+    metricLabel: varchar("metricLabel", { length: 255 }).notNull(),
+    metricValue: decimal("metricValue", { precision: 36, scale: 12 }),
+    metricUnit: varchar("metricUnit", { length: 32 }),
+    baselineValue: decimal("baselineValue", { precision: 36, scale: 12 }),
+    thresholdValue: decimal("thresholdValue", { precision: 36, scale: 12 }),
+    sortOrder: int("sortOrder").default(0).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    eventIdx: index("idx_signal_event_metrics_event_id").on(table.signalEventId),
+    metricKeyIdx: index("idx_signal_event_metrics_metric_key").on(table.metricKey),
+  })
+);
+
+export type SignalEventMetric = typeof signalEventMetrics.$inferSelect;
+export type InsertSignalEventMetric = typeof signalEventMetrics.$inferInsert;
+
+/**
+ * Signal 事件处理动作表
+ */
+export const signalEventActions = mysqlTable(
+  "signalEventActions",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    signalEventId: varchar("signalEventId", { length: 64 }).notNull(),
+    actionType: mysqlEnum("actionType", ["mark_active", "mute", "unmute", "expire", "reopen"]).notNull(),
+    fromStatus: mysqlEnum("fromStatus", ["new", "active", "muted", "expired"]),
+    toStatus: mysqlEnum("toStatus", ["new", "active", "muted", "expired"]),
+    operatorOpenId: varchar("operatorOpenId", { length: 64 }),
+    note: text("note"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    eventIdx: index("idx_signal_event_actions_event_id").on(table.signalEventId),
+    createdAtIdx: index("idx_signal_event_actions_created_at").on(table.createdAt),
+  })
+);
+
+export type SignalEventAction = typeof signalEventActions.$inferSelect;
+export type InsertSignalEventAction = typeof signalEventActions.$inferInsert;

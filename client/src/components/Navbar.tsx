@@ -47,6 +47,8 @@ export default function Navbar() {
                   location.startsWith("/coin/") ||
                   location.startsWith("/depth/") ||
                   location.startsWith("/positions/")
+                : item.href === "/analysis"
+                  ? location === "/analysis" || location.startsWith("/analysis/")
                 : location === item.href;
 
             return (

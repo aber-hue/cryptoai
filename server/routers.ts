@@ -4,6 +4,8 @@ import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, protectedProcedure, router } from "./_core/trpc";
 import { z } from "zod";
 import { orchestrateChatMessage } from "./chat/orchestrator";
+import type { ChatSignalContext } from "./chat/types";
+import { runSignalScan } from "./signal/engine";
 import * as db from "./db";
 import {
   getExchangeDepthViewBySymbol,
@@ -28,6 +30,86 @@ import {
 
 export const appRouter = router({
   system: systemRouter,
+  signal: router({
+    listTemplates: publicProcedure
+      .input(
+        z
+          .object({
+            category: z.string().trim().min(1).optional(),
+            enabledOnly: z.boolean().optional(),
+          })
+          .optional()
+      )
+      .query(async ({ input }) => {
+        return await db.listSignalTemplates({
+          category: input?.category,
+          enabledOnly: input?.enabledOnly ?? false,
+        });
+      }),
+    listEvents: publicProcedure
+      .input(
+        z
+          .object({
+            symbol: z.string().trim().min(1).optional(),
+            signalType: z.string().trim().min(1).optional(),
+            category: z.string().trim().min(1).optional(),
+            status: z.enum(["new", "active", "muted", "expired"]).optional(),
+            limit: z.number().int().min(1).max(200).optional(),
+          })
+          .optional()
+      )
+      .query(async ({ input }) => {
+        return await db.listSignalEvents(input ?? {});
+      }),
+    getEvent: publicProcedure
+      .input(z.object({ id: z.string().trim().min(1) }))
+      .query(async ({ input }) => {
+        return await db.getSignalEventById(input.id);
+      }),
+    updateEventStatus: protectedProcedure
+      .input(
+        z.object({
+          signalEventId: z.string().trim().min(1),
+          toStatus: z.enum(["new", "active", "muted", "expired"]),
+          actionType: z.enum(["mark_active", "mute", "unmute", "expire", "reopen"]),
+          note: z.string().trim().optional(),
+        })
+      )
+      .mutation(async ({ input, ctx }) => {
+        const current = await db.getSignalEventById(input.signalEventId);
+        if (!current) {
+          throw new Error("Signal event not found");
+        }
+
+        await db.updateSignalEventStatus({
+          signalEventId: input.signalEventId,
+          fromStatus: current.event.status,
+          toStatus: input.toStatus,
+          actionType: input.actionType,
+          operatorOpenId: ctx.user?.openId ?? null,
+          note: input.note ?? null,
+        });
+
+        return {
+          success: true,
+        } as const;
+      }),
+    runScan: protectedProcedure
+      .input(
+        z
+          .object({
+            symbols: z.array(z.string().trim().min(1)).optional(),
+            limit: z.number().int().min(10).max(100).optional(),
+          })
+          .optional()
+      )
+      .mutation(async ({ input }) => {
+        return await runSignalScan({
+          symbols: input?.symbols,
+          limit: input?.limit,
+        });
+      }),
+  }),
   chat: router({
     sendMessage: publicProcedure
       .input(
@@ -35,6 +117,34 @@ export const appRouter = router({
           conversationId: z.string().trim().min(1).optional(),
           title: z.string().trim().min(1).optional(),
           persist: z.boolean().optional(),
+          workspace: z.enum(["free_chat", "signal"]).optional(),
+          signalContext: z
+            .object({
+              signalId: z.string().trim().min(1),
+              signalType: z.string().trim().min(1),
+              symbol: z.string().trim().min(1),
+              name: z.string().trim().min(1).optional(),
+              summary: z.string().trim().min(1),
+              urgency: z.enum(["high", "medium", "low"]),
+              strength: z.number().min(0).max(1),
+              exchange: z.string().trim().min(1).optional(),
+              theme: z.string().trim().min(1).optional(),
+              marketPhase: z.enum(["active", "upcoming"]).optional(),
+              triggeredAt: z.string().trim().min(1).optional(),
+              relativeTime: z.string().trim().min(1).optional(),
+              missingRule: z.string().trim().min(1).optional(),
+              gapText: z.string().trim().min(1).optional(),
+              rules: z
+                .array(
+                  z.object({
+                    rule: z.string().trim().min(1),
+                    value: z.string().trim().min(1),
+                    source: z.string().trim().min(1),
+                  })
+                )
+                .optional(),
+            })
+            .optional(),
           messages: z.array(
             z.object({
               role: z.enum(["system", "user", "assistant"]),
@@ -44,7 +154,10 @@ export const appRouter = router({
         })
       )
       .mutation(async ({ input, ctx }) => {
-        const payload = await orchestrateChatMessage(input.messages);
+        const payload = await orchestrateChatMessage(input.messages, {
+          workspace: input.workspace,
+          signalContext: input.signalContext as ChatSignalContext | undefined,
+        });
 
         if (input.persist !== false && ctx.user?.openId) {
           const summary = payload.keyFindings[0] ?? payload.message.slice(0, 240);
@@ -55,6 +168,8 @@ export const appRouter = router({
             taskType: payload.taskType,
             usedTools: payload.usedTools,
             suggestedNextActions: payload.suggestedNextActions,
+            workspace: input.workspace ?? "free_chat",
+            signalContext: input.signalContext ?? null,
           });
 
           const conversation = await db.upsertChatConversation({
