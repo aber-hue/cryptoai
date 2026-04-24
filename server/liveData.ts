@@ -1,5 +1,6 @@
 import { BigQuery } from "@google-cloud/bigquery";
 import { createPool, type Pool, type PoolOptions, type RowDataPacket } from "mysql2/promise";
+import path from "path";
 import { ENV } from "./_core/env";
 import { getFeaturePool } from "./featureDb";
 
@@ -551,9 +552,13 @@ function getBigQueryClient() {
       credentials,
     });
   } else {
+    const resolvedKeyFilename = path.isAbsolute(keyFilename)
+      ? keyFilename
+      : path.resolve(process.cwd(), keyFilename);
+
     bigQueryClient = new BigQuery({
       projectId,
-      keyFilename,
+      keyFilename: resolvedKeyFilename,
     });
   }
 

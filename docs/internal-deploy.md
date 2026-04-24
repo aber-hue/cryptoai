@@ -27,7 +27,15 @@ pnpm install
 
 ## 环境变量
 
-项目依赖 `.env` 文件启动，至少需要以下变量：
+项目依赖 `.env` 文件启动。
+
+当前内部版本约定：
+
+- 允许把部署用凭证和 service account 文件跟仓库一起维护
+- 推荐统一参考仓库根目录 `.env.example`
+- 推荐使用仓库内稳定路径，不再依赖某台开发机的绝对路径
+
+至少需要以下变量：
 
 ```env
 DATABASE_URL=
@@ -36,7 +44,7 @@ OAUTH_SERVER_URL=
 CMC_API_KEY=
 BIGQUERY_PROJECT_ID=
 BIGQUERY_DATASET=
-BIGQUERY_CREDENTIALS_PATH=
+BIGQUERY_CREDENTIALS_PATH=./secrets/bigquery-service-account.json
 ```
 
 补充说明：
@@ -45,9 +53,21 @@ BIGQUERY_CREDENTIALS_PATH=
 - `FEATURE_DATABASE_URL`：功能库
 - `OAUTH_SERVER_URL`：OAuth 服务地址
 - `CMC_API_KEY`：CoinMarketCap 接口 key
-- `BIGQUERY_*`：如内部版本当前功能未用到，可按实际情况决定是否必须配置
+- `BIGQUERY_*`：链上 / On-chain 相关能力依赖它
+- `BIGQUERY_CREDENTIALS_PATH`：当前内部版推荐指向仓库内稳定路径，例如 `./secrets/bigquery-service-account.json`
 
-如果需要，我这边可以单独提供当前本地环境变量清单给开发同学。
+## Signal 模块补充
+
+`signal` 模块除了主项目代码外，还依赖功能库。
+
+需要确认：
+
+- `FEATURE_DATABASE_URL` 已配置
+- signal 相关表已创建
+- signal templates 已 seed
+- 如果页面要看到事件数据，还需要执行一次 signal scan
+
+如果只配置了主库、没有配置功能库，signal 大概率会没有数据。
 
 ## 本地开发启动
 
@@ -106,10 +126,12 @@ pnpm db:push
 2. 代码 push 到 GitHub 仓库
 3. 开发从仓库拉取最新代码
 4. 更新 `.env`
-5. 执行 `pnpm install`
-6. 执行 `pnpm build`
-7. 执行 `pnpm start`
-8. 内部同事验证访问
+5. 如需链上能力，确认 BigQuery 凭证文件路径可用
+6. 如需 signal，确认 `FEATURE_DATABASE_URL`、表结构和 seed 已准备
+7. 执行 `pnpm install`
+8. 执行 `pnpm build`
+9. 执行 `pnpm start`
+10. 内部同事验证访问
 
 ## 我给开发的交付信息
 
