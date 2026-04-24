@@ -1072,18 +1072,16 @@ function extractFundingRawMeta(value: string | null | undefined) {
   }
 }
 
+function buildLeveragedTokenExclusionSql() {
+  return `
+    COALESCE(tp.coin_tags, '') NOT LIKE '%LEVSP%'
+  `;
+}
+
 function buildMarketFilters(input: MarketListInput) {
   const conditions: string[] = [
     "COALESCE(tp.coin_tags, '') NOT LIKE '%STOCK%'",
-    `
-      EXISTS (
-        SELECT 1
-        FROM exchange_listings el_visible
-        JOIN exchange_platforms ep_visible ON ep_visible.id = el_visible.exchange_id
-        WHERE el_visible.token_id = tp.id
-          AND ep_visible.market_type NOT IN ('tradfi', 'onchain')
-      )
-    `,
+    buildLeveragedTokenExclusionSql(),
   ];
   const params: Array<string | number> = [];
 
@@ -1120,18 +1118,6 @@ function buildMarketFilters(input: MarketListInput) {
       ) = ?
     `);
     params.push(...input.exchangeIds, input.exchangeIds.length);
-  } else if (marketTypeValues.length > 0) {
-    const marketTypePlaceholders = marketTypeValues.map(() => "?").join(", ");
-    conditions.push(`
-      EXISTS (
-        SELECT 1
-        FROM exchange_listings el_market
-        JOIN exchange_platforms ep_market ON ep_market.id = el_market.exchange_id
-        WHERE el_market.token_id = tp.id
-          AND ep_market.market_type IN (${marketTypePlaceholders})
-      )
-    `);
-    params.push(...marketTypeValues);
   }
 
   return {
@@ -1146,6 +1132,10 @@ export async function listMarketTokens(input: MarketListInput) {
   const pageSize = Math.min(input.pageSize ?? 25, 100);
   const offset = (page - 1) * pageSize;
   const { whereClause, params } = buildMarketFilters(input);
+  const marketTypeValues = getMarketTypeFilterValues(input.marketType);
+  const listingAggMarketTypeClause = marketTypeValues.length
+    ? `AND ep.market_type IN (${marketTypeValues.map(() => "?").join(", ")})`
+    : `AND ep.market_type NOT IN ('tradfi', 'onchain')`;
 
   const sortableColumns = {
     listedAt: "listingAgg.listedAt",
@@ -1175,7 +1165,7 @@ export async function listMarketTokens(input: MarketListInput) {
       FROM exchange_pairs
       GROUP BY token_id
     ) pairAgg ON pairAgg.token_id = tp.id
-    LEFT JOIN (
+    INNER JOIN (
       SELECT
         el.token_id AS token_id,
         MAX(el.listing_time) AS listedAt,
@@ -1186,7 +1176,8 @@ export async function listMarketTokens(input: MarketListInput) {
         ) AS recentVenue
       FROM exchange_listings el
       LEFT JOIN exchange_platforms ep ON ep.id = el.exchange_id
-      WHERE ep.market_type NOT IN ('tradfi', 'onchain')
+      WHERE 1 = 1
+        ${listingAggMarketTypeClause}
       GROUP BY el.token_id
     ) listingAgg ON listingAgg.token_id = tp.id
     ${whereClause}
@@ -1194,17 +1185,10 @@ export async function listMarketTokens(input: MarketListInput) {
     LIMIT ? OFFSET ?
   `;
 
-  const countSql = `
-    SELECT COUNT(*) AS total
-    FROM token_profiles tp
-    ${whereClause}
-  `;
-
   const [rows] = await currentPool.query<(RowDataPacket & Omit<MarketTokenRow, "exchanges">)[]>(
     listSql,
-    [...params, pageSize, offset]
+    [...marketTypeValues, ...params, pageSize, offset]
   );
-  const [countRows] = await currentPool.query<(RowDataPacket & { total: number })[]>(countSql, params);
 
   const tokenIds = rows.map(row => row.tokenId);
   let exchangeMap = new Map<number, MarketTokenRow["exchanges"]>();
@@ -1253,7 +1237,7 @@ export async function listMarketTokens(input: MarketListInput) {
       ...row,
       exchanges: exchangeMap.get(row.tokenId) ?? [],
     })),
-    total: countRows[0]?.total ?? 0,
+    total: rows.length,
     page,
     pageSize,
   };

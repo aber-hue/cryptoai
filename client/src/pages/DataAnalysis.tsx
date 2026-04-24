@@ -72,7 +72,7 @@ export default function DataAnalysis() {
               <BrainCircuit className="h-3.5 w-3.5" />
               TEMPLATE LAB
             </div>
-            <h1 className="mt-4 text-3xl font-semibold tracking-[-0.04em]">把基础异动，组装成可复用的机会模板</h1>
+            <h1 className="page-title mt-4">把基础异动，组装成可复用的机会模板</h1>
             <p className="mt-3 max-w-2xl text-sm leading-7 text-white/82">
               这里先看策略，不讲方法论。每个策略点进去后，会看到当前命中的币种、证据强度，以及可手动开的模拟仓位。
             </p>
@@ -82,19 +82,19 @@ export default function DataAnalysis() {
         <div className="mt-6 grid gap-3 md:grid-cols-4">
           <div className="rounded-[22px] bg-white/12 p-4 backdrop-blur">
             <div className="text-xs uppercase tracking-[0.16em] text-white/65">Templates</div>
-            <div className="mt-2 text-2xl font-semibold">{opportunityTemplates.length}</div>
+            <div className="metric-value mt-2">{opportunityTemplates.length}</div>
           </div>
           <div className="rounded-[22px] bg-white/12 p-4 backdrop-blur">
             <div className="text-xs uppercase tracking-[0.16em] text-white/65">Signals</div>
-            <div className="mt-2 text-2xl font-semibold">{totalSignals}</div>
+            <div className="metric-value mt-2">{totalSignals}</div>
           </div>
           <div className="rounded-[22px] bg-white/12 p-4 backdrop-blur">
             <div className="text-xs uppercase tracking-[0.16em] text-white/65">Opportunities</div>
-            <div className="mt-2 text-2xl font-semibold">{opportunities.length}</div>
+            <div className="metric-value mt-2">{opportunities.length}</div>
           </div>
           <div className="rounded-[22px] bg-white/12 p-4 backdrop-blur">
             <div className="text-xs uppercase tracking-[0.16em] text-white/65">Covered Symbols</div>
-            <div className="mt-2 text-2xl font-semibold">{coveredSymbols}</div>
+            <div className="metric-value mt-2">{coveredSymbols}</div>
           </div>
         </div>
       </section>
@@ -114,7 +114,7 @@ export default function DataAnalysis() {
                     <div>
                       <div className="flex items-center gap-2">
                         <Target className="h-4 w-4 text-[#1558c0]" />
-                        <CardTitle className="text-xl">{template.name}</CardTitle>
+                        <CardTitle className="section-title">{template.name}</CardTitle>
                       </div>
                       <div className="mt-2 text-sm leading-6 text-[#475467]">{template.description}</div>
                     </div>
@@ -127,15 +127,15 @@ export default function DataAnalysis() {
                   <div className="grid gap-3 sm:grid-cols-3">
                     <div className="rounded-[20px] bg-[#f8fafc] px-4 py-3">
                       <div className="text-xs uppercase tracking-[0.16em] text-[#667085]">命中币种</div>
-                      <div className="mt-1 text-xl font-semibold text-[oklch(var(--crypto-ink))]">{summary?.count ?? 0}</div>
+                      <div className="metric-value mt-1 text-[oklch(var(--crypto-ink))]">{summary?.count ?? 0}</div>
                     </div>
                     <div className="rounded-[20px] bg-[#f8fafc] px-4 py-3">
                       <div className="text-xs uppercase tracking-[0.16em] text-[#667085]">平均分</div>
-                      <div className="mt-1 text-xl font-semibold text-[oklch(var(--crypto-ink))]">{summary?.avgScore ?? 0}</div>
+                      <div className="metric-value mt-1 text-[oklch(var(--crypto-ink))]">{summary?.avgScore ?? 0}</div>
                     </div>
                     <div className="rounded-[20px] bg-[#f8fafc] px-4 py-3">
                       <div className="text-xs uppercase tracking-[0.16em] text-[#667085]">最高分</div>
-                      <div className="mt-1 text-xl font-semibold text-[oklch(var(--crypto-ink))]">{summary?.bestScore ?? 0}</div>
+                      <div className="metric-value mt-1 text-[oklch(var(--crypto-ink))]">{summary?.bestScore ?? 0}</div>
                     </div>
                   </div>
 

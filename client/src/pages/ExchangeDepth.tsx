@@ -132,10 +132,10 @@ export default function ExchangeDepth() {
           {exchangeName.slice(0, 1)}
         </div>
         <div>
-          <h1 className="text-5xl font-semibold tracking-tight text-[oklch(var(--crypto-ink))]">
+          <h1 className="page-title text-[oklch(var(--crypto-ink))]">
             {exchangeName}
           </h1>
-          <div className="mt-2 text-2xl text-muted-foreground">市场深度分析</div>
+          <div className="mt-2 text-base text-muted-foreground md:text-lg">市场深度分析</div>
         </div>
       </div>
 
@@ -143,7 +143,7 @@ export default function ExchangeDepth() {
         <CardContent className="p-6">
           <div className="mb-5 flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
             <div>
-              <h2 className="text-[1.55rem] font-semibold text-[oklch(var(--crypto-ink))]">深度趋势图</h2>
+              <h2 className="section-title text-[oklch(var(--crypto-ink))]">深度趋势图</h2>
             </div>
             <div className="flex flex-wrap gap-2">
               {([
@@ -195,7 +195,7 @@ export default function ExchangeDepth() {
       <Card className="rounded-[28px] border border-white/70 bg-white/78 shadow-[0_16px_40px_rgba(83,102,138,0.08)]">
         <CardContent className="p-6">
           <div className="mb-5">
-            <h2 className="text-[1.55rem] font-semibold text-[oklch(var(--crypto-ink))]">日均深度列表</h2>
+            <h2 className="section-title text-[oklch(var(--crypto-ink))]">日均深度列表</h2>
           </div>
           <div className="overflow-x-auto">
             <table className="min-w-full text-sm">

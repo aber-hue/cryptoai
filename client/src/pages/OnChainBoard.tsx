@@ -719,7 +719,7 @@ function MetricTile({
         <div className="text-xs font-medium text-[#64748B]">{label}</div>
         {typeof delta === "number" ? <ValueDelta value={delta} /> : null}
       </div>
-      <div className={cn("mt-2 text-2xl font-semibold text-[#0F172A]", valueClassName)} title={tooltip}>
+      <div className={cn("metric-value mt-2 text-[#0F172A]", valueClassName)} title={tooltip}>
         {value}
       </div>
       {sparkline ? <MiniSparkline values={sparkline} color={DEEP_BLUE} className="mt-3" /> : null}
@@ -1273,7 +1273,7 @@ export default function OnChainBoard() {
       <section className="rounded-[28px] border border-white/80 bg-[linear-gradient(135deg,rgba(255,255,255,0.92),rgba(239,246,255,0.88))] p-5 shadow-[0_16px_40px_rgba(30,64,175,0.08)]">
         <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
           <div>
-            <h1 className="text-3xl font-semibold tracking-tight text-[#0F172A]">链上数据分析看板</h1>
+            <h1 className="page-title text-[#0F172A]">链上数据分析看板</h1>
           </div>
 
           <div className="grid gap-3 md:grid-cols-[minmax(0,420px)_auto_auto] xl:items-center">
@@ -1733,12 +1733,12 @@ export default function OnChainBoard() {
                   {dashboard.logo}
                 </div>
                 <div>
-                  <div className="text-2xl font-semibold text-[#0F172A]">{snapshot.tokenName}</div>
+                  <div className="metric-value text-[#0F172A]">{snapshot.tokenName}</div>
                   <div className="mt-1 text-sm text-[#64748B]">{snapshot.tokenSymbol}</div>
                 </div>
               </div>
               <div className="mt-5 flex flex-wrap items-end gap-3">
-                <div className="text-4xl font-semibold tracking-tight text-[#0F172A]">{compactCurrency(snapshot.priceUsd)}</div>
+                <div className="metric-value-strong text-[#0F172A]">{compactCurrency(snapshot.priceUsd)}</div>
                 <div className={cn("pb-1 text-lg font-medium", percentTone(snapshot.priceChange24h))}>
                   {snapshot.priceChange24h > 0 ? "+" : ""}
                   {formatPercent(snapshot.priceChange24h)}
@@ -1808,7 +1808,7 @@ export default function OnChainBoard() {
                   <div className="text-sm font-semibold text-[#0F172A]">控盘率 30 天趋势</div>
                   <div className="mt-1 text-xs text-[#64748B]">带坐标轴，便于看阶段变化</div>
                 </div>
-                <div className="text-3xl font-semibold text-[#1E3A8A]">{formatPercent(snapshot.controlRate)}</div>
+                <div className="metric-value-strong text-[#1E3A8A]">{formatPercent(snapshot.controlRate)}</div>
               </div>
               <div className="h-[300px]">
                 <ResponsiveContainer width="100%" height="100%">
@@ -1838,7 +1838,7 @@ export default function OnChainBoard() {
                   <div className="text-sm font-semibold text-[#0F172A]">持币人数 30 天柱形图</div>
                   <div className="mt-1 text-xs text-[#64748B]">用日维度看新增持有人变化更直观</div>
                 </div>
-                <div className="text-3xl font-semibold text-[#1D4ED8]">{snapshot.holderCount.toLocaleString()}</div>
+                <div className="metric-value-strong text-[#1D4ED8]">{snapshot.holderCount.toLocaleString()}</div>
               </div>
               <div className="h-[320px]">
                 <ResponsiveContainer width="100%" height="100%">

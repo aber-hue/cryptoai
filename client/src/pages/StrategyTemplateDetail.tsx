@@ -108,7 +108,7 @@ export default function StrategyTemplateDetail() {
               <Target className="h-3.5 w-3.5" />
               STRATEGY DETAIL
             </div>
-            <h1 className="mt-4 text-3xl font-semibold tracking-[-0.04em] text-[oklch(var(--crypto-ink))]">{template.name}</h1>
+            <h1 className="page-title mt-4 text-[oklch(var(--crypto-ink))]">{template.name}</h1>
             <p className="mt-3 max-w-2xl text-sm leading-7 text-[#475467]">{template.description}</p>
           </div>
 
@@ -126,19 +126,19 @@ export default function StrategyTemplateDetail() {
         <div className="mt-6 grid gap-3 md:grid-cols-4">
           <div className="rounded-[22px] bg-[#f8fafc] p-4">
             <div className="text-xs uppercase tracking-[0.16em] text-[#667085]">命中币种</div>
-            <div className="mt-2 text-2xl font-semibold text-[oklch(var(--crypto-ink))]">{opportunities.length}</div>
+            <div className="metric-value mt-2 text-[oklch(var(--crypto-ink))]">{opportunities.length}</div>
           </div>
           <div className="rounded-[22px] bg-[#f8fafc] p-4">
             <div className="text-xs uppercase tracking-[0.16em] text-[#667085]">平均置信度</div>
-            <div className="mt-2 text-2xl font-semibold text-[oklch(var(--crypto-ink))]">{averageConfidence}%</div>
+            <div className="metric-value mt-2 text-[oklch(var(--crypto-ink))]">{averageConfidence}%</div>
           </div>
           <div className="rounded-[22px] bg-[#f8fafc] p-4">
             <div className="text-xs uppercase tracking-[0.16em] text-[#667085]">最低触发分</div>
-            <div className="mt-2 text-2xl font-semibold text-[oklch(var(--crypto-ink))]">{template.minimumScore}</div>
+            <div className="metric-value mt-2 text-[oklch(var(--crypto-ink))]">{template.minimumScore}</div>
           </div>
           <div className="rounded-[22px] bg-[#f8fafc] p-4">
             <div className="text-xs uppercase tracking-[0.16em] text-[#667085]">模拟仓位</div>
-            <div className="mt-2 text-2xl font-semibold text-[oklch(var(--crypto-ink))]">{Object.keys(positions).length}</div>
+            <div className="metric-value mt-2 text-[oklch(var(--crypto-ink))]">{Object.keys(positions).length}</div>
           </div>
         </div>
       </section>
@@ -189,7 +189,7 @@ export default function StrategyTemplateDetail() {
                   <div className="flex flex-wrap items-start justify-between gap-4">
                     <div>
                       <div className="flex flex-wrap items-center gap-2">
-                        <div className="text-[1.75rem] font-semibold leading-none tracking-[-0.04em] text-[oklch(var(--crypto-ink))]">
+                        <div className="metric-value-strong text-[oklch(var(--crypto-ink))]">
                           {item.symbol}
                         </div>
                         <Badge className={cn("rounded-full px-3 py-1", biasTone(item.bias))}>{item.bias}</Badge>

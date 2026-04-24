@@ -1153,7 +1153,7 @@ export default function CoinDetail() {
               <div className="text-[3rem] font-semibold leading-none tracking-tight text-[oklch(var(--crypto-ink))]">
                 {formatCompactPrice(token.price)}
               </div>
-              <div className="mt-3 text-[1.75rem] font-semibold leading-none text-[oklch(var(--crypto-green))]">
+              <div className="metric-value-strong mt-3 text-[oklch(var(--crypto-green))]">
                 {tokenProfile?.priceChange7d != null
                   ? `${tokenProfile.priceChange7d >= 0 ? "+" : ""}${tokenProfile.priceChange7d.toFixed(2)}% (7D)`
                   : "+35.17% (All)"}
@@ -1299,7 +1299,7 @@ export default function CoinDetail() {
                 />
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-3">
-                    <h1 className="text-4xl font-semibold text-[oklch(var(--crypto-ink))]">{token.name}</h1>
+                    <h1 className="page-title text-[oklch(var(--crypto-ink))]">{token.name}</h1>
                     <Badge variant="secondary" className="rounded-full px-3 py-1">
                       {token.symbol}
                     </Badge>
@@ -1831,7 +1831,7 @@ export default function CoinDetail() {
             <Card className="rounded-[28px] border border-white/70 bg-white/78 shadow-[0_16px_40px_rgba(83,102,138,0.08)]">
               <CardContent className="p-6">
                 <div className="mb-5">
-                  <h2 className="text-3xl font-semibold text-[oklch(var(--crypto-ink))]">代币解锁完整表</h2>
+                  <h2 className="section-title text-[oklch(var(--crypto-ink))]">代币解锁完整表</h2>
                   <div className="mt-2 text-muted-foreground">按日期汇总类别释放量、月度释放总量与累计占比</div>
                 </div>
                 {tokenUnlockQuery.isError ? (
@@ -2090,7 +2090,7 @@ export default function CoinDetail() {
                   >
                     <CardContent className="p-6">
                       <div className="text-sm text-muted-foreground">{item.label}</div>
-                      <div className="mt-3 text-4xl font-semibold text-[oklch(var(--crypto-ink))]">{item.value}</div>
+                      <div className="metric-value-strong mt-3 text-[oklch(var(--crypto-ink))]">{item.value}</div>
                       {item.sub ? <div className="mt-2 text-base text-muted-foreground">{item.sub}</div> : null}
                     </CardContent>
                   </Card>
@@ -2106,7 +2106,7 @@ export default function CoinDetail() {
               <Card className="rounded-[28px] border border-white/70 bg-white/78 shadow-[0_16px_40px_rgba(83,102,138,0.08)]">
                 <CardContent className="p-6">
                   <div className="mb-5">
-                    <h2 className="text-3xl font-semibold text-[oklch(var(--crypto-ink))]">融资历史</h2>
+                    <h2 className="section-title text-[oklch(var(--crypto-ink))]">融资历史</h2>
                     <div className="mt-2 text-muted-foreground">各轮融资详情及参与机构</div>
                   </div>
 
@@ -2243,7 +2243,7 @@ export default function CoinDetail() {
                             .join("") || "?"}
                         </div>
                         <div className="min-w-0">
-                          <div className="text-[1.75rem] font-semibold leading-tight text-[oklch(var(--crypto-ink))]">
+                          <div className="metric-value-strong leading-tight text-[oklch(var(--crypto-ink))]">
                             {member.name}
                           </div>
                           <div className="mt-1 text-base text-[oklch(var(--crypto-ink))]">

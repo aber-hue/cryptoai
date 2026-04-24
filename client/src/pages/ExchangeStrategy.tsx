@@ -139,7 +139,7 @@ export default function ExchangeStrategy() {
         </div>
         <div>
           <div className="flex items-center gap-3">
-            <h1 className="text-4xl font-semibold text-[oklch(var(--crypto-ink))]">
+            <h1 className="page-title text-[oklch(var(--crypto-ink))]">
               {detail?.exchangeName ?? "交易所详情"}
             </h1>
             {detail?.marketType ? (
@@ -148,7 +148,7 @@ export default function ExchangeStrategy() {
               </Badge>
             ) : null}
           </div>
-          <div className="mt-2 text-lg text-muted-foreground">
+          <div className="mt-2 text-base text-muted-foreground md:text-lg">
             {tokenProfile?.symbol ?? normalizedSymbol} 合约持仓与资金费率正式数据
           </div>
           <div className="mt-1 text-sm text-muted-foreground">
@@ -176,7 +176,7 @@ export default function ExchangeStrategy() {
           >
             <CardContent className="p-4">
               <div className="text-xs text-muted-foreground">{label}</div>
-              <div className="mt-1 text-xl font-semibold text-[oklch(var(--crypto-ink))]">{value}</div>
+              <div className="metric-value mt-1 text-[oklch(var(--crypto-ink))]">{value}</div>
             </CardContent>
           </Card>
         ))}
@@ -186,7 +186,7 @@ export default function ExchangeStrategy() {
         <CardContent className="p-6">
           <div className="mb-5 flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
             <div>
-              <h2 className="text-3xl font-semibold text-[oklch(var(--crypto-ink))]">仓位与资金费率趋势</h2>
+              <h2 className="section-title text-[oklch(var(--crypto-ink))]">仓位与资金费率趋势</h2>
               <div className="mt-2 text-muted-foreground">按不同颗粒度查看该交易所的未平仓量与资金费率变化</div>
             </div>
             <div className="flex flex-wrap gap-2">
@@ -258,7 +258,7 @@ export default function ExchangeStrategy() {
       <Card className="rounded-[28px] border border-white/70 bg-white/78 shadow-[0_16px_40px_rgba(83,102,138,0.08)]">
         <CardContent className="p-6">
           <div className="mb-5">
-            <h2 className="text-3xl font-semibold text-[oklch(var(--crypto-ink))]">日度持仓明细</h2>
+            <h2 className="section-title text-[oklch(var(--crypto-ink))]">日度持仓明细</h2>
             <div className="mt-2 text-muted-foreground">按时间倒序展示该交易所每日未平仓量和资金费率</div>
           </div>
 

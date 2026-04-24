@@ -219,6 +219,42 @@ function formatCountdownOrDateTime(value: string | null) {
   return formatAnnouncementDateTime(value);
 }
 
+function ExchangeSummaryList({
+  items,
+}: {
+  items: Array<{
+    name: string;
+    displayName: string;
+    logoUrl?: string | null;
+    rawType?: string | null;
+  }>;
+}) {
+  if (items.length === 0) {
+    return <div className="text-xs text-muted-foreground">—</div>;
+  }
+
+  return (
+    <div className="grid grid-cols-2 gap-x-2 gap-y-1.5">
+      {items.map(exchange => (
+        <div
+          key={`${exchange.name}-${exchange.rawType ?? "market"}`}
+          className="flex min-w-0 items-center gap-1.5 rounded-lg bg-[oklch(var(--crypto-panel-soft))] px-2 py-1.5"
+        >
+          <AssetLogo
+            src={exchange.logoUrl}
+            alt={exchange.displayName}
+            fallback={exchange.displayName.slice(0, 1).toUpperCase()}
+            className="h-4 w-4 shrink-0"
+          />
+          <span className="truncate text-[12px] text-[oklch(var(--crypto-ink))]">
+            {exchange.displayName}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function matchesSelectedExchange(
   exchangeName: string,
   selectedExchange: string,
@@ -261,7 +297,7 @@ export default function DataManagement() {
         : "listedAt",
     sortOrder: sortDirection,
     page: 1,
-    pageSize: 100,
+    pageSize: 40,
   });
   const watchlistQuery = trpc.market.getWatchlist.useQuery();
   const marketTokensErrorMessage =
@@ -585,7 +621,7 @@ export default function DataManagement() {
         <CardContent className="p-6">
             <div className="flex flex-wrap items-start justify-between gap-4">
               <div>
-                <h2 className="text-3xl font-semibold text-[oklch(var(--crypto-ink))]">筛选交易所</h2>
+                <h2 className="section-title text-[oklch(var(--crypto-ink))]">筛选交易所</h2>
               </div>
             <div className="flex flex-wrap items-center gap-2">
               <div className="flex items-center gap-2 rounded-2xl border border-[#d8e0eb] bg-white p-1">
@@ -689,48 +725,52 @@ export default function DataManagement() {
             ) : null}
             <div className="overflow-x-auto">
             <table className="min-w-full text-sm">
-              <thead className="border-b border-[#d8e0eb] text-left text-[15px] font-semibold text-[oklch(var(--crypto-ink))]">
+              <thead className="border-b border-[#d8e0eb] text-left text-[13px] font-semibold text-[oklch(var(--crypto-ink))]">
                 <tr>
-                  <th className="px-5 py-5">
+                  <th rowSpan={2} className="px-3 py-4 align-middle">
                     <SortButton field="rank" label="#" />
                   </th>
-                  <th className="px-5 py-5">
+                  <th rowSpan={2} className="px-3 py-4 align-middle">
                     <SortButton field="symbol" label="币种" />
                   </th>
-                  <th className="px-5 py-5">
+                  <th rowSpan={2} className="px-3 py-4 align-middle">
                     <SortButton field="listedAt" label="上线时间" />
                   </th>
-                  <th className="px-5 py-5">
+                  <th rowSpan={2} className="px-3 py-4 align-middle">
                     <SortButton field="price" label="价格" />
                   </th>
-                  <th className="px-5 py-5">
+                  <th rowSpan={2} className="px-3 py-4 align-middle">
                     <SortButton field="totalSupply" label="总量" />
                   </th>
-                  <th className="px-5 py-5">
+                  <th rowSpan={2} className="px-3 py-4 align-middle">
                     <SortButton field="circulatingSupply" label="流通量" />
                   </th>
-                  <th className="px-5 py-5">
+                  <th rowSpan={2} className="px-3 py-4 align-middle">
                     <SortButton field="fdv" label="FDV" />
                   </th>
-                  <th className="px-5 py-5">
+                  <th rowSpan={2} className="px-3 py-4 align-middle">
                     <SortButton field="marketCap" label="流通市值" />
                   </th>
-                  <th className="px-5 py-5">上线交易所</th>
-                  <th className="px-5 py-5">最近上所</th>
-                  <th className="px-5 py-5 text-right">
+                  <th colSpan={2} className="px-3 pb-2 pt-4 text-left align-bottom">上线交易所</th>
+                  <th rowSpan={2} className="px-3 py-4 align-middle">最近上所</th>
+                  <th rowSpan={2} className="px-3 py-4 text-right align-middle">
                     <SortButton field="volume24h" label="24h交易量" align="right" />
                   </th>
+                </tr>
+                <tr className="border-t border-[#eef2f6]">
+                  <th className="px-3 pb-3 pt-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Spot</th>
+                  <th className="px-3 pb-3 pt-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Perps</th>
                 </tr>
               </thead>
               <tbody>
                 {filteredTokens.map(token => (
                   <tr
                     key={token.raw.tokenId}
-                    className="cursor-pointer border-b border-[#e7edf4] text-[15px] text-[oklch(var(--crypto-ink))] transition-colors hover:bg-[#f8fafc]"
+                    className="cursor-pointer border-b border-[#e7edf4] text-[13px] text-[oklch(var(--crypto-ink))] transition-colors hover:bg-[#f8fafc]"
                     onClick={() => setLocation(`/coin/${token.symbol.toLowerCase()}`)}
                   >
-                    <td className="px-5 py-4 align-top">{token.rank}</td>
-                    <td className="px-5 py-4 align-top">
+                    <td className="px-3 py-3 align-top">{token.rank}</td>
+                    <td className="px-3 py-3 align-top">
                       <div className="flex items-start gap-3">
                         <div className="relative h-8 w-8 shrink-0 overflow-visible">
                           {token.logoUrl ? (
@@ -751,64 +791,32 @@ export default function DataManagement() {
                           ) : null}
                         </div>
                         <div>
-                          <div className="font-semibold">{token.symbol}</div>
-                          <div className="text-muted-foreground">{token.name}</div>
+                          <div className="font-semibold leading-5">{token.symbol}</div>
+                          <div className="line-clamp-1 text-[12px] leading-5 text-muted-foreground">{token.name}</div>
                         </div>
                       </div>
                     </td>
-                    <td className="px-5 py-4 align-top">{token.listedAt}</td>
-                    <td className="px-5 py-4 align-top font-mono">{formatPrice(token.price)}</td>
-                    <td className="px-5 py-4 align-top font-mono">{token.totalSupply}</td>
-                    <td className="px-5 py-4 align-top font-mono">{token.circulatingSupply}</td>
-                    <td className="px-5 py-4 align-top font-mono">{token.fdv}</td>
-                    <td className="px-5 py-4 align-top font-mono">{token.marketCap}</td>
-                    <td className="px-5 py-4 align-top">
-                      <div className="grid min-w-[220px] grid-cols-2 gap-4">
-                        {(["spot", "perps"] as const).map(columnType => {
-                          const exchangeItems = token.exchanges.filter(exchange =>
-                            columnType === "spot"
-                              ? exchange.rawType !== "perps"
-                              : exchange.rawType === "perps"
-                          );
-
-                          return (
-                            <div key={`${token.symbol}-${columnType}`} className="space-y-2">
-                              <div className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-                                {columnType === "spot" ? "Spot" : "Perps"}
-                              </div>
-                              {exchangeItems.length > 0 ? (
-                                <div className="space-y-1.5">
-                                  {exchangeItems.map(exchange => (
-                                    <div
-                                      key={`${token.symbol}-${exchange.name}-${exchange.rawType}`}
-                                      className="flex items-center gap-2 rounded-xl bg-[oklch(var(--crypto-panel-soft))] px-2.5 py-2"
-                                    >
-                                      {exchange.logoUrl ? (
-                                        <img
-                                          src={exchange.logoUrl}
-                                          alt={exchange.displayName}
-                                          className="h-5 w-5 rounded-full border border-[#d8e0eb] bg-white object-cover"
-                                        />
-                                      ) : (
-                                        <div className="flex h-5 w-5 items-center justify-center rounded-full bg-white text-[10px] font-semibold text-[#344054]">
-                                          {exchange.displayName.slice(0, 1).toUpperCase()}
-                                        </div>
-                                      )}
-                                      <span className="text-sm text-[oklch(var(--crypto-ink))]">
-                                        {exchange.displayName}
-                                      </span>
-                                    </div>
-                                  ))}
-                                </div>
-                              ) : (
-                                <div className="text-sm text-muted-foreground">—</div>
-                              )}
-                            </div>
-                          );
-                        })}
+                    <td className="px-3 py-3 align-top font-mono text-[12px]">{token.listedAt}</td>
+                    <td className="px-3 py-3 align-top font-mono text-[12px]">{formatPrice(token.price)}</td>
+                    <td className="px-3 py-3 align-top font-mono text-[12px]">{token.totalSupply}</td>
+                    <td className="px-3 py-3 align-top font-mono text-[12px]">{token.circulatingSupply}</td>
+                    <td className="px-3 py-3 align-top font-mono text-[12px]">{token.fdv}</td>
+                    <td className="px-3 py-3 align-top font-mono text-[12px]">{token.marketCap}</td>
+                    <td className="px-3 py-3 align-top">
+                      <div className="min-w-[160px]">
+                        <ExchangeSummaryList
+                          items={token.exchanges.filter(exchange => exchange.rawType !== "perps")}
+                        />
                       </div>
                     </td>
-                    <td className="px-5 py-4 align-top">
+                    <td className="px-3 py-3 align-top">
+                      <div className="min-w-[150px]">
+                        <ExchangeSummaryList
+                          items={token.exchanges.filter(exchange => exchange.rawType === "perps")}
+                        />
+                      </div>
+                    </td>
+                    <td className="px-3 py-3 align-top">
                       {(() => {
                         const recentVenueExchange = token.exchanges.find(exchange => exchange.name === token.recentVenue);
 
@@ -824,17 +832,17 @@ export default function DataManagement() {
                               fallback={recentVenueExchange.displayName.slice(0, 1).toUpperCase()}
                               className="h-5 w-5"
                             />
-                            <span>{token.recentVenue}</span>
+                            <span className="text-[12px]">{token.recentVenue}</span>
                           </div>
                         );
                       })()}
                     </td>
-                    <td className="px-5 py-4 text-right align-top font-mono">{token.volume24h}</td>
+                    <td className="px-3 py-3 text-right align-top font-mono text-[12px]">{token.volume24h}</td>
                   </tr>
                 ))}
                 {!marketTokensQuery.isLoading && filteredTokens.length === 0 ? (
                   <tr>
-                    <td colSpan={11} className="px-5 py-12 text-center text-sm text-muted-foreground">
+                    <td colSpan={12} className="px-5 py-12 text-center text-sm text-muted-foreground">
                       {marketTokensQuery.isError
                         ? "市场数据加载失败，请查看上方错误信息"
                         : coinScope === "watchlist"
@@ -845,7 +853,7 @@ export default function DataManagement() {
                 ) : null}
                 {marketTokensQuery.isLoading ? (
                   <tr>
-                    <td colSpan={11} className="px-5 py-12 text-center text-sm text-muted-foreground">
+                    <td colSpan={12} className="px-5 py-12 text-center text-sm text-muted-foreground">
                       正在加载真实市场数据...
                     </td>
                   </tr>
@@ -961,7 +969,7 @@ export default function DataManagement() {
                       </Badge>
                     </div>
 
-                    <h3 className="mt-4 text-[28px] font-semibold leading-none text-[#101828]">
+                    <h3 className="metric-value-strong mt-4 text-[#101828]">
                       {item.symbol}
                     </h3>
                     <p className="mt-3 line-clamp-1 text-[15px] leading-8 text-[#475467]">{item.tokenName}</p>
