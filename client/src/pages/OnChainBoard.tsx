@@ -11,7 +11,7 @@ import {
 } from "@/components/ui/table";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
-import { ArrowDownRight, ArrowUpRight, ChevronDown, Copy, Database, Droplets, Expand, RefreshCw, Search, TrendingDown, TrendingUp, X } from "lucide-react";
+import { ArrowDownRight, ArrowUpRight, ChevronDown, Copy, Droplets, Expand, RefreshCw, Search, TrendingDown, TrendingUp, X } from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import {
@@ -1014,7 +1014,6 @@ export default function OnChainBoard() {
   const [selectedSymbol, setSelectedSymbol] = useState("BSB");
   const [tokenQuery, setTokenQuery] = useState("BSB");
   const [activeView, setActiveView] = useState<"overview" | "fund-flow" | "holders">("overview");
-  const [selectedDate, setSelectedDate] = useState("2026-04-15");
   const [isFlowFullscreenOpen, setIsFlowFullscreenOpen] = useState(false);
   const [flowMinAmount, setFlowMinAmount] = useState(0);
   const [collapsedNodeIds, setCollapsedNodeIds] = useState<Set<string>>(new Set());
@@ -1035,7 +1034,6 @@ export default function OnChainBoard() {
   const fundFlowQuery = trpc.onchain.getFundFlow.useQuery(
     {
       symbol: selectedSymbol,
-      date: selectedDate,
       depth: 4,
       limitPerLayer: 36,
     },
@@ -1049,7 +1047,6 @@ export default function OnChainBoard() {
   const holdersQuery = trpc.onchain.getHolders.useQuery(
     {
       symbol: selectedSymbol,
-      date: selectedDate,
       page: holderPage,
       pageSize: 20,
     },
@@ -1127,7 +1124,8 @@ export default function OnChainBoard() {
     tokenDashboards.find(item => item.symbol === selectedSymbol) ??
     tokenDashboards.find(item => item.symbol === selectedTokenMeta?.symbol) ??
     tokenDashboards[0];
-  const snapshot = dashboard.dates[selectedDate] ?? dashboard.dates["2026-04-15"];
+  const latestDashboardDate = dashboardDates[0];
+  const snapshot = dashboard.dates[latestDashboardDate] ?? dashboard.dates["2026-04-15"];
   const trendWindow = dashboard.trend90d.slice(-trendDays);
 
   const controlSpark = seriesSlice(dashboard.trend90d, "controlRate", 7).map(item => item.value);
@@ -1226,11 +1224,11 @@ export default function OnChainBoard() {
   useEffect(() => {
     setCollapsedNodeIds(new Set());
     setFlowMinAmount(0);
-  }, [selectedSymbol, selectedDate]);
+  }, [selectedSymbol]);
 
   useEffect(() => {
     setHolderPage(1);
-  }, [selectedSymbol, selectedDate]);
+  }, [selectedSymbol]);
 
   const handleRefresh = () => {
     fundFlowQuery.refetch();
@@ -1377,10 +1375,6 @@ export default function OnChainBoard() {
               {token.symbol} · {token.name}
             </button>
           ))}
-          <span className="inline-flex items-center gap-2 rounded-full bg-white px-3 py-1.5">
-            <Database className="h-4 w-4 text-[#1D4ED8]" />
-            数据日期：{selectedDate}
-          </span>
         </div>
       </section>
 
@@ -1691,7 +1685,7 @@ export default function OnChainBoard() {
               <div>
                 <div className="text-xl font-semibold text-[#0F172A]">资金流图全屏查看</div>
                 <div className="mt-1 text-sm text-[#64748B]">
-                  {selectedSymbol} · {selectedDate} · 当前阈值 {compactNumber(flowMinAmount)}
+                  {selectedSymbol} · 当前阈值 {compactNumber(flowMinAmount)}
                 </div>
               </div>
               <div className="flex items-center gap-3">
