@@ -32,6 +32,7 @@ import {
   Globe,
   Link2,
   List,
+  MessageSquareText,
   Package,
   ScanLine,
   Star,
@@ -721,12 +722,13 @@ export default function CoinDetail() {
   const searchParams = new URLSearchParams(typeof window !== "undefined" ? window.location.search : "");
   const initialTab = searchParams.get("tab");
   const initialDepthRange = searchParams.get("depthRange");
-  const initialActiveTab: "listing" | "depth" | "unlock" | "onchain" | "holders" | "funding" =
+  const initialActiveTab: "listing" | "depth" | "unlock" | "onchain" | "holders" | "funding" | "social" =
     initialTab === "depth" ||
     initialTab === "unlock" ||
     initialTab === "onchain" ||
     initialTab === "holders" ||
-    initialTab === "funding"
+    initialTab === "funding" ||
+    initialTab === "social"
       ? initialTab
       : "listing";
   const initialDepthRangeDays: 30 | 90 | 180 | 365 =
@@ -762,11 +764,12 @@ export default function CoinDetail() {
       logoTone: "bg-[#dbeafe] text-[#1d4ed8]",
     } as (typeof listedTokens)[number]);
   const [activeTab, setActiveTab] = useState<
-    "listing" | "depth" | "unlock" | "onchain" | "holders" | "funding"
+    "listing" | "depth" | "unlock" | "onchain" | "holders" | "funding" | "social"
   >(initialActiveTab);
   const [listingRange, setListingRange] = useState<"1m" | "3m" | "6m" | "1y">("3m");
   const [positionTimeframe, setPositionTimeframe] = useState<PositionTimeframe>("4h");
   const [listingView, setListingView] = useState<"timeline" | "list">("list");
+  const [listingListTab, setListingListTab] = useState<"listing" | "activity">("listing");
   const [depthRange, setDepthRange] = useState<30 | 90 | 180 | 365>(initialDepthRangeDays);
   const [depthMarketType, setDepthMarketType] = useState<"spot" | "perps">(initialDepthMarketType);
   const [copiedAddress, setCopiedAddress] = useState<string | null>(null);
@@ -797,6 +800,10 @@ export default function CoinDetail() {
     { enabled: Boolean(coinId ?? fallbackToken.symbol) }
   );
   const tokenFundingQuery = trpc.token.getFundingView.useQuery(
+    { symbol: (coinId ?? fallbackToken.symbol).toUpperCase() },
+    { enabled: Boolean(coinId ?? fallbackToken.symbol) }
+  );
+  const tokenSocialHeatQuery = trpc.token.getSocialHeatView.useQuery(
     { symbol: (coinId ?? fallbackToken.symbol).toUpperCase() },
     { enabled: Boolean(coinId ?? fallbackToken.symbol) }
   );
@@ -873,7 +880,7 @@ export default function CoinDetail() {
   const unlockRows = tokenUnlockQuery.data?.rows ?? [];
   const listingTimelineItems = tokenListingQuery.data?.items.length
     ? tokenListingQuery.data.items.map((item, index) => ({
-        id: item.id,
+      id: item.id,
         exchange: item.exchangeName,
         tag:
           item.eventType === "listing"
@@ -902,6 +909,18 @@ export default function CoinDetail() {
           item.eventType === "listing"
             ? Number(item.priceAtList ?? tokenProfile?.currentPrice ?? token.price)
             : Number(tokenProfile?.currentPrice ?? token.price),
+        depositTime: item.depositTime,
+        pairName: item.pairName,
+        pricePost5m: item.pricePost5m,
+        pricePost15m: item.pricePost15m,
+        changePost15m: item.changePost15m,
+        activityType: item.activityType,
+        dilutionRatio: item.dilutionRatio,
+        description: item.description,
+        participationThreshold: item.participationThreshold,
+        operationSteps: item.operationSteps,
+        endTime: item.endTime,
+        rewardDistributionTime: item.rewardDistributionTime,
       }))
     : listingTimelineRows.map(item => ({
         ...item,
@@ -910,6 +929,18 @@ export default function CoinDetail() {
         marketCap: "—",
         rawDate: null,
         chartPrice: Number(token.price),
+        depositTime: null,
+        pairName: null,
+        pricePost5m: null,
+        pricePost15m: null,
+        changePost15m: null,
+        activityType: null,
+        dilutionRatio: null,
+        description: null,
+        participationThreshold: null,
+        operationSteps: null,
+        endTime: null,
+        rewardDistributionTime: null,
       }));
   const listingChartGroups = useMemo(() => {
     const grouped = new Map<
@@ -979,6 +1010,8 @@ export default function CoinDetail() {
   );
   const listingHistoryStart = listingPriceSeries[0]?.rawDate ?? null;
   const listingHistoryEnd = listingPriceSeries.at(-1)?.rawDate ?? null;
+  const listingOnlyItems = listingTimelineItems.filter(item => !item.isActivity);
+  const activityOnlyItems = listingTimelineItems.filter(item => item.isActivity);
   const depthItems = tokenDepthQuery.data?.items ?? [];
   const depthTrendPoints = tokenDepthTrendQuery.data?.points ?? [];
   const totalDepthVolume = depthItems.reduce((sum, item) => sum + (item.volume24h ?? 0), 0);
@@ -1088,14 +1121,17 @@ export default function CoinDetail() {
   const fundingSummary = tokenFundingQuery.data?.summary;
   const fundingRounds = tokenFundingQuery.data?.rounds ?? [];
   const teamMembers = tokenFundingQuery.data?.teamMembers ?? [];
+  const socialSummary = tokenSocialHeatQuery.data?.summary;
+  const socialTweets = tokenSocialHeatQuery.data?.tweets ?? [];
 
-  const detailTabs: Array<{ id: "listing" | "depth" | "unlock" | "onchain" | "holders" | "funding"; label: string; icon: LucideIcon }> = [
+  const detailTabs: Array<{ id: "listing" | "depth" | "unlock" | "onchain" | "holders" | "funding" | "social"; label: string; icon: LucideIcon }> = [
     { id: "listing", label: "上市策略", icon: Clock3 },
     { id: "depth", label: "市场深度", icon: BarChart3 },
     { id: "unlock", label: "代币解锁", icon: Package },
     { id: "onchain", label: "链上数据", icon: GitBranch },
     { id: "holders", label: "合约持仓信息", icon: Users },
     { id: "funding", label: "投融资 / 团队", icon: Activity },
+    { id: "social", label: "X 热度", icon: MessageSquareText },
   ];
 
   const isPrimaryDetailLoading =
@@ -1764,62 +1800,191 @@ export default function CoinDetail() {
                       </div>
                     </div>
                   ) : (
-                    <div className="overflow-x-auto">
-                      <table className="min-w-full text-sm">
-                        <thead className="border-b border-[#d8e0eb] text-left text-[15px] font-semibold text-[#344054]">
-                          <tr>
-                            <th className="px-4 py-4">交易所</th>
-                            <th className="px-4 py-4">类型</th>
-                            <th className="px-4 py-4">时间</th>
-                            <th className="px-4 py-4">价格 / 奖励</th>
-                            <th className="px-4 py-4">FDV / 预估价值</th>
-                            <th className="px-4 py-4">市值 / 说明</th>
-                            <th className="px-4 py-4 text-right">公告</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {listingTimelineItems.map(item => (
-                            <tr key={item.id} className="border-b border-[#e7edf4] hover:bg-[#f8fafc]">
-                              <td className="px-4 py-4">
-                                <div className="flex items-center gap-2 font-medium">
-                                  <AssetLogo
-                                    src={item.logoUrl}
-                                    alt={item.exchange}
-                                    fallback={item.logo}
-                                    className="h-7 w-7"
-                                  />
-                                  <span>{item.exchange}</span>
-                                </div>
-                              </td>
-                              <td className="px-4 py-4">
-                                <Badge
-                                  className={cn(
-                                    "rounded-full px-2.5 py-0.5",
-                                    item.isActivity
-                                      ? "bg-[#fff4d6] text-[#b54708] hover:bg-[#fff4d6]"
-                                      : "bg-[#e8f1ff] text-[#175cd3] hover:bg-[#e8f1ff]"
-                                  )}
-                                >
-                                  {item.tag}
-                                </Badge>
-                              </td>
-                              <td className="px-4 py-4">{item.date}</td>
-                              <td className="px-4 py-4 font-medium">{item.price}</td>
-                              <td className="px-4 py-4">{item.fdv}</td>
-                              <td className="px-4 py-4">{item.isActivity ? item.title : item.marketCap}</td>
-                              <td className="px-4 py-4 text-right">
-                                {item.link ? (
-                                  <a href={item.link} target="_blank" rel="noreferrer" className="inline-flex items-center text-[#101828] hover:text-[#0f66d8]">
-                                    <ExternalLink className="h-4 w-4" />
-                                  </a>
-                                ) : (
-                                  <span className="text-muted-foreground">—</span>
-                                )}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
+                    <div className="space-y-4">
+                      <div className="inline-flex rounded-2xl border border-[#dbe3ef] bg-[#f8fafc] p-1">
+                        <button
+                          onClick={() => setListingListTab("listing")}
+                          className={cn(
+                            "inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-medium transition",
+                            listingListTab === "listing" ? "bg-white text-[#101828] shadow-sm" : "text-[#667085]"
+                          )}
+                        >
+                          上币事件
+                        </button>
+                        <button
+                          onClick={() => setListingListTab("activity")}
+                          className={cn(
+                            "inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-medium transition",
+                            listingListTab === "activity" ? "bg-white text-[#101828] shadow-sm" : "text-[#667085]"
+                          )}
+                        >
+                          活动事件
+                        </button>
+                      </div>
+
+                      {listingListTab === "listing" ? (
+                        <div className="overflow-x-auto">
+                          <table className="min-w-full text-sm">
+                            <thead className="border-b border-[#d8e0eb] text-left text-[15px] font-semibold text-[#344054]">
+                              <tr>
+                                <th className="px-4 py-4">交易所</th>
+                                <th className="px-4 py-4">类型</th>
+                                <th className="px-4 py-4">上线时间</th>
+                                <th className="px-4 py-4">充值开放</th>
+                                <th className="px-4 py-4">开盘价</th>
+                                <th className="px-4 py-4">FDV</th>
+                                <th className="px-4 py-4">5分钟价</th>
+                                <th className="px-4 py-4">15分钟价</th>
+                                <th className="px-4 py-4">15分钟涨跌</th>
+                                <th className="px-4 py-4">ATH</th>
+                                <th className="px-4 py-4 text-right">公告</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {listingOnlyItems.length === 0 ? (
+                                <tr>
+                                  <td colSpan={11} className="px-4 py-10 text-center text-sm text-muted-foreground">
+                                    当前暂无上币事件数据
+                                  </td>
+                                </tr>
+                              ) : null}
+                              {listingOnlyItems.map(item => {
+                                return (
+                                  <tr key={item.id} className="border-b border-[#e7edf4] align-top hover:bg-[#f8fafc]">
+                                    <td className="px-4 py-4">
+                                      <div className="flex items-center gap-2 font-medium">
+                                        <AssetLogo
+                                          src={item.logoUrl}
+                                          alt={item.exchange}
+                                          fallback={item.logo}
+                                          className="h-7 w-7"
+                                        />
+                                        <div>
+                                          <div>{item.exchange}</div>
+                                          {item.pairName ? (
+                                            <div className="mt-1 text-xs font-normal text-muted-foreground">{item.pairName}</div>
+                                          ) : null}
+                                        </div>
+                                      </div>
+                                    </td>
+                                    <td className="px-4 py-4">
+                                      <Badge className="rounded-full bg-[#e8f1ff] px-2.5 py-0.5 text-[#175cd3] hover:bg-[#e8f1ff]">
+                                        {item.tag}
+                                      </Badge>
+                                    </td>
+                                    <td className="px-4 py-4">{item.date}</td>
+                                    <td className="px-4 py-4">{item.depositTime ? formatListingDateTime(item.depositTime) : "—"}</td>
+                                    <td className="px-4 py-4 font-medium">{item.price}</td>
+                                    <td className="px-4 py-4">{item.fdv}</td>
+                                    <td className="px-4 py-4">{item.pricePost5m != null ? formatListingMetric(item.pricePost5m) : "—"}</td>
+                                    <td className="px-4 py-4">{item.pricePost15m != null ? formatListingMetric(item.pricePost15m) : "—"}</td>
+                                    <td className="px-4 py-4">
+                                      {item.changePost15m != null ? `${item.changePost15m >= 0 ? "+" : ""}${item.changePost15m.toFixed(2)}%` : "—"}
+                                    </td>
+                                    <td className="px-4 py-4">
+                                      {tokenProfile?.allTimeHighPrice != null ? (
+                                        formatListingMetric(tokenProfile.allTimeHighPrice)
+                                      ) : (
+                                        "—"
+                                      )}
+                                    </td>
+                                    <td className="px-4 py-4 text-right">
+                                      {item.link ? (
+                                        <a href={item.link} target="_blank" rel="noreferrer" className="inline-flex items-center text-[#101828] hover:text-[#0f66d8]">
+                                          <ExternalLink className="h-4 w-4" />
+                                        </a>
+                                      ) : (
+                                        <span className="text-muted-foreground">—</span>
+                                      )}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      ) : (
+                        <div className="overflow-x-auto">
+                          <table className="min-w-full text-sm">
+                            <thead className="border-b border-[#d8e0eb] text-left text-[15px] font-semibold text-[#344054]">
+                              <tr>
+                                <th className="px-4 py-4">平台</th>
+                                <th className="px-4 py-4">活动名称</th>
+                                <th className="px-4 py-4">奖池</th>
+                                <th className="px-4 py-4">占比</th>
+                                <th className="px-4 py-4">活动时间</th>
+                                <th className="px-4 py-4">发奖时间</th>
+                                <th className="px-4 py-4 text-right">公告</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {activityOnlyItems.length === 0 ? (
+                                <tr>
+                                  <td colSpan={7} className="px-4 py-10 text-center text-sm text-muted-foreground">
+                                    当前暂无活动事件数据
+                                  </td>
+                                </tr>
+                              ) : null}
+                              {activityOnlyItems.map(item => (
+                                <tr key={item.id} className="border-b border-[#e7edf4] align-top hover:bg-[#f8fafc]">
+                                  <td className="px-4 py-4">
+                                    <div className="flex items-center gap-2 font-medium">
+                                      <AssetLogo
+                                        src={item.logoUrl}
+                                        alt={item.exchange}
+                                        fallback={item.logo}
+                                        className="h-7 w-7"
+                                      />
+                                      <div>
+                                        <div>{item.exchange}</div>
+                                        {item.tag ? (
+                                          <div className="mt-1">
+                                            <Badge className="rounded-full bg-[#fff4d6] px-2.5 py-0.5 text-[#b54708] hover:bg-[#fff4d6]">
+                                              {item.tag}
+                                            </Badge>
+                                          </div>
+                                        ) : null}
+                                      </div>
+                                    </div>
+                                  </td>
+                                  <td className="px-4 py-4">
+                                    <div className="max-w-[420px] text-[oklch(var(--crypto-ink))]">{item.title}</div>
+                                    {item.description ? (
+                                      <div className="mt-2 max-w-[520px] text-xs leading-6 text-muted-foreground">
+                                        {item.description}
+                                      </div>
+                                    ) : null}
+                                  </td>
+                                  <td className="px-4 py-4">
+                                    <div className="font-medium">
+                                      {item.price !== "—" ? item.price : "—"}
+                                    </div>
+                                    {item.fdv !== "—" ? (
+                                      <div className="mt-1 text-xs text-muted-foreground">预估价值 {item.fdv}</div>
+                                    ) : null}
+                                  </td>
+                                  <td className="px-4 py-4">{item.dilutionRatio || "—"}</td>
+                                  <td className="px-4 py-4">
+                                    {item.rawDate
+                                      ? `${formatListingDateTime(item.rawDate)}${item.endTime ? ` ~ ${formatListingDateTime(item.endTime)}` : ""}`
+                                      : "—"}
+                                  </td>
+                                  <td className="px-4 py-4">{item.rewardDistributionTime ? formatListingDateTime(item.rewardDistributionTime) : "—"}</td>
+                                  <td className="px-4 py-4 text-right">
+                                    {item.link ? (
+                                      <a href={item.link} target="_blank" rel="noreferrer" className="inline-flex items-center text-[#101828] hover:text-[#0f66d8]">
+                                        <ExternalLink className="h-4 w-4" />
+                                      </a>
+                                    ) : (
+                                      <span className="text-muted-foreground">—</span>
+                                    )}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
                     </div>
                   )}
                 </CardContent>
@@ -2262,6 +2427,188 @@ export default function CoinDetail() {
                             ) : (
                               <span>—</span>
                             )}
+                          </div>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            </>
+          )}
+
+          {activeTab === "social" && (
+            <>
+              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                {[
+                  { label: "24h 提及数", value: `${socialSummary?.mentionCount24h ?? 0}` },
+                  { label: "7d 提及数", value: `${socialSummary?.mentionCount7d ?? 0}` },
+                  { label: "7d KOL 数", value: `${socialSummary?.uniqueAuthors7d ?? 0}` },
+                  { label: "7d 总互动", value: formatPlainNumber(socialSummary?.totalEngagement7d ?? null) },
+                  { label: "7d 总曝光", value: formatPlainNumber(socialSummary?.totalViews7d ?? null) },
+                  {
+                    label: "最近提及",
+                    value: socialSummary?.latestPublishedAt
+                      ? formatListingDateTime(socialSummary.latestPublishedAt)
+                      : "—",
+                  },
+                ].map(item => (
+                  <Card
+                    key={item.label}
+                    className="rounded-[24px] border border-white/70 bg-white/78 shadow-[0_16px_40px_rgba(83,102,138,0.08)]"
+                  >
+                    <CardContent className="p-5">
+                      <div className="text-xs font-medium text-muted-foreground">{item.label}</div>
+                      <div className="mt-2 text-[1.55rem] font-semibold tracking-tight text-[oklch(var(--crypto-ink))]">
+                        {item.value}
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+
+              {tokenSocialHeatQuery.isError ? (
+                <div className="rounded-2xl border border-[#fecaca] bg-[#fff1f2] px-4 py-3 text-sm text-[#b42318]">
+                  X 热度数据加载失败：{tokenSocialHeatQuery.error.message}
+                </div>
+              ) : null}
+
+              <Card className="rounded-[24px] border border-white/70 bg-white/78 shadow-[0_16px_40px_rgba(83,102,138,0.08)]">
+                <CardContent className="p-6">
+                  <div className="text-[13px] leading-6 text-muted-foreground">
+                    {socialSummary?.summaryText ?? "正在汇总该项目最近的 X / KOL 热度..."}
+                  </div>
+                </CardContent>
+              </Card>
+
+              <div className="space-y-4">
+                {tokenSocialHeatQuery.isLoading ? (
+                  <div className="rounded-[24px] border border-white/70 bg-white/78 px-6 py-10 text-center text-sm text-muted-foreground shadow-[0_16px_40px_rgba(83,102,138,0.08)]">
+                    正在加载 X / KOL 推文数据...
+                  </div>
+                ) : null}
+
+                {!tokenSocialHeatQuery.isLoading && socialTweets.length === 0 ? (
+                  <div className="rounded-[24px] border border-white/70 bg-white/78 px-6 py-10 text-center text-sm text-muted-foreground shadow-[0_16px_40px_rgba(83,102,138,0.08)]">
+                    当前项目暂无已匹配到的 KOL 推文
+                  </div>
+                ) : null}
+
+                {socialTweets.map(tweet => (
+                  <Card
+                    key={tweet.id}
+                    className="rounded-[24px] border border-white/70 bg-white/78 shadow-[0_16px_40px_rgba(83,102,138,0.08)]"
+                  >
+                    <CardContent className="p-6">
+                      <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-start gap-3">
+                            <AssetLogo
+                              src={tweet.author.avatarUrl}
+                              alt={tweet.author.name ?? tweet.author.username}
+                              fallback={(tweet.author.name ?? tweet.author.username).slice(0, 1).toUpperCase()}
+                              className="h-11 w-11 border-[#d8e0eb]"
+                            />
+                            <div className="min-w-0 flex-1">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <div className="text-[15px] font-semibold text-[oklch(var(--crypto-ink))]">
+                                  {tweet.author.name ?? tweet.author.username}
+                                </div>
+                                <div className="text-sm text-muted-foreground">@{tweet.author.username}</div>
+                                {tweet.author.isBlueVerified ? (
+                                  <Badge className="rounded-full bg-[#dbeafe] px-2 py-0.5 text-[11px] font-medium text-[#1d4ed8]">
+                                    蓝V
+                                  </Badge>
+                                ) : tweet.author.isVerified ? (
+                                  <Badge className="rounded-full bg-[#eef2f6] px-2 py-0.5 text-[11px] font-medium text-[#475467]">
+                                    已认证
+                                  </Badge>
+                                ) : null}
+                              </div>
+                              <div className="mt-1 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
+                                <span>{formatListingDateTime(tweet.publishedAt)}</span>
+                                <span>{tweet.author.followerCount != null ? `${formatPlainNumber(tweet.author.followerCount)} followers` : "followers —"}</span>
+                                {tweet.isRetweet ? <span>转推</span> : null}
+                                {tweet.isQuote ? <span>引用</span> : null}
+                                {tweet.isReply ? <span>回复</span> : null}
+                                {tweet.lang ? <span>{tweet.lang.toUpperCase()}</span> : null}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="mt-4 whitespace-pre-wrap text-[14px] leading-7 text-[oklch(var(--crypto-ink))]">
+                            {tweet.content || "—"}
+                          </div>
+
+                          {tweet.media.length > 0 ? (
+                            <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                              {tweet.media.slice(0, 3).map((media, index) => (
+                                <div
+                                  key={`${tweet.id}-${media.previewUrl}-${index}`}
+                                  className="overflow-hidden rounded-2xl border border-[#d8e0eb] bg-[#f8fafc]"
+                                >
+                                  {media.previewUrl ? (
+                                    <img
+                                      src={media.previewUrl}
+                                      alt={`${tweet.author.username}-${media.type}-${index}`}
+                                      className="h-40 w-full object-cover"
+                                    />
+                                  ) : null}
+                                </div>
+                              ))}
+                            </div>
+                          ) : null}
+
+                          <div className="mt-4 flex flex-wrap gap-2">
+                            {[
+                              `Like ${formatPlainNumber(tweet.likeCount)}`,
+                              `RT ${formatPlainNumber(tweet.retweetCount)}`,
+                              `Reply ${formatPlainNumber(tweet.replyCount)}`,
+                              `Quote ${formatPlainNumber(tweet.quoteCount)}`,
+                              `View ${formatPlainNumber(tweet.viewCount)}`,
+                            ].map(item => (
+                              <Badge
+                                key={`${tweet.id}-${item}`}
+                                variant="secondary"
+                                className="rounded-full bg-[oklch(var(--crypto-panel-soft))] px-3 py-1 text-[12px] font-medium text-[oklch(var(--crypto-ink))]"
+                              >
+                                {item}
+                              </Badge>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="w-full lg:max-w-[240px]">
+                          <div className="rounded-[20px] border border-[#d8e0eb] bg-white/90 p-4">
+                            <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
+                              KOL 数据
+                            </div>
+                            <div className="mt-3 space-y-2 text-sm text-[oklch(var(--crypto-ink))]">
+                              <div className="flex items-center justify-between gap-4">
+                                <span className="text-muted-foreground">粉丝数</span>
+                                <span className="font-medium">{tweet.author.followerCount != null ? formatPlainNumber(tweet.author.followerCount) : "—"}</span>
+                              </div>
+                              <div className="flex items-center justify-between gap-4">
+                                <span className="text-muted-foreground">账号类型</span>
+                                <span className="font-medium">
+                                  {tweet.author.isBlueVerified ? "蓝V" : tweet.author.isVerified ? "认证" : "普通"}
+                                </span>
+                              </div>
+                            </div>
+                            {tweet.author.description ? (
+                              <div className="mt-4 text-xs leading-6 text-muted-foreground">
+                                {tweet.author.description}
+                              </div>
+                            ) : null}
+                            <a
+                              href={tweet.tweetUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="mt-4 inline-flex items-center gap-2 text-sm font-medium text-[oklch(var(--crypto-accent))] hover:opacity-80"
+                            >
+                              查看原文
+                              <ExternalLink className="h-4 w-4" />
+                            </a>
                           </div>
                         </div>
                       </div>

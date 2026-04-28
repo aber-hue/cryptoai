@@ -6,6 +6,7 @@ import { getFeaturePool } from "./featureDb";
 
 type MarketListInput = {
   query?: string;
+  symbols?: string[];
   exchangeIds?: number[];
   marketType?: "spot" | "perps";
   sortBy?: "listedAt" | "marketCap" | "volume24h";
@@ -164,6 +165,10 @@ type TokenProfileResult = {
   priceChange24h: number | null;
   priceChange7d: number | null;
   tokenHolderCount: number | null;
+  allTimeHighPrice: number | null;
+  allTimeHighAt: string | null;
+  allTimeLowPrice: number | null;
+  allTimeLowAt: string | null;
   coinTags: string[];
   addresses: Array<{
     chainName: string;
@@ -206,13 +211,25 @@ type TokenListingViewResult = {
     eventType: "listing" | "activity";
     title: string;
     date: string | null;
+    depositTime: string | null;
     priceAtList: number | null;
     fdvAtList: number | null;
     marketCapAtList: number | null;
+    pairName: string | null;
+    pricePost5m: number | null;
+    pricePost15m: number | null;
+    changePost15m: number | null;
     publisher: string | null;
+    activityType: string | null;
     rewardToken: string | null;
     rewardAmount: number | null;
     estimatedValue: number | null;
+    dilutionRatio: string | null;
+    description: string | null;
+    participationThreshold: string | null;
+    operationSteps: string | null;
+    endTime: string | null;
+    rewardDistributionTime: string | null;
     url: string | null;
   }>;
 };
@@ -348,6 +365,50 @@ type TokenFundingViewResult = {
   }>;
 };
 
+type TokenSocialHeatViewResult = {
+  tokenId: number;
+  summary: {
+    mentionCount24h: number;
+    mentionCount7d: number;
+    uniqueAuthors7d: number;
+    totalEngagement7d: number;
+    totalViews7d: number;
+    latestPublishedAt: string | null;
+    summaryText: string;
+  };
+  tweets: Array<{
+    id: number;
+    tweetId: string;
+    tweetUrl: string;
+    content: string | null;
+    publishedAt: string;
+    replyCount: number;
+    retweetCount: number;
+    likeCount: number;
+    quoteCount: number;
+    viewCount: number | null;
+    bookmarkCount: number | null;
+    isRetweet: boolean;
+    isQuote: boolean;
+    isReply: boolean;
+    lang: string | null;
+    author: {
+      username: string;
+      userId: string;
+      name: string | null;
+      avatarUrl: string | null;
+      followerCount: number | null;
+      isBlueVerified: boolean;
+      isVerified: boolean;
+      description: string | null;
+    };
+    media: Array<{
+      type: string;
+      previewUrl: string | null;
+    }>;
+  }>;
+};
+
 type ExchangeHoldersViewResult = {
   tokenId: number;
   exchangeId: number;
@@ -415,6 +476,33 @@ type OnchainHolderListResult = {
   }>;
 };
 
+type OnchainLargeTransferListResult = {
+  tokenId: number;
+  tokenAddressId: number | null;
+  tokenAddress: string | null;
+  totalSupply: number | null;
+  thresholdAmount: number | null;
+  total: number;
+  page: number;
+  pageSize: number;
+  sortOrder: "asc" | "desc";
+  latestBlockTime: string | null;
+  items: Array<{
+    txhash: string;
+    logIndex: number | null;
+    blockTime: string | null;
+    fromAddress: string;
+    toAddress: string;
+    fromLabel: string;
+    toLabel: string;
+    fromKind: string;
+    toKind: string;
+    amount: number | null;
+    ratioOfSupply: number | null;
+    value: number | null;
+  }>;
+};
+
 type AnnouncementSearchResult = {
   items: Array<{
     id: number;
@@ -472,6 +560,42 @@ const fallbackOnchainTokens: Record<
     tokenId: 0,
     addresses: ["0x595deaad1eb5476ff1e649fdb7efc36f1e4679cc"],
   },
+  GENIUS: {
+    tokenId: 1522,
+    addresses: ["0x1f12b85aac097e43aa1555b2881e98a51090e9a6"],
+  },
+  ST: {
+    tokenId: 1248,
+    addresses: ["0x70be40667385500c5da7f108a022e21b606045dd"],
+  },
+  ARIA: {
+    tokenId: 1467,
+    addresses: ["0x5d3a12c42e5372b2cc3264ab3cdcf660a1555238"],
+  },
+  UP: {
+    tokenId: 1178,
+    addresses: ["0x000008d2175f9aeaddb2430c26f8a6f73c5a0000"],
+  },
+  EDGE: {
+    tokenId: 794,
+    addresses: ["0x70f2eadf1ca1969ff42b0c78e9da519e8937cbaf"],
+  },
+  PRL: {
+    tokenId: 1244,
+    addresses: ["0xd20fb09a49a8e75fef536a2dbc68222900287bac"],
+  },
+  R2: {
+    tokenId: 1295,
+    addresses: ["0x223a20e1b83aa3832e78d4b7b132df022e739222"],
+  },
+  BASED: {
+    tokenId: 1297,
+    addresses: ["0x1d28d989f9e3ccb8b15d0cec601734514f958e4d"],
+  },
+  OPG: {
+    tokenId: 1584,
+    addresses: ["0x5feccd17c393caf1001d18164236a37e731fcb9d"],
+  },
 };
 
 type ProfileRow = RowDataPacket & {
@@ -494,11 +618,16 @@ type ProfileRow = RowDataPacket & {
   priceChange24h: number | null;
   priceChange7d: number | null;
   tokenHolderCount: number | null;
+  allTimeHighPrice: number | null;
+  allTimeHighAt: string | null;
+  allTimeLowPrice: number | null;
+  allTimeLowAt: string | null;
   coinTagsRaw: string | null;
 };
 
 let pool: Pool | null = null;
 let bigQueryClient: BigQuery | null = null;
+let tokenProfilesOptionalColumnsPromise: Promise<Set<string>> | null = null;
 
 function getPool() {
   if (pool) return pool;
@@ -522,6 +651,21 @@ function getPool() {
 
   pool = createPool(options);
   return pool;
+}
+
+async function getTokenProfilesOptionalColumns() {
+  if (!tokenProfilesOptionalColumnsPromise) {
+    tokenProfilesOptionalColumnsPromise = (async () => {
+      const currentPool = getPool();
+      const [rows] = await currentPool.query<(RowDataPacket & { Field: string })[]>("DESCRIBE token_profiles");
+      return new Set(rows.map(row => String(row.Field)));
+    })().catch(error => {
+      tokenProfilesOptionalColumnsPromise = null;
+      throw error;
+    });
+  }
+
+  return await tokenProfilesOptionalColumnsPromise;
 }
 
 function getBigQueryClient() {
@@ -552,9 +696,10 @@ function getBigQueryClient() {
       credentials,
     });
   } else {
-    const resolvedKeyFilename = path.isAbsolute(keyFilename)
-      ? keyFilename
-      : path.resolve(process.cwd(), keyFilename);
+    const safeKeyFilename = keyFilename as string;
+    const resolvedKeyFilename = path.isAbsolute(safeKeyFilename)
+      ? safeKeyFilename
+      : path.resolve(process.cwd(), safeKeyFilename);
 
     bigQueryClient = new BigQuery({
       projectId,
@@ -1077,6 +1222,117 @@ function extractFundingRawMeta(value: string | null | undefined) {
   }
 }
 
+function safeParseJsonObject(value: string | null | undefined) {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function escapeMysqlRegex(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function buildTwitterTokenMatch(profile: { symbol: string; name: string | null }) {
+  const conditions: string[] = [];
+  const params: string[] = [];
+  const symbol = profile.symbol.trim().toLowerCase();
+  const name = profile.name?.trim().toLowerCase() ?? "";
+
+  if (symbol) {
+    conditions.push("LOWER(content) LIKE ?");
+    params.push(`%$${symbol}%`);
+
+    if (symbol.length >= 4) {
+      conditions.push("LOWER(content) REGEXP ?");
+      params.push(`(^|[^a-z0-9])${escapeMysqlRegex(symbol)}([^a-z0-9]|$)`);
+    }
+  }
+
+  if (name && name.length >= 4) {
+    conditions.push("LOWER(content) LIKE ?");
+    params.push(`%${name}%`);
+  }
+
+  return {
+    sql: conditions.length > 0 ? `(${conditions.join(" OR ")})` : "0=1",
+    params,
+  };
+}
+
+function extractTweetAuthorMeta(rawJson: any) {
+  const authorResult = rawJson?.core?.user_results?.result;
+  const legacy = authorResult?.legacy ?? null;
+
+  return {
+    avatarUrl:
+      typeof legacy?.profile_image_url_https === "string" ? legacy.profile_image_url_https : null,
+    followerCount: toNullableNumber(legacy?.followers_count),
+    isBlueVerified: Boolean(authorResult?.is_blue_verified),
+    isVerified: Boolean(legacy?.verified || authorResult?.verified || authorResult?.verified_type),
+    description: typeof legacy?.description === "string" ? legacy.description : null,
+  };
+}
+
+function extractTweetMedia(rawJson: any) {
+  const mediaItems: Array<{ type: string; previewUrl: string | null }> = [];
+  const pushMedia = (type: string, previewUrl: string | null) => {
+    if (!previewUrl) return;
+    if (mediaItems.some(item => item.previewUrl === previewUrl)) return;
+    mediaItems.push({ type, previewUrl });
+  };
+
+  const entityMedia = rawJson?.legacy?.extended_entities?.media ?? rawJson?.legacy?.entities?.media ?? [];
+  if (Array.isArray(entityMedia)) {
+    entityMedia.forEach((item: any) => {
+      pushMedia(
+        typeof item?.type === "string" ? item.type : "media",
+        typeof item?.media_url_https === "string"
+          ? item.media_url_https
+          : typeof item?.media_url === "string"
+            ? item.media_url
+            : typeof item?.url === "string"
+              ? item.url
+              : null
+      );
+    });
+  }
+
+  const cardBindings = rawJson?.card?.legacy?.binding_values;
+  if (Array.isArray(cardBindings)) {
+    cardBindings.forEach((binding: any) => {
+      const imageUrl = binding?.value?.image_value?.url;
+      if (typeof imageUrl === "string") {
+        pushMedia("image", imageUrl);
+      }
+    });
+  }
+
+  return mediaItems;
+}
+
+function buildSocialSummaryText(input: {
+  symbol: string;
+  mentionCount24h: number;
+  mentionCount7d: number;
+  uniqueAuthors7d: number;
+  totalEngagement7d: number;
+  totalViews7d: number;
+}) {
+  if (input.mentionCount7d === 0) {
+    return `近7天暂未收录到与 ${input.symbol} 相关的 KOL 推文。`;
+  }
+
+  return `近24小时收录 ${input.mentionCount24h.toLocaleString()} 条提及，近7天共 ${
+    input.mentionCount7d.toLocaleString()
+  } 条，覆盖 ${input.uniqueAuthors7d.toLocaleString()} 位 KOL，累计互动 ${
+    input.totalEngagement7d.toLocaleString()
+  }，累计曝光 ${input.totalViews7d.toLocaleString()}。`;
+}
+
 function buildLeveragedTokenExclusionSql() {
   return `
     COALESCE(tp.coin_tags, '') NOT LIKE '%LEVSP%'
@@ -1092,6 +1348,18 @@ function buildMarketFilters(input: MarketListInput) {
 
   const query = input.query?.trim();
   const marketTypeValues = getMarketTypeFilterValues(input.marketType);
+
+  if (input.symbols?.length) {
+    const normalizedSymbols = input.symbols
+      .map(symbol => symbol.trim().toUpperCase())
+      .filter(Boolean);
+
+    if (normalizedSymbols.length > 0) {
+      conditions.push(`UPPER(tp.symbol) IN (${normalizedSymbols.map(() => "?").join(", ")})`);
+      params.push(...normalizedSymbols);
+    }
+  }
+
   if (query) {
     conditions.push("(tp.symbol LIKE ? OR tp.name LIKE ? OR tp.slug LIKE ?)");
     const keyword = `%${query}%`;
@@ -1250,6 +1518,12 @@ export async function listMarketTokens(input: MarketListInput) {
 
 export async function getTokenProfileBySymbol(symbol: string): Promise<TokenProfileResult | null> {
   const currentPool = getPool();
+  const optionalColumns = await getTokenProfilesOptionalColumns();
+  const hasAthColumns =
+    optionalColumns.has("all_time_high_price") &&
+    optionalColumns.has("all_time_high_at") &&
+    optionalColumns.has("all_time_low_price") &&
+    optionalColumns.has("all_time_low_at");
 
   const profileSql = `
     SELECT
@@ -1272,6 +1546,17 @@ export async function getTokenProfileBySymbol(symbol: string): Promise<TokenProf
       tp.price_change_24h AS priceChange24h,
       tp.price_change_7d AS priceChange7d,
       tp.token_holder_count AS tokenHolderCount,
+      ${
+        hasAthColumns
+          ? `tp.all_time_high_price AS allTimeHighPrice,
+      tp.all_time_high_at AS allTimeHighAt,
+      tp.all_time_low_price AS allTimeLowPrice,
+      tp.all_time_low_at AS allTimeLowAt,`
+          : `NULL AS allTimeHighPrice,
+      NULL AS allTimeHighAt,
+      NULL AS allTimeLowPrice,
+      NULL AS allTimeLowAt,`
+      }
       tp.coin_tags AS coinTagsRaw
     FROM token_profiles tp
     WHERE UPPER(tp.symbol) = UPPER(?)
@@ -1351,6 +1636,10 @@ export async function getTokenProfileBySymbol(symbol: string): Promise<TokenProf
     priceChange24h: profile.priceChange24h,
     priceChange7d: profile.priceChange7d,
     tokenHolderCount: profile.tokenHolderCount,
+    allTimeHighPrice: toNullableNumber(profile.allTimeHighPrice),
+    allTimeHighAt: profile.allTimeHighAt,
+    allTimeLowPrice: toNullableNumber(profile.allTimeLowPrice),
+    allTimeLowAt: profile.allTimeLowAt,
     coinTags: parseCoinTags(profile.coinTagsRaw),
     addresses: addressRows,
     latestAnnouncements: announcementRows.map(row => ({
@@ -1519,9 +1808,14 @@ export async function getTokenListingViewBySymbol(symbol: string): Promise<Token
       exchangeLogoUrl: string | null;
       marketType: string | null;
       listingTime: string | null;
+      depositTime: string | null;
       priceAtList: number | null;
       fdvAtList: number | null;
       marketCapAtList: number | null;
+      pairName: string | null;
+      pricePost5m: number | null;
+      pricePost15m: number | null;
+      changePost15m: number | null;
       title: string | null;
       url: string | null;
     })[]
@@ -1533,9 +1827,14 @@ export async function getTokenListingViewBySymbol(symbol: string): Promise<Token
         ep.logo_url AS exchangeLogoUrl,
         ep.market_type AS marketType,
         el.listing_time AS listingTime,
+        el.deposit_time AS depositTime,
         el.price_at_list AS priceAtList,
         el.fdv_at_list AS fdvAtList,
         el.market_cap_at_list AS marketCapAtList,
+        el.pair_name AS pairName,
+        el.price_post_5m AS pricePost5m,
+        el.price_post_15m AS pricePost15m,
+        el.change_post_15m AS changePost15m,
         ea.title AS title,
         ea.url AS url
       FROM exchange_listings el
@@ -1559,8 +1858,13 @@ export async function getTokenListingViewBySymbol(symbol: string): Promise<Token
       rewardToken: string | null;
       rewardAmount: number | null;
       estimatedValue: number | null;
+      dilutionRatio: string | null;
+      description: string | null;
+      participationThreshold: string | null;
+      operationSteps: string | null;
       startTime: string | null;
       endTime: string | null;
+      rewardDistributionTime: string | null;
       url: string | null;
     })[]
   >(
@@ -1576,8 +1880,13 @@ export async function getTokenListingViewBySymbol(symbol: string): Promise<Token
         ea.reward_token AS rewardToken,
         ea.reward_amount AS rewardAmount,
         ea.estimated_value AS estimatedValue,
+        ea.dilution_ratio AS dilutionRatio,
+        ea.description AS description,
+        ea.participation_threshold AS participationThreshold,
+        ea.operation_steps AS operationSteps,
         ea.start_time AS startTime,
         ea.end_time AS endTime,
+        ea.reward_distribution_time AS rewardDistributionTime,
         ann.url AS url
       FROM exchange_activities ea
       LEFT JOIN exchange_platforms ep ON ep.id = ea.exchange_id
@@ -1598,13 +1907,25 @@ export async function getTokenListingViewBySymbol(symbol: string): Promise<Token
       eventType: "listing" as const,
       title: row.title ?? `${profile.symbol} 上线 ${row.exchangeName ?? "交易所"}`,
       date: row.listingTime,
+      depositTime: row.depositTime,
       priceAtList: row.priceAtList,
       fdvAtList: row.fdvAtList,
       marketCapAtList: row.marketCapAtList,
+      pairName: row.pairName,
+      pricePost5m: row.pricePost5m,
+      pricePost15m: row.pricePost15m,
+      changePost15m: row.changePost15m,
       publisher: null,
+      activityType: null,
       rewardToken: null,
       rewardAmount: null,
       estimatedValue: null,
+      dilutionRatio: null,
+      description: null,
+      participationThreshold: null,
+      operationSteps: null,
+      endTime: null,
+      rewardDistributionTime: null,
       url: row.url,
     })),
     ...activityRows.map((row, index) => ({
@@ -1616,13 +1937,25 @@ export async function getTokenListingViewBySymbol(symbol: string): Promise<Token
       eventType: "activity" as const,
       title: row.title,
       date: row.startTime,
+      depositTime: null,
       priceAtList: null,
       fdvAtList: null,
       marketCapAtList: null,
+      pairName: null,
+      pricePost5m: null,
+      pricePost15m: null,
+      changePost15m: null,
       publisher: row.publisher,
+      activityType: row.activityType,
       rewardToken: row.rewardToken,
       rewardAmount: row.rewardAmount,
       estimatedValue: row.estimatedValue,
+      dilutionRatio: row.dilutionRatio,
+      description: row.description,
+      participationThreshold: row.participationThreshold,
+      operationSteps: row.operationSteps,
+      endTime: row.endTime,
+      rewardDistributionTime: row.rewardDistributionTime,
       url: row.url,
     })),
   ].sort((left, right) => {
@@ -2503,6 +2836,172 @@ export async function getTokenFundingViewBySymbol(symbol: string): Promise<Token
   };
 }
 
+export async function getTokenSocialHeatViewBySymbol(symbol: string): Promise<TokenSocialHeatViewResult | null> {
+  const currentPool = getPool();
+  const profile = await getTokenProfileBySymbol(symbol);
+
+  if (!profile) return null;
+
+  const tweetMatch = buildTwitterTokenMatch({
+    symbol: profile.symbol,
+    name: profile.name,
+  });
+
+  const [summaryRows] = await currentPool.query<
+    (RowDataPacket & {
+      mentionCount24h: number | null;
+      mentionCount7d: number | null;
+      uniqueAuthors7d: number | null;
+      totalEngagement7d: number | null;
+      totalViews7d: number | null;
+      latestPublishedAt: string | null;
+    })[]
+  >(
+    `
+      SELECT
+        SUM(CASE WHEN published_at >= UTC_TIMESTAMP() - INTERVAL 1 DAY THEN 1 ELSE 0 END) AS mentionCount24h,
+        SUM(CASE WHEN published_at >= UTC_TIMESTAMP() - INTERVAL 7 DAY THEN 1 ELSE 0 END) AS mentionCount7d,
+        COUNT(
+          DISTINCT CASE
+            WHEN published_at >= UTC_TIMESTAMP() - INTERVAL 7 DAY
+            THEN COALESCE(NULLIF(author_user_id, ''), NULLIF(author_username, ''))
+            ELSE NULL
+          END
+        ) AS uniqueAuthors7d,
+        SUM(
+          CASE
+            WHEN published_at >= UTC_TIMESTAMP() - INTERVAL 7 DAY
+            THEN COALESCE(reply_count, 0) + COALESCE(retweet_count, 0) + COALESCE(like_count, 0) + COALESCE(quote_count, 0)
+            ELSE 0
+          END
+        ) AS totalEngagement7d,
+        SUM(CASE WHEN published_at >= UTC_TIMESTAMP() - INTERVAL 7 DAY THEN COALESCE(view_count, 0) ELSE 0 END) AS totalViews7d,
+        MAX(published_at) AS latestPublishedAt
+      FROM twitter_tweets
+      WHERE category = 'kol'
+        AND ${tweetMatch.sql}
+    `,
+    tweetMatch.params
+  );
+
+  const [tweetRows] = await currentPool.query<
+    (RowDataPacket & {
+      id: number;
+      tweetId: string | null;
+      tweetUrl: string | null;
+      content: string | null;
+      publishedAt: string | null;
+      replyCount: number | null;
+      retweetCount: number | null;
+      likeCount: number | null;
+      quoteCount: number | null;
+      viewCount: number | null;
+      bookmarkCount: number | null;
+      isRetweet: number | boolean | null;
+      isQuote: number | boolean | null;
+      isReply: number | boolean | null;
+      lang: string | null;
+      authorUsername: string | null;
+      authorUserId: string | null;
+      authorName: string | null;
+      rawJson: string | null;
+    })[]
+  >(
+    `
+      SELECT
+        id AS id,
+        tweet_id AS tweetId,
+        tweet_url AS tweetUrl,
+        content AS content,
+        published_at AS publishedAt,
+        reply_count AS replyCount,
+        retweet_count AS retweetCount,
+        like_count AS likeCount,
+        quote_count AS quoteCount,
+        view_count AS viewCount,
+        bookmark_count AS bookmarkCount,
+        is_retweet AS isRetweet,
+        is_quote AS isQuote,
+        is_reply AS isReply,
+        lang AS lang,
+        author_username AS authorUsername,
+        author_user_id AS authorUserId,
+        author_name AS authorName,
+        raw_json AS rawJson
+      FROM twitter_tweets
+      WHERE category = 'kol'
+        AND ${tweetMatch.sql}
+      ORDER BY published_at DESC, id DESC
+      LIMIT 30
+    `,
+    tweetMatch.params
+  );
+
+  const summaryRow = summaryRows[0];
+  const summary = {
+    mentionCount24h: Number(summaryRow?.mentionCount24h ?? 0),
+    mentionCount7d: Number(summaryRow?.mentionCount7d ?? 0),
+    uniqueAuthors7d: Number(summaryRow?.uniqueAuthors7d ?? 0),
+    totalEngagement7d: Number(summaryRow?.totalEngagement7d ?? 0),
+    totalViews7d: Number(summaryRow?.totalViews7d ?? 0),
+    latestPublishedAt: summaryRow?.latestPublishedAt ?? null,
+    summaryText: buildSocialSummaryText({
+      symbol: profile.symbol,
+      mentionCount24h: Number(summaryRow?.mentionCount24h ?? 0),
+      mentionCount7d: Number(summaryRow?.mentionCount7d ?? 0),
+      uniqueAuthors7d: Number(summaryRow?.uniqueAuthors7d ?? 0),
+      totalEngagement7d: Number(summaryRow?.totalEngagement7d ?? 0),
+      totalViews7d: Number(summaryRow?.totalViews7d ?? 0),
+    }),
+  };
+
+  const tweets = tweetRows
+    .filter(row => row.tweetId && row.publishedAt)
+    .map(row => {
+      const rawJson = safeParseJsonObject(row.rawJson);
+      const authorMeta = extractTweetAuthorMeta(rawJson);
+      const media = extractTweetMedia(rawJson);
+      const username = row.authorUsername?.trim() || "unknown";
+      const userId = row.authorUserId?.trim() || "";
+      const tweetId = row.tweetId?.trim() || String(row.id);
+
+      return {
+        id: row.id,
+        tweetId,
+        tweetUrl: row.tweetUrl?.trim() || `https://x.com/${username}/status/${tweetId}`,
+        content: row.content,
+        publishedAt: row.publishedAt as string,
+        replyCount: Number(row.replyCount ?? 0),
+        retweetCount: Number(row.retweetCount ?? 0),
+        likeCount: Number(row.likeCount ?? 0),
+        quoteCount: Number(row.quoteCount ?? 0),
+        viewCount: toNullableNumber(row.viewCount),
+        bookmarkCount: toNullableNumber(row.bookmarkCount),
+        isRetweet: Boolean(row.isRetweet),
+        isQuote: Boolean(row.isQuote),
+        isReply: Boolean(row.isReply),
+        lang: row.lang,
+        author: {
+          username,
+          userId,
+          name: row.authorName?.trim() || null,
+          avatarUrl: authorMeta.avatarUrl,
+          followerCount: authorMeta.followerCount,
+          isBlueVerified: authorMeta.isBlueVerified,
+          isVerified: authorMeta.isVerified,
+          description: authorMeta.description,
+        },
+        media,
+      };
+    });
+
+  return {
+    tokenId: profile.tokenId,
+    summary,
+    tweets,
+  };
+}
+
 export async function getOnchainFundFlowBySymbol(
   symbol: string,
   options?: {
@@ -2935,7 +3434,7 @@ export async function getOnchainHoldersBySymbol(
   if (!dataset || (!profile && !fallbackToken)) return null;
 
   const page = Math.max(options?.page ?? 1, 1);
-  const pageSize = Math.min(Math.max(options?.pageSize ?? 20, 10), 100);
+  const pageSize = Math.min(Math.max(options?.pageSize ?? 20, 10), 500);
   const offset = (page - 1) * pageSize;
   const date = options?.date?.trim();
   const resolvedTokenId = profile?.tokenId ?? fallbackToken?.tokenId ?? 0;
@@ -3160,6 +3659,283 @@ export async function getOnchainHoldersBySymbol(
         balanceChange24h: toNullableNumber((row as { balanceChange24h?: number | string | null }).balanceChange24h),
         balanceChange7d: toNullableNumber((row as { balanceChange7d?: number | string | null }).balanceChange7d),
         isNew: Boolean((row as { isNew?: boolean | null }).isNew),
+      };
+    }),
+  };
+}
+
+export async function getOnchainLargeTransfersBySymbol(
+  symbol: string,
+  options?: {
+    page?: number;
+    pageSize?: number;
+    search?: string;
+    sortOrder?: "asc" | "desc";
+  }
+): Promise<OnchainLargeTransferListResult | null> {
+  const currentPool = getPool();
+  const bigQuery = getBigQueryClient();
+  const dataset = process.env.BIGQUERY_DATASET;
+  const normalizedSymbol = symbol.trim().toUpperCase();
+  const fallbackToken = fallbackOnchainTokens[normalizedSymbol] ?? null;
+  let profile: TokenProfileResult | null = null;
+
+  try {
+    profile = await getTokenProfileBySymbol(symbol);
+  } catch {
+    profile = null;
+  }
+
+  if (!dataset || (!profile && !fallbackToken)) return null;
+
+  const page = Math.max(options?.page ?? 1, 1);
+  const pageSize = Math.min(Math.max(options?.pageSize ?? 20, 10), 500);
+  const offset = (page - 1) * pageSize;
+  const sortOrder: "asc" | "desc" = options?.sortOrder === "asc" ? "asc" : "desc";
+  const normalizedSearch = options?.search?.trim().toLowerCase() ?? "";
+  const resolvedTokenId = profile?.tokenId ?? fallbackToken?.tokenId ?? 0;
+  const totalSupply = profile?.totalSupply ?? null;
+  const thresholdAmount = totalSupply && totalSupply > 0 ? totalSupply * 0.0001 : null;
+  let tokenAddressRows: Array<{ tokenAddressId: number | null; address: string }> = [];
+
+  if (profile) {
+    try {
+      const [rows] = await currentPool.query<
+        (RowDataPacket & {
+          tokenAddressId: number;
+          address: string;
+        })[]
+      >(
+        `
+          SELECT
+            ta.id AS tokenAddressId,
+            ta.address AS address
+          FROM token_address ta
+          WHERE ta.token_id = ?
+          ORDER BY ta.id DESC
+        `,
+        [profile.tokenId]
+      );
+
+      tokenAddressRows = rows.map(row => ({
+        tokenAddressId: row.tokenAddressId,
+        address: String(row.address).toLowerCase(),
+      }));
+    } catch {
+      tokenAddressRows = [];
+    }
+  }
+
+  if (tokenAddressRows.length === 0 && fallbackToken) {
+    tokenAddressRows = fallbackToken.addresses.map(address => ({
+      tokenAddressId: null,
+      address: address.toLowerCase(),
+    }));
+  }
+
+  const dedupedTokenAddresses = Array.from(new Map(tokenAddressRows.map(row => [row.address, row])).values());
+  if (dedupedTokenAddresses.length === 0) {
+    return {
+      tokenId: resolvedTokenId,
+      tokenAddressId: null,
+      tokenAddress: null,
+      totalSupply,
+      thresholdAmount,
+      total: 0,
+      page,
+      pageSize,
+      sortOrder,
+      latestBlockTime: null,
+      items: [],
+    };
+  }
+
+  const countsQuery = `
+    SELECT
+      LOWER(token_address) AS tokenAddress,
+      COUNT(*) AS transferCount
+    FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.token_transfer_raw\`
+    WHERE LOWER(token_address) IN UNNEST(@addresses)
+    GROUP BY tokenAddress
+    ORDER BY transferCount DESC
+  `;
+  const [countRows] = await bigQuery.query({
+    query: countsQuery,
+    params: { addresses: dedupedTokenAddresses.map(row => row.address) },
+    useLegacySql: false,
+  });
+
+  const chosenAddress =
+    dedupedTokenAddresses.find(row =>
+      countRows.some(
+        countRow => String((countRow as { tokenAddress?: string }).tokenAddress ?? "").toLowerCase() === row.address
+      )
+    ) ?? dedupedTokenAddresses[0];
+
+  const searchClause = normalizedSearch
+    ? `
+      AND (
+        LOWER(from_address) LIKE @addressSearch
+        OR LOWER(to_address) LIKE @addressSearch
+      )
+    `
+    : "";
+  const thresholdClause = thresholdAmount != null ? "AND SAFE_CAST(amount AS NUMERIC) >= @thresholdAmount" : "";
+  const baseWhere = `
+    WHERE LOWER(token_address) = @tokenAddress
+    ${thresholdClause}
+    ${searchClause}
+  `;
+
+  const totalQuery = `
+    SELECT COUNT(*) AS total
+    FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.token_transfer_raw\`
+    ${baseWhere}
+  `;
+  const baseParams = {
+    tokenAddress: chosenAddress.address,
+    ...(thresholdAmount != null ? { thresholdAmount } : {}),
+    ...(normalizedSearch ? { addressSearch: `%${normalizedSearch}%` } : {}),
+  };
+
+  const [totalRows] = await bigQuery.query({
+    query: totalQuery,
+    params: baseParams,
+    useLegacySql: false,
+  });
+  const total = Number((totalRows[0] as { total?: string | number }).total ?? 0);
+
+  const latestBlockTimeQuery = `
+    SELECT MAX(block_time) AS latestBlockTime
+    FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.token_transfer_raw\`
+    ${baseWhere}
+  `;
+  const [latestRows] = await bigQuery.query({
+    query: latestBlockTimeQuery,
+    params: baseParams,
+    useLegacySql: false,
+  });
+
+  const transfersQuery = `
+    SELECT
+      txhash,
+      log_index AS logIndex,
+      block_time AS blockTime,
+      LOWER(from_address) AS fromAddress,
+      LOWER(to_address) AS toAddress,
+      amount,
+      value
+    FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.token_transfer_raw\`
+    ${baseWhere}
+    ORDER BY block_time ${sortOrder.toUpperCase()}, txhash ${sortOrder.toUpperCase()}, logIndex ${sortOrder.toUpperCase()}
+    LIMIT @limit
+    OFFSET @offset
+  `;
+  const [transferRows] = await bigQuery.query({
+    query: transfersQuery,
+    params: {
+      ...baseParams,
+      limit: pageSize,
+      offset,
+    },
+    useLegacySql: false,
+  });
+
+  const addresses = Array.from(
+    new Set(
+      transferRows.flatMap(row => [
+        String((row as { fromAddress?: string }).fromAddress ?? "").toLowerCase(),
+        String((row as { toAddress?: string }).toAddress ?? "").toLowerCase(),
+      ]).filter(Boolean)
+    )
+  );
+
+  const walletQuery = `
+    SELECT
+      LOWER(address) AS address,
+      tag_label,
+      tags_base,
+      is_contract
+    FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.wallet_info\`
+    WHERE LOWER(address) IN UNNEST(@addresses)
+  `;
+  const [walletRows] = addresses.length
+    ? await bigQuery.query({
+        query: walletQuery,
+        params: { addresses },
+        useLegacySql: false,
+      })
+    : [[]];
+
+  const walletMeta = new Map<
+    string,
+    {
+      label: string;
+      kind: string;
+      isContract: boolean;
+    }
+  >();
+  walletRows.forEach(row => {
+    const address = String((row as { address?: string }).address ?? "").toLowerCase();
+    if (!address) return;
+    const tagLabel = (row as { tag_label?: string | null }).tag_label ?? null;
+    const tagsBase = (row as { tags_base?: string | null }).tags_base ?? null;
+    const isContract = Boolean((row as { is_contract?: boolean | null }).is_contract);
+    walletMeta.set(address, {
+      label: formatAddressTagLabel(tagLabel ?? tagsBase),
+      kind: tagsBase ?? (isContract ? "合约地址" : "普通地址"),
+      isContract,
+    });
+  });
+
+  return {
+    tokenId: resolvedTokenId,
+    tokenAddressId: chosenAddress.tokenAddressId,
+    tokenAddress: chosenAddress.address,
+    totalSupply,
+    thresholdAmount,
+    total,
+    page,
+    pageSize,
+    sortOrder,
+    latestBlockTime: String(
+      (latestRows[0] as { latestBlockTime?: { value?: string } | string | null })?.latestBlockTime instanceof Object
+        ? ((latestRows[0] as { latestBlockTime?: { value?: string } }).latestBlockTime?.value ?? "")
+        : ((latestRows[0] as { latestBlockTime?: string | null })?.latestBlockTime ?? "")
+    ).trim() || null,
+    items: transferRows.map(row => {
+      const fromAddress = String((row as { fromAddress?: string }).fromAddress ?? "").toLowerCase();
+      const toAddress = String((row as { toAddress?: string }).toAddress ?? "").toLowerCase();
+      const fromMeta = walletMeta.get(fromAddress);
+      const toMeta = walletMeta.get(toAddress);
+      const amount = toNullableNumber((row as { amount?: string | number | null }).amount);
+      const rawBlockTime = (row as { blockTime?: { value?: string } | string | null }).blockTime;
+      const blockTime =
+        typeof rawBlockTime === "string" ? rawBlockTime : rawBlockTime?.value ?? null;
+
+      return {
+        txhash: String((row as { txhash?: string }).txhash ?? ""),
+        logIndex: toNullableNumber((row as { logIndex?: string | number | null }).logIndex),
+        blockTime: blockTime?.trim() || null,
+        fromAddress,
+        toAddress,
+        fromLabel: fromMeta?.label ?? "普通地址",
+        toLabel: toMeta?.label ?? "普通地址",
+        fromKind:
+          fromMeta?.kind && fromMeta.kind !== "普通地址"
+            ? formatAddressTagLabel(fromMeta.kind)
+            : fromMeta?.isContract
+              ? "合约地址"
+              : "普通地址",
+        toKind:
+          toMeta?.kind && toMeta.kind !== "普通地址"
+            ? formatAddressTagLabel(toMeta.kind)
+            : toMeta?.isContract
+              ? "合约地址"
+              : "普通地址",
+        amount,
+        ratioOfSupply: amount != null && totalSupply && totalSupply > 0 ? (amount / totalSupply) * 100 : null,
+        value: toNullableNumber((row as { value?: string | number | null }).value),
       };
     }),
   };

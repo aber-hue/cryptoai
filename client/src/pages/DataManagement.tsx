@@ -259,12 +259,15 @@ function matchesSelectedExchange(
   exchangeName: string,
   selectedExchange: string,
   exchangeMarketType: string | null,
-  marketType: MarketType
+  marketType: MarketType,
+  strictMarketType = true
 ) {
   const matchesMarketType =
-    marketType === "spot"
-      ? ["spot", "alpha", "boost", "xlaunch"].includes(exchangeMarketType ?? "")
-      : exchangeMarketType === marketType;
+    !strictMarketType
+      ? true
+      : marketType === "spot"
+        ? ["spot", "alpha", "boost", "xlaunch"].includes(exchangeMarketType ?? "")
+        : exchangeMarketType === marketType;
 
   return (
     normalizeExchangeName(exchangeName) === normalizeExchangeName(selectedExchange) &&
@@ -287,10 +290,16 @@ export default function DataManagement() {
   const [announcementQuery, setAnnouncementQuery] = useState("");
   const [sortField, setSortField] = useState<SortField>("listedAt");
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
+  const watchlistQuery = trpc.market.getWatchlist.useQuery();
+  const watchlistSymbols = useMemo(
+    () => (watchlistQuery.data?.items ?? []).map(item => item.symbol.trim().toUpperCase()).filter(Boolean),
+    [watchlistQuery.data?.items]
+  );
 
   const marketTokensQuery = trpc.market.listTokens.useQuery({
     query: tokenQuery.trim() || undefined,
-    marketType,
+    symbols: coinScope === "watchlist" ? watchlistSymbols : undefined,
+    marketType: coinScope === "watchlist" ? undefined : marketType,
     sortBy:
       sortField === "marketCap" || sortField === "volume24h" || sortField === "listedAt"
         ? sortField
@@ -299,7 +308,6 @@ export default function DataManagement() {
     page: 1,
     pageSize: 40,
   });
-  const watchlistQuery = trpc.market.getWatchlist.useQuery();
   const marketTokensErrorMessage =
     marketTokensQuery.error instanceof Error
       ? marketTokensQuery.error.message
@@ -323,9 +331,7 @@ export default function DataManagement() {
       : "上币监控数据请求失败，请稍后重试。";
 
   const filteredTokens = useMemo(() => {
-    const watchlistSymbols = new Set(
-      (watchlistQuery.data?.items ?? []).map(item => item.symbol.trim().toUpperCase())
-    );
+    const watchlistSymbolSet = new Set(watchlistSymbols);
     const filtered = (marketTokensQuery.data?.items ?? [])
       .filter(token => {
         const matchesExchange =
@@ -336,13 +342,14 @@ export default function DataManagement() {
                 exchange.exchangeName,
                 selectedExchange,
                 exchange.marketType,
-                marketType
+                marketType,
+                coinScope !== "watchlist"
               )
             )
           );
 
         const matchesScope =
-          coinScope === "all" || watchlistSymbols.has(token.symbol.trim().toUpperCase());
+          coinScope === "all" || watchlistSymbolSet.has(token.symbol.trim().toUpperCase());
 
         return matchesExchange && matchesScope;
       })
@@ -367,7 +374,7 @@ export default function DataManagement() {
         })),
         recentVenue: token.recentVenue ?? "—",
         logoTone: "bg-[linear-gradient(135deg,#dbeafe,#bfdbfe)] text-[#1d4ed8]",
-        watched: watchlistSymbols.has(token.symbol.trim().toUpperCase()),
+        watched: watchlistSymbolSet.has(token.symbol.trim().toUpperCase()),
         raw: token,
       }));
 
@@ -402,7 +409,7 @@ export default function DataManagement() {
       ...token,
       rank: index + 1,
     }));
-  }, [coinScope, marketTokensQuery.data?.items, marketType, selectedExchanges, sortDirection, sortField, watchlistQuery.data?.items]);
+  }, [coinScope, marketTokensQuery.data?.items, marketType, selectedExchanges, sortDirection, sortField, watchlistSymbols]);
 
   const filteredAnnouncements = useMemo(() => {
     return (announcementsQuery.data?.items ?? [])

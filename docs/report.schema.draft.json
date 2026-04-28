@@ -1,0 +1,232 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cryptoai/report.schema.draft.json",
+  "title": "Token Research Report Draft Schema",
+  "type": "object",
+  "required": ["meta", "overview", "links", "funding", "team", "tokenomics", "market", "onchain", "narrative"],
+  "properties": {
+    "meta": {
+      "type": "object",
+      "required": ["symbol", "projectName", "generatedAt", "version"],
+      "properties": {
+        "symbol": { "type": "string" },
+        "projectName": { "type": "string" },
+        "tokenId": { "type": ["number", "null"] },
+        "generatedAt": { "type": "string", "format": "date-time" },
+        "version": { "type": "string", "enum": ["v1-draft"] },
+        "completeness": { "type": ["number", "null"], "minimum": 0, "maximum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "overview": {
+      "type": "object",
+      "properties": {
+        "name": { "$ref": "#/$defs/fieldString" },
+        "description": { "$ref": "#/$defs/fieldString" },
+        "oneLiner": { "$ref": "#/$defs/fieldString" },
+        "currentPrice": { "$ref": "#/$defs/fieldNumber" },
+        "marketCap": { "$ref": "#/$defs/fieldNumber" },
+        "fdv": { "$ref": "#/$defs/fieldNumber" },
+        "totalSupply": { "$ref": "#/$defs/fieldNumber" },
+        "circulatingSupply": { "$ref": "#/$defs/fieldNumber" },
+        "volume24h": { "$ref": "#/$defs/fieldNumber" },
+        "holderCount": { "$ref": "#/$defs/fieldNumber" },
+        "tags": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/fieldString" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "links": {
+      "type": "object",
+      "properties": {
+        "website": { "$ref": "#/$defs/fieldUrl" },
+        "docsUrl": { "$ref": "#/$defs/fieldUrl" },
+        "appUrl": { "$ref": "#/$defs/fieldUrl" },
+        "twitterUrl": { "$ref": "#/$defs/fieldUrl" },
+        "githubUrl": { "$ref": "#/$defs/fieldUrl" },
+        "telegramUrl": { "$ref": "#/$defs/fieldUrl" },
+        "discordUrl": { "$ref": "#/$defs/fieldUrl" },
+        "contracts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["chainName", "address"],
+            "properties": {
+              "chainName": { "$ref": "#/$defs/fieldString" },
+              "address": { "$ref": "#/$defs/fieldString" }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "funding": {
+      "type": "object",
+      "properties": {
+        "totalRaised": { "$ref": "#/$defs/fieldNumber" },
+        "latestRound": { "$ref": "#/$defs/fieldString" },
+        "latestRoundDate": { "$ref": "#/$defs/fieldString" },
+        "investorCount": { "$ref": "#/$defs/fieldNumber" },
+        "rounds": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "roundType": { "$ref": "#/$defs/fieldString" },
+              "roundDate": { "$ref": "#/$defs/fieldString" },
+              "raise": { "$ref": "#/$defs/fieldNumber" },
+              "valuation": { "$ref": "#/$defs/fieldNumber" },
+              "investors": {
+                "type": "array",
+                "items": { "$ref": "#/$defs/fieldString" }
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "team": {
+      "type": "object",
+      "properties": {
+        "members": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "$ref": "#/$defs/fieldString" },
+              "role": { "$ref": "#/$defs/fieldString" },
+              "bio": { "$ref": "#/$defs/fieldString" },
+              "twitterUrl": { "$ref": "#/$defs/fieldUrl" },
+              "linkedinUrl": { "$ref": "#/$defs/fieldUrl" }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "tokenomics": {
+      "type": "object",
+      "properties": {
+        "allocations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "category": { "$ref": "#/$defs/fieldString" },
+              "percent": { "$ref": "#/$defs/fieldNumber" },
+              "amount": { "$ref": "#/$defs/fieldNumber" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "unlockRows": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "unlockDate": { "$ref": "#/$defs/fieldString" },
+              "monthlyTotalRelease": { "$ref": "#/$defs/fieldNumber" },
+              "monthlyReleaseRatio": { "$ref": "#/$defs/fieldNumber" },
+              "cumulativeRelease": { "$ref": "#/$defs/fieldNumber" },
+              "cumulativeReleaseRatio": { "$ref": "#/$defs/fieldNumber" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "unlockNarrative": { "$ref": "#/$defs/fieldString" }
+      },
+      "additionalProperties": false
+    },
+    "market": {
+      "type": "object",
+      "properties": {
+        "listings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "exchangeName": { "$ref": "#/$defs/fieldString" },
+              "eventType": { "$ref": "#/$defs/fieldString" },
+              "date": { "$ref": "#/$defs/fieldString" },
+              "priceAtList": { "$ref": "#/$defs/fieldNumber" },
+              "fdvAtList": { "$ref": "#/$defs/fieldNumber" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "depthSummary": { "$ref": "#/$defs/fieldString" },
+        "initialLpSummary": { "$ref": "#/$defs/fieldString" }
+      },
+      "additionalProperties": false
+    },
+    "onchain": {
+      "type": "object",
+      "properties": {
+        "holdersSummary": { "$ref": "#/$defs/fieldString" },
+        "fundFlowSummary": { "$ref": "#/$defs/fieldString" },
+        "largeTransferSummary": { "$ref": "#/$defs/fieldString" }
+      },
+      "additionalProperties": false
+    },
+    "narrative": {
+      "type": "object",
+      "required": ["highlights", "risks", "conclusion"],
+      "properties": {
+        "highlights": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/fieldString" }
+        },
+        "risks": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/fieldString" }
+        },
+        "conclusion": { "$ref": "#/$defs/fieldString" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "fieldBase": {
+      "type": "object",
+      "required": ["value", "status"],
+      "properties": {
+        "value": {},
+        "status": {
+          "type": "string",
+          "enum": ["internal", "external_verified", "llm_filled", "inferred", "unknown", "needs_review"]
+        },
+        "sourceType": { "type": ["string", "null"] },
+        "sourceUrl": { "type": ["string", "null"] },
+        "asOf": { "type": ["string", "null"] },
+        "confidence": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+        "note": { "type": ["string", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "fieldString": {
+      "allOf": [
+        { "$ref": "#/$defs/fieldBase" },
+        { "properties": { "value": { "type": ["string", "null"] } } }
+      ]
+    },
+    "fieldNumber": {
+      "allOf": [
+        { "$ref": "#/$defs/fieldBase" },
+        { "properties": { "value": { "type": ["number", "null"] } } }
+      ]
+    },
+    "fieldUrl": {
+      "allOf": [
+        { "$ref": "#/$defs/fieldBase" },
+        { "properties": { "value": { "type": ["string", "null"] } } }
+      ]
+    }
+  },
+  "additionalProperties": false
+}

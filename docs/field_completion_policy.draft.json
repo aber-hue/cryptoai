@@ -1,0 +1,83 @@
+{
+  "version": "v1-draft",
+  "rules": {
+    "numeric_fields_no_llm_fabrication": true,
+    "all_llm_filled_fields_require_source": true,
+    "unknown_preferred_over_guessing": true,
+    "conflicts_mark_needs_review": true
+  },
+  "groups": [
+    {
+      "group": "overview",
+      "fields": ["overview.name", "overview.description", "overview.oneLiner", "overview.tags"],
+      "llmAllowed": true,
+      "primarySource": ["internal_db"],
+      "fallbackPath": ["cmc"],
+      "validation": ["if_missing_in_cmc_then_leave_empty"]
+    },
+    {
+      "group": "official_links",
+      "fields": ["website", "docsUrl", "appUrl", "twitterUrl", "githubUrl", "telegramUrl", "discordUrl"],
+      "llmAllowed": true,
+      "primarySource": ["internal_db"],
+      "fallbackPath": ["cmc", "rootdata"],
+      "validation": ["must_be_url", "record_source"]
+    },
+    {
+      "group": "funding",
+      "fields": ["funding.totalRaised", "funding.latestRound", "funding.latestRoundDate", "funding.rounds[].raise", "funding.rounds[].valuation", "funding.rounds[].investors"],
+      "llmAllowed": true,
+      "primarySource": ["internal_db"],
+      "fallbackPath": ["rootdata", "cryptorank"],
+      "validation": ["numeric_fields_use_source_value_only", "record_source"]
+    },
+    {
+      "group": "team",
+      "fields": ["team.members[].name", "team.members[].role", "team.members[].bio", "team.members[].twitterUrl", "team.members[].linkedinUrl"],
+      "llmAllowed": true,
+      "primarySource": ["internal_db"],
+      "fallbackPath": ["rootdata", "cryptorank"],
+      "validation": ["record_source", "do_not_guess_unseen_members"]
+    },
+    {
+      "group": "tokenomics",
+      "fields": ["tokenomics.allocations", "tokenomics.unlockRows", "tokenomics.unlockNarrative"],
+      "llmAllowed": true,
+      "primarySource": ["internal_db"],
+      "fallbackPath": ["cmc", "official_website", "whitepaper"],
+      "validation": ["numeric_fields_use_source_value_only", "record_source"]
+    },
+    {
+      "group": "market",
+      "fields": ["market.listings", "market.depthSummary"],
+      "llmAllowed": true,
+      "primarySource": ["internal_db"],
+      "fallbackPath": ["official_exchange_data"],
+      "validation": ["use_exchange_source_only"]
+    },
+    {
+      "group": "initial_lp",
+      "fields": ["market.initialLpSummary"],
+      "llmAllowed": false,
+      "primarySource": ["token_dex_action_raw", "token_transfer_raw", "wallet_info"],
+      "fallbackPath": [],
+      "validation": ["internal_only"]
+    },
+    {
+      "group": "onchain",
+      "fields": ["onchain.holdersSummary", "onchain.fundFlowSummary", "onchain.largeTransferSummary"],
+      "llmAllowed": false,
+      "primarySource": ["token_holder_snapshot", "token_transfer_raw", "wallet_info"],
+      "fallbackPath": [],
+      "validation": ["internal_only"]
+    },
+    {
+      "group": "conclusion",
+      "fields": ["narrative.highlights", "narrative.risks", "narrative.conclusion"],
+      "llmAllowed": true,
+      "primarySource": ["structured_context"],
+      "fallbackPath": [],
+      "validation": ["no_new_numbers", "no_new_entities_without_source"]
+    }
+  ]
+}

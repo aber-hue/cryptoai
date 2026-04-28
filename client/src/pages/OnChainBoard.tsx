@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/table";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
+import { forceCenter, forceCollide, forceLink, forceManyBody, forceSimulation, forceX, forceY, type SimulationLinkDatum, type SimulationNodeDatum } from "d3-force";
 import { ArrowDownRight, ArrowUpRight, ChevronDown, Copy, Droplets, Expand, RefreshCw, Search, TrendingDown, TrendingUp, X } from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
@@ -148,6 +149,81 @@ type FlowGraph = {
   totalAmount: number;
 };
 
+type LargeTransferGraphNode = {
+  id: string;
+  address: string;
+  label: string;
+  kind: string;
+  amount: number;
+  transferCount: number;
+};
+
+type LargeTransferGraphLink = {
+  id: string;
+  source: string;
+  target: string;
+  amount: number;
+  ratioOfSupply: number | null;
+  latestBlockTime: string | null;
+  transferCount: number;
+};
+
+type LargeTransferGraph = {
+  nodes: LargeTransferGraphNode[];
+  links: LargeTransferGraphLink[];
+  totalAmount: number;
+};
+
+type LargeTransferBilateralNode = {
+  id: string;
+  address: string;
+  label: string;
+  kind: string;
+  amount: number;
+  transferCount: number;
+  column: 0 | 1 | 2 | 3 | 4;
+};
+
+type LargeTransferBilateralLink = LargeTransferGraphLink;
+
+type LargeTransferBilateralGraph = {
+  centerIds: string[];
+  nodes: LargeTransferBilateralNode[];
+  links: LargeTransferBilateralLink[];
+  totalAmount: number;
+};
+
+type LargeTransferRecord = {
+  txhash: string;
+  logIndex: number | null;
+  blockTime: string | null;
+  fromAddress: string;
+  toAddress: string;
+  fromLabel: string;
+  toLabel: string;
+  fromKind: string;
+  toKind: string;
+  amount: number | null;
+  ratioOfSupply: number | null;
+  value?: number | null;
+};
+
+type LargeTransferScope = "all" | "initial" | "dex" | "cex";
+
+type ForceTransferNode = LargeTransferGraphNode &
+  SimulationNodeDatum & {
+    x: number;
+    y: number;
+    fx?: number | null;
+    fy?: number | null;
+  };
+
+type ForceTransferLink = LargeTransferGraphLink &
+  SimulationLinkDatum<ForceTransferNode> & {
+    source: string;
+    target: string;
+  };
+
 type OnchainTokenOption = {
   symbol: string;
   name: string;
@@ -177,6 +253,333 @@ const fallbackOnchainTokenOptions: OnchainTokenOption[] = [
   { symbol: "BASED", name: "Based", tokenId: 1297, transferCount: 0, holderCount: 0, dexActionCount: 1 },
   { symbol: "OPG", name: "OpenGradient", tokenId: 1584, transferCount: 0, holderCount: 0, dexActionCount: 1 },
 ];
+
+function buildLargeTransferGraph(
+  items: LargeTransferRecord[]
+): LargeTransferGraph {
+  const nodeMap = new Map<string, LargeTransferGraphNode>();
+  const linkMap = new Map<string, LargeTransferGraphLink>();
+
+  items.forEach(item => {
+    const amount = item.amount ?? 0;
+    const fromId = item.fromAddress;
+    const toId = item.toAddress;
+
+    const fromNode = nodeMap.get(fromId) ?? {
+      id: fromId,
+      address: item.fromAddress,
+      label: item.fromLabel,
+      kind: item.fromKind,
+      amount: 0,
+      transferCount: 0,
+    };
+    fromNode.amount += amount;
+    fromNode.transferCount += 1;
+    nodeMap.set(fromId, fromNode);
+
+    const toNode = nodeMap.get(toId) ?? {
+      id: toId,
+      address: item.toAddress,
+      label: item.toLabel,
+      kind: item.toKind,
+      amount: 0,
+      transferCount: 0,
+    };
+    toNode.amount += amount;
+    toNode.transferCount += 1;
+    nodeMap.set(toId, toNode);
+
+    const linkId = `${fromId}->${toId}`;
+    const link = linkMap.get(linkId) ?? {
+      id: linkId,
+      source: fromId,
+      target: toId,
+      amount: 0,
+      ratioOfSupply: 0,
+      latestBlockTime: item.blockTime,
+      transferCount: 0,
+    };
+    link.amount += amount;
+    link.transferCount += 1;
+    link.ratioOfSupply = (link.ratioOfSupply ?? 0) + (item.ratioOfSupply ?? 0);
+    if ((item.blockTime ?? "") > (link.latestBlockTime ?? "")) {
+      link.latestBlockTime = item.blockTime;
+    }
+    linkMap.set(linkId, link);
+  });
+
+  const nodes = Array.from(nodeMap.values()).sort((left, right) => right.amount - left.amount);
+  const links = Array.from(linkMap.values()).sort((left, right) => right.amount - left.amount);
+
+  return {
+    nodes,
+    links,
+    totalAmount: links.reduce((sum, link) => sum + link.amount, 0),
+  };
+}
+
+function isDexLikeMeta(label: string, kind: string) {
+  return /dex|swap|router|pancake|uniswap|vault|pool|lp/i.test(`${label} ${kind}`);
+}
+
+function isCexLikeMeta(label: string, kind: string) {
+  return !isDexLikeMeta(label, kind) && /binance|bybit|gate|okx|kucoin|mexc|bitget|deposit|withdraw|hotwallet|cex/i.test(`${label} ${kind}`);
+}
+
+function scopeLabel(scope: LargeTransferScope) {
+  if (scope === "all") return "全部大额转账";
+  if (scope === "dex") return "DEX 大额流向";
+  if (scope === "cex") return "CEX 大额流向";
+  return "初始大额流向";
+}
+
+function buildScopedLargeTransferItems(
+  items: LargeTransferRecord[],
+  scope: LargeTransferScope,
+  initialAddressSet?: Set<string>
+) {
+  if (scope === "all") return items;
+  if (scope === "initial") {
+    if (!initialAddressSet || initialAddressSet.size === 0) return items;
+    return items.filter(item => initialAddressSet.has(item.fromAddress) || initialAddressSet.has(item.toAddress));
+  }
+
+  const matcher = scope === "dex" ? isDexLikeMeta : isCexLikeMeta;
+  const domainItems = items.filter(item => {
+    if (scope === "dex") {
+      return !isCexLikeMeta(item.fromLabel, item.fromKind) && !isCexLikeMeta(item.toLabel, item.toKind);
+    }
+    if (scope === "cex") {
+      return !isDexLikeMeta(item.fromLabel, item.fromKind) && !isDexLikeMeta(item.toLabel, item.toKind);
+    }
+    return true;
+  });
+  const seedAddresses = new Set<string>();
+  domainItems.forEach(item => {
+    if (matcher(item.fromLabel, item.fromKind)) seedAddresses.add(item.fromAddress);
+    if (matcher(item.toLabel, item.toKind)) seedAddresses.add(item.toAddress);
+  });
+  if (seedAddresses.size === 0) return [];
+
+  const directItems = domainItems.filter(item => seedAddresses.has(item.fromAddress) || seedAddresses.has(item.toAddress));
+  const upstreamHop = new Set<string>();
+  const downstreamHop = new Set<string>();
+
+  directItems.forEach(item => {
+    if (seedAddresses.has(item.toAddress) && !seedAddresses.has(item.fromAddress)) {
+      upstreamHop.add(item.fromAddress);
+    }
+    if (seedAddresses.has(item.fromAddress) && !seedAddresses.has(item.toAddress)) {
+      downstreamHop.add(item.toAddress);
+    }
+  });
+
+  const scoped = domainItems.filter(
+    item =>
+      seedAddresses.has(item.fromAddress) ||
+      seedAddresses.has(item.toAddress) ||
+      upstreamHop.has(item.toAddress) ||
+      downstreamHop.has(item.fromAddress)
+  );
+
+  return Array.from(
+    new Map(
+      scoped.map(item => [`${item.txhash}-${item.logIndex ?? "na"}-${item.fromAddress}-${item.toAddress}`, item])
+    ).values()
+  );
+}
+
+function buildNetTransferItems(items: LargeTransferRecord[]) {
+  const pairMap = new Map<
+    string,
+    {
+      left: string;
+      right: string;
+      leftToRight: number;
+      rightToLeft: number;
+      leftMeta: Pick<LargeTransferRecord, "fromLabel" | "fromKind">;
+      rightMeta: Pick<LargeTransferRecord, "toLabel" | "toKind">;
+      latestBlockTime: string | null;
+      transferCount: number;
+      ratioSum: number;
+    }
+  >();
+
+  items.forEach(item => {
+    const amount = item.amount ?? 0;
+    if (amount <= 0) return;
+    const [left, right] =
+      item.fromAddress.toLowerCase() < item.toAddress.toLowerCase()
+        ? [item.fromAddress.toLowerCase(), item.toAddress.toLowerCase()]
+        : [item.toAddress.toLowerCase(), item.fromAddress.toLowerCase()];
+    const key = `${left}|${right}`;
+    const current = pairMap.get(key) ?? {
+      left,
+      right,
+      leftToRight: 0,
+      rightToLeft: 0,
+      leftMeta:
+        left === item.fromAddress.toLowerCase()
+          ? { fromLabel: item.fromLabel, fromKind: item.fromKind }
+          : { fromLabel: item.toLabel, fromKind: item.toKind },
+      rightMeta:
+        right === item.toAddress.toLowerCase()
+          ? { toLabel: item.toLabel, toKind: item.toKind }
+          : { toLabel: item.fromLabel, toKind: item.fromKind },
+      latestBlockTime: item.blockTime,
+      transferCount: 0,
+      ratioSum: 0,
+    };
+
+    if (item.fromAddress.toLowerCase() === left) {
+      current.leftToRight += amount;
+    } else {
+      current.rightToLeft += amount;
+    }
+    current.transferCount += 1;
+    current.ratioSum += item.ratioOfSupply ?? 0;
+    if ((item.blockTime ?? "") > (current.latestBlockTime ?? "")) {
+      current.latestBlockTime = item.blockTime;
+    }
+    pairMap.set(key, current);
+  });
+
+  return Array.from(pairMap.values())
+    .map(entry => {
+      const net = entry.leftToRight - entry.rightToLeft;
+      if (Math.abs(net) <= 0) return null;
+      const isLeftToRight = net > 0;
+      return {
+        txhash: `net:${entry.left}:${entry.right}`,
+        logIndex: null,
+        blockTime: entry.latestBlockTime,
+        fromAddress: isLeftToRight ? entry.left : entry.right,
+        toAddress: isLeftToRight ? entry.right : entry.left,
+        fromLabel: isLeftToRight ? entry.leftMeta.fromLabel : entry.rightMeta.toLabel,
+        toLabel: isLeftToRight ? entry.rightMeta.toLabel : entry.leftMeta.fromLabel,
+        fromKind: isLeftToRight ? entry.leftMeta.fromKind : entry.rightMeta.toKind,
+        toKind: isLeftToRight ? entry.rightMeta.toKind : entry.leftMeta.fromKind,
+        amount: Math.abs(net),
+        ratioOfSupply: entry.ratioSum,
+        value: null,
+      } satisfies LargeTransferRecord;
+    })
+    .filter(Boolean) as LargeTransferRecord[];
+}
+
+function buildLargeTransferBilateralGraph(items: LargeTransferRecord[], scope: "dex" | "cex"): LargeTransferBilateralGraph | null {
+  const matcher = scope === "dex" ? isDexLikeMeta : isCexLikeMeta;
+  const netItems = buildNetTransferItems(items);
+  if (netItems.length === 0) return null;
+
+  const incidentAmount = new Map<string, number>();
+  const addressMeta = new Map<
+    string,
+    {
+      label: string;
+      kind: string;
+    }
+  >();
+  const seedAddresses = new Set<string>();
+
+  netItems.forEach(item => {
+    const amount = item.amount ?? 0;
+    incidentAmount.set(item.fromAddress, (incidentAmount.get(item.fromAddress) ?? 0) + amount);
+    incidentAmount.set(item.toAddress, (incidentAmount.get(item.toAddress) ?? 0) + amount);
+    if (!addressMeta.has(item.fromAddress)) {
+      addressMeta.set(item.fromAddress, { label: item.fromLabel, kind: item.fromKind });
+    }
+    if (!addressMeta.has(item.toAddress)) {
+      addressMeta.set(item.toAddress, { label: item.toLabel, kind: item.toKind });
+    }
+    if (matcher(item.fromLabel, item.fromKind)) seedAddresses.add(item.fromAddress);
+    if (matcher(item.toLabel, item.toKind)) seedAddresses.add(item.toAddress);
+  });
+
+  const centerIds = Array.from(seedAddresses).sort((left, right) => (incidentAmount.get(right) ?? 0) - (incidentAmount.get(left) ?? 0));
+  if (centerIds.length === 0) return null;
+
+  const centerIdSet = new Set(centerIds);
+  const directInbound = netItems
+    .filter(item => centerIdSet.has(item.toAddress) && !centerIdSet.has(item.fromAddress))
+    .sort((a, b) => (b.amount ?? 0) - (a.amount ?? 0));
+  const directOutbound = netItems
+    .filter(item => centerIdSet.has(item.fromAddress) && !centerIdSet.has(item.toAddress))
+    .sort((a, b) => (b.amount ?? 0) - (a.amount ?? 0));
+  const leftOneIds = new Set(directInbound.map(item => item.fromAddress));
+  const rightOneIds = new Set(directOutbound.map(item => item.toAddress));
+
+  const leftTwo = netItems.filter(
+    item =>
+      leftOneIds.has(item.toAddress) &&
+      !centerIdSet.has(item.fromAddress) &&
+      !leftOneIds.has(item.fromAddress) &&
+      !rightOneIds.has(item.fromAddress)
+  );
+  const rightTwo = netItems.filter(
+    item =>
+      rightOneIds.has(item.fromAddress) &&
+      !centerIdSet.has(item.toAddress) &&
+      !leftOneIds.has(item.toAddress) &&
+      !rightOneIds.has(item.toAddress)
+  );
+
+  const nodeMap = new Map<string, LargeTransferBilateralNode>();
+  const ensureNode = (address: string, column: 0 | 1 | 2 | 3 | 4) => {
+    const meta = addressMeta.get(address) ?? { label: "普通地址", kind: "普通地址" };
+    const current = nodeMap.get(address);
+    if (current) {
+      current.column = current.column === 2 ? 2 : column;
+      return current;
+    }
+    const node: LargeTransferBilateralNode = {
+      id: address,
+      address,
+      label: meta.label,
+      kind: meta.kind,
+      amount: incidentAmount.get(address) ?? 0,
+      transferCount: 0,
+      column,
+    };
+    nodeMap.set(address, node);
+    return node;
+  };
+
+  centerIds.forEach(address => ensureNode(address, 2));
+  directInbound.forEach(item => ensureNode(item.fromAddress, 1));
+  directOutbound.forEach(item => ensureNode(item.toAddress, 3));
+  leftTwo.forEach(item => ensureNode(item.fromAddress, 0));
+  rightTwo.forEach(item => ensureNode(item.toAddress, 4));
+
+  const links = [
+    ...leftTwo,
+    ...directInbound,
+    ...directOutbound,
+    ...rightTwo,
+  ].map<LargeTransferBilateralLink>(item => ({
+    id: `${item.fromAddress}->${item.toAddress}`,
+    source: item.fromAddress,
+    target: item.toAddress,
+    amount: item.amount ?? 0,
+    ratioOfSupply: item.ratioOfSupply,
+    latestBlockTime: item.blockTime,
+    transferCount: 1,
+  }));
+
+  links.forEach(link => {
+    const source = nodeMap.get(link.source);
+    const target = nodeMap.get(link.target);
+    if (source) source.transferCount += 1;
+    if (target) target.transferCount += 1;
+  });
+
+  return {
+    centerIds,
+    nodes: Array.from(nodeMap.values()),
+    links,
+    totalAmount: links.reduce((sum, link) => sum + link.amount, 0),
+  };
+}
 
 const dashboardDates = ["2026-04-15", "2026-04-14", "2026-04-13"];
 
@@ -1010,17 +1413,705 @@ const FundFlowCanvas = memo(function FundFlowCanvas({
   );
 });
 
+const LargeTransferGraphCanvas = memo(function LargeTransferGraphCanvas({
+  graph,
+  defaultView = "focus",
+}: {
+  graph: LargeTransferGraph;
+  defaultView?: "focus" | "all";
+}) {
+  const {
+    nodes,
+    visibleLinks,
+    nodePositions,
+    width,
+    height,
+    neighborMap,
+    secondaryNeighborMap,
+    centerNodeId,
+  } = useMemo(() => {
+    const width = Math.max(2400, 1200 + graph.nodes.length * 90);
+    const height = Math.max(1700, 820 + graph.nodes.length * 58);
+    const nodeRadiusBase = 14;
+    const collideRadius = 70;
+    const simulationNodes: ForceTransferNode[] = graph.nodes.map(node => ({ ...node, x: width / 2, y: height / 2 }));
+    const rawLinks = graph.links.map(link => ({ ...link }));
+    const simulationLinks: ForceTransferLink[] = rawLinks.map(link => ({ ...link }));
+    const neighborMap = new Map<string, Set<string>>();
+
+    rawLinks.forEach(link => {
+      const sourceId = link.source;
+      const targetId = link.target;
+      const sourceNeighbors = neighborMap.get(sourceId) ?? new Set<string>();
+      sourceNeighbors.add(targetId);
+      neighborMap.set(sourceId, sourceNeighbors);
+      const targetNeighbors = neighborMap.get(targetId) ?? new Set<string>();
+      targetNeighbors.add(sourceId);
+      neighborMap.set(targetId, targetNeighbors);
+    });
+
+    const incidentAmount = new Map<string, number>();
+    graph.links.forEach(link => {
+      incidentAmount.set(link.source, (incidentAmount.get(link.source) ?? 0) + link.amount);
+      incidentAmount.set(link.target, (incidentAmount.get(link.target) ?? 0) + link.amount);
+    });
+
+    const centerNodeId =
+      [...graph.nodes]
+        .sort((left, right) => {
+          const rightScore =
+            (incidentAmount.get(right.id) ?? 0) +
+            ((neighborMap.get(right.id)?.size ?? 0) * 100000);
+          const leftScore =
+            (incidentAmount.get(left.id) ?? 0) +
+            ((neighborMap.get(left.id)?.size ?? 0) * 100000);
+          return rightScore - leftScore;
+        })[0]?.id ?? graph.nodes[0]?.id;
+
+    simulationNodes.forEach(node => {
+      if (node.id === centerNodeId) {
+        node.x = width / 2;
+        node.y = height / 2;
+        node.fx = width / 2;
+        node.fy = height / 2;
+      }
+    });
+
+    const simulation = forceSimulation<ForceTransferNode>(simulationNodes)
+      .force(
+        "link",
+        forceLink<ForceTransferNode, ForceTransferLink>(simulationLinks)
+          .id(node => node.id)
+          .distance(220)
+          .strength(0.12)
+      )
+      .force("charge", forceManyBody().strength(-520))
+      .force("collide", forceCollide<ForceTransferNode>(collideRadius))
+      .force("center", forceCenter(width / 2, height / 2))
+      .force("x", forceX(width / 2).strength(0.012))
+      .force("y", forceY(height / 2).strength(0.012))
+      .stop();
+
+    for (let index = 0; index < 420; index += 1) {
+      simulation.tick();
+    }
+
+    const nodePositions = new Map<string, { x: number; y: number; r: number }>();
+    simulationNodes.forEach(node => {
+      const r = node.id === centerNodeId ? 20 : 14;
+      nodePositions.set(node.id, {
+        x: Math.min(width - r - 20, Math.max(r + 20, node.x ?? width / 2)),
+        y: Math.min(height - r - 20, Math.max(r + 20, node.y ?? height / 2)),
+        r,
+      });
+    });
+
+    const secondaryNeighborMap = new Map<string, Set<string>>();
+    neighborMap.forEach((neighbors, nodeId) => {
+      const second = new Set<string>();
+      neighbors.forEach(neighborId => {
+        (neighborMap.get(neighborId) ?? new Set<string>()).forEach(secondNeighborId => {
+          if (secondNeighborId !== nodeId && !neighbors.has(secondNeighborId)) {
+            second.add(secondNeighborId);
+          }
+        });
+      });
+      secondaryNeighborMap.set(nodeId, second);
+    });
+
+    return {
+      nodes: simulationNodes,
+      visibleLinks: rawLinks,
+      nodePositions,
+      width,
+      height,
+      neighborMap,
+      secondaryNeighborMap,
+      centerNodeId,
+    };
+  }, [graph]);
+
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(centerNodeId ?? null);
+  const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
+  const [graphDetailMode, setGraphDetailMode] = useState<"focus" | "all">(defaultView);
+  const [showSecondHop, setShowSecondHop] = useState(false);
+
+  useEffect(() => {
+    setSelectedNodeId(centerNodeId ?? null);
+    setHoveredNodeId(null);
+  }, [centerNodeId, graph]);
+
+  useEffect(() => {
+    setGraphDetailMode(defaultView);
+  }, [defaultView, graph]);
+
+  const activeNodeId = hoveredNodeId ?? selectedNodeId;
+  const primaryNeighbors = activeNodeId ? neighborMap.get(activeNodeId) ?? new Set<string>() : new Set<string>();
+  const secondaryNeighbors = activeNodeId ? secondaryNeighborMap.get(activeNodeId) ?? new Set<string>() : new Set<string>();
+  const focusNodeIds = activeNodeId
+    ? new Set<string>([
+        activeNodeId,
+        ...Array.from(primaryNeighbors),
+        ...(showSecondHop ? Array.from(secondaryNeighbors) : []),
+      ])
+    : new Set<string>();
+  const renderedLinks =
+    graphDetailMode === "focus" && activeNodeId
+      ? visibleLinks.filter(link => focusNodeIds.has(link.source) && focusNodeIds.has(link.target))
+      : visibleLinks;
+  const renderedNodes =
+    graphDetailMode === "focus" && activeNodeId
+      ? nodes.filter(node => focusNodeIds.has(node.id))
+      : nodes;
+
+  const focusLayout = useMemo(() => {
+    const focalId = selectedNodeId ?? centerNodeId ?? null;
+    if (!focalId) return null;
+
+    const focalNode = nodes.find(node => node.id === focalId) ?? null;
+    if (!focalNode) return null;
+
+    const inboundLinks = visibleLinks.filter(link => link.target === focalId).sort((a, b) => b.amount - a.amount);
+    const outboundLinks = visibleLinks.filter(link => link.source === focalId).sort((a, b) => b.amount - a.amount);
+    const inboundNodes = inboundLinks
+      .map(link => nodes.find(node => node.id === link.source))
+      .filter(Boolean) as ForceTransferNode[];
+    const outboundNodes = outboundLinks
+      .map(link => nodes.find(node => node.id === link.target))
+      .filter(Boolean) as ForceTransferNode[];
+
+    const secondInboundLinks = showSecondHop
+      ? visibleLinks.filter(link => inboundNodes.some(node => node.id === link.target) && link.source !== focalId && !inboundNodes.some(node => node.id === link.source))
+      : [];
+    const secondOutboundLinks = showSecondHop
+      ? visibleLinks.filter(link => outboundNodes.some(node => node.id === link.source) && link.target !== focalId && !outboundNodes.some(node => node.id === link.target))
+      : [];
+
+    const secondInboundNodes = Array.from(
+      new Map(
+        secondInboundLinks
+          .sort((a, b) => b.amount - a.amount)
+          .map(link => {
+            const node = nodes.find(item => item.id === link.source);
+            return node ? [node.id, node] : null;
+          })
+          .filter(Boolean) as Array<[string, ForceTransferNode]>
+      ).values()
+    );
+    const secondOutboundNodes = Array.from(
+      new Map(
+        secondOutboundLinks
+          .sort((a, b) => b.amount - a.amount)
+          .map(link => {
+            const node = nodes.find(item => item.id === link.target);
+            return node ? [node.id, node] : null;
+          })
+          .filter(Boolean) as Array<[string, ForceTransferNode]>
+      ).values()
+    );
+
+    const width = 2200;
+    const height = 1280;
+    const centerX = width / 2;
+    const centerY = height / 2;
+    const positions = new Map<string, { x: number; y: number; r: number; tier: 0 | 1 | 2; side: "center" | "left" | "right" }>();
+    const radiusForTier = (tier: 0 | 1 | 2) => {
+      if (tier === 0) return 18;
+      if (tier === 1) return 13;
+      return 11;
+    };
+
+    positions.set(focalNode.id, { x: centerX, y: centerY, r: radiusForTier(0), tier: 0, side: "center" });
+
+    const placeColumn = (
+      targetNodes: ForceTransferNode[],
+      side: "left" | "right",
+      x: number,
+      tier: 1 | 2
+    ) => {
+      if (targetNodes.length === 0) return;
+      const startY = 170;
+      const availableHeight = height - 260;
+      const spacing = Math.min(availableHeight / Math.max(1, targetNodes.length), 108);
+      const totalHeight = spacing * Math.max(0, targetNodes.length - 1);
+      const offsetY = centerY - totalHeight / 2;
+      targetNodes.forEach((node, index) => {
+        positions.set(node.id, {
+          x,
+          y: Math.max(startY, offsetY + spacing * index),
+          r: radiusForTier(tier),
+          tier,
+          side,
+        });
+      });
+    };
+
+    placeColumn(inboundNodes, "left", 560, 1);
+    placeColumn(outboundNodes, "right", width - 560, 1);
+    placeColumn(secondInboundNodes, "left", 210, 2);
+    placeColumn(secondOutboundNodes, "right", width - 210, 2);
+
+    const visibleNodeIds = new Set<string>([
+      focalNode.id,
+      ...inboundNodes.map(node => node.id),
+      ...outboundNodes.map(node => node.id),
+      ...secondInboundNodes.map(node => node.id),
+      ...secondOutboundNodes.map(node => node.id),
+    ]);
+    const visibleFocusLinks = visibleLinks.filter(link => visibleNodeIds.has(link.source) && visibleNodeIds.has(link.target));
+
+    return {
+      focalNode,
+      positions,
+      links: visibleFocusLinks,
+      width,
+      height,
+      inboundCount: inboundNodes.length,
+      outboundCount: outboundNodes.length,
+      totalVisibleNodes: visibleNodeIds.size,
+    };
+  }, [selectedNodeId, centerNodeId, nodes, visibleLinks, showSecondHop]);
+
+  const maxLinkAmount = renderedLinks.reduce((max, link) => Math.max(max, link.amount), 0);
+  const colorForKind = (kind: string) => {
+    if (/binance|bybit|gate|okx|cex/i.test(kind)) return "#1D4ED8";
+    if (/contract|合约/i.test(kind)) return "#7C3AED";
+    if (/wallet|钱包/i.test(kind)) return "#2563EB";
+    return "#60A5FA";
+  };
+
+  return (
+    <div data-large-transfer-graph-root className="rounded-[20px] border border-[#E2E8F0] bg-[#FCFDFF] p-4">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+        <div className="text-xs text-[#64748B]">
+          默认先聚焦核心地址；左边看资金来源，右边看资金去向。点击节点可切换中心，双击空白可回到核心地址。
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="inline-flex rounded-full border border-[#D7E3F4] bg-white p-1">
+            {[
+              { key: "focus", label: "核心视图" },
+              { key: "all", label: "全部节点" },
+            ].map(option => (
+              <button
+                key={option.key}
+                type="button"
+                onClick={() => setGraphDetailMode(option.key as "focus" | "all")}
+                className={cn(
+                  "rounded-full px-3 py-1.5 text-sm font-medium transition",
+                  graphDetailMode === option.key ? "bg-[#1D4ED8] text-white" : "text-[#475569] hover:text-[#1D4ED8]"
+                )}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+          {selectedNodeId ? (
+            <Button
+              variant="secondary"
+              className="h-9 rounded-full"
+              onClick={() => setShowSecondHop(current => !current)}
+            >
+              {showSecondHop ? "隐藏二阶" : "显示二阶"}
+            </Button>
+          ) : null}
+          <div className="text-xs text-[#64748B]">
+            当前页地址 {graph.nodes.length} · 当前页路径 {graph.links.length} · 当前页总额 {compactNumber(graph.totalAmount)}
+          </div>
+        </div>
+      </div>
+      <div className="overflow-auto rounded-[18px] border border-[#E2E8F0] bg-white/65" style={{ height: 980 }}>
+        <svg
+          width={graphDetailMode === "focus" ? focusLayout?.width ?? width : width}
+          height={graphDetailMode === "focus" ? focusLayout?.height ?? height : height}
+          className="block"
+        >
+          <rect
+            x={0}
+            y={0}
+            width={graphDetailMode === "focus" ? focusLayout?.width ?? width : width}
+            height={graphDetailMode === "focus" ? focusLayout?.height ?? height : height}
+            fill="transparent"
+            onClick={() => setSelectedNodeId(null)}
+            onDoubleClick={() => setSelectedNodeId(centerNodeId ?? null)}
+          />
+
+          {graphDetailMode === "focus" && focusLayout ? (
+            <>
+              <text x={110} y={46} fill="#1E40AF" fontSize="18" fontWeight="700">
+                资金来源
+              </text>
+              <text x={focusLayout.width - 220} y={46} fill="#1E40AF" fontSize="18" fontWeight="700">
+                资金去向
+              </text>
+              <text x={focusLayout.width / 2} y={46} textAnchor="middle" fill="#0F172A" fontSize="16" fontWeight="700">
+                {focusLayout.focalNode.label} · {formatAddressDisplay(focusLayout.focalNode.address)}
+              </text>
+
+              {focusLayout.links.map(link => {
+                const source = focusLayout.positions.get(link.source);
+                const target = focusLayout.positions.get(link.target);
+                if (!source || !target) return null;
+                const dx = target.x - source.x;
+                const dy = target.y - source.y;
+                const distance = Math.sqrt(dx * dx + dy * dy) || 1;
+                const startX = source.x + (dx / distance) * source.r;
+                const startY = source.y + (dy / distance) * source.r;
+                const endX = target.x - (dx / distance) * target.r;
+                const endY = target.y - (dy / distance) * target.r;
+                const labelX = (startX + endX) / 2;
+                const labelY = (startY + endY) / 2 - 10;
+                const isDirect =
+                  link.source === focusLayout.focalNode.id || link.target === focusLayout.focalNode.id;
+                const strokeWidth = isDirect ? 2.1 : 1.3;
+
+                return (
+                  <g key={link.id}>
+                    <path
+                      d={`M ${startX} ${startY} L ${endX} ${endY}`}
+                      fill="none"
+                      stroke={isDirect ? "rgba(37,99,235,0.7)" : "rgba(148,163,184,0.35)"}
+                      strokeWidth={strokeWidth}
+                      strokeLinecap="round"
+                      markerEnd="url(#large-transfer-arrow)"
+                    />
+                    {isDirect ? (
+                      <>
+                        <rect x={labelX - 52} y={labelY - 11} width={104} height={22} rx={11} fill="rgba(255,255,255,0.96)" stroke="rgba(148,163,184,0.22)" />
+                        <text x={labelX} y={labelY + 2} textAnchor="middle" fill="#0F172A" fontSize="10" fontWeight="700">
+                          {compactNumber(link.amount)} · {formatPercent(link.ratioOfSupply ?? 0)}
+                        </text>
+                      </>
+                    ) : null}
+                  </g>
+                );
+              })}
+            </>
+          ) : (
+            renderedLinks.map(link => {
+            const source = nodePositions.get(link.source);
+            const target = nodePositions.get(link.target);
+            if (!source || !target) return null;
+            const dx = target.x - source.x;
+            const dy = target.y - source.y;
+            const distance = Math.sqrt(dx * dx + dy * dy) || 1;
+            const startX = source.x + (dx / distance) * source.r;
+            const startY = source.y + (dy / distance) * source.r;
+            const endX = target.x - (dx / distance) * target.r;
+            const endY = target.y - (dy / distance) * target.r;
+            const strokeWidth = 1.5;
+            const labelX = (startX + endX) / 2;
+            const labelY = (startY + endY) / 2 - 8;
+            const isHighlighted =
+              !selectedNodeId ||
+              link.source === selectedNodeId ||
+              link.target === selectedNodeId ||
+              primaryNeighbors.has(link.source) ||
+              primaryNeighbors.has(link.target) ||
+              secondaryNeighbors.has(link.source) ||
+              secondaryNeighbors.has(link.target);
+
+            return (
+              <g key={link.id}>
+                <path
+                  d={`M ${startX} ${startY} L ${endX} ${endY}`}
+                  fill="none"
+                  stroke={isHighlighted ? "rgba(37,99,235,0.6)" : "rgba(148,163,184,0.28)"}
+                  strokeWidth={strokeWidth}
+                  strokeLinecap="round"
+                  markerEnd="url(#large-transfer-arrow)"
+                />
+                {isHighlighted && selectedNodeId ? (
+                  <>
+                    <rect x={labelX - 58} y={labelY - 12} width={116} height={24} rx={12} fill="rgba(255,255,255,0.94)" stroke="rgba(148,163,184,0.22)" />
+                    <text x={labelX} y={labelY - 1} textAnchor="middle" fill="#0F172A" fontSize="10.5" fontWeight="700">
+                      {compactNumber(link.amount)} · {formatPercent(link.ratioOfSupply ?? 0)}
+                    </text>
+                  </>
+                ) : null}
+              </g>
+            );
+          }))}
+
+          <defs>
+            <marker id="large-transfer-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="4" markerHeight="4" orient="auto-start-reverse">
+              <path d="M 0 1 L 8 5 L 0 9 z" fill="rgba(37,99,235,0.72)" />
+            </marker>
+          </defs>
+
+          {(graphDetailMode === "focus" && focusLayout ? nodes.filter(node => focusLayout.positions.has(node.id)) : renderedNodes).map(node => {
+            const position =
+              graphDetailMode === "focus" && focusLayout
+                ? focusLayout.positions.get(node.id)
+                : nodePositions.get(node.id);
+            if (!position) return null;
+            const focusPosition = graphDetailMode === "focus" && focusLayout ? focusLayout.positions.get(node.id) ?? null : null;
+            const isSelected = selectedNodeId === node.id;
+            const isPrimary = primaryNeighbors.has(node.id);
+            const isSecondary = secondaryNeighbors.has(node.id);
+            const fade = selectedNodeId && !isSelected && !isPrimary && !isSecondary ? 0.22 : 1;
+            const radius = position.r;
+            const fill = colorForKind(node.kind);
+            const showLabel = graphDetailMode === "focus" ? true : isSelected || isPrimary;
+            const focusAnchor =
+              focusPosition
+                ? focusPosition.side === "left"
+                  ? "end"
+                  : focusPosition.side === "right"
+                    ? "start"
+                    : "middle"
+                : "middle";
+            const focusLabelX =
+              focusPosition
+                ? focusPosition.side === "left"
+                  ? position.x - radius - 10
+                  : focusPosition.side === "right"
+                    ? position.x + radius + 10
+                    : position.x
+                : position.x;
+            const focusLabelY =
+              focusPosition && focusPosition.side === "center"
+                ? position.y + radius + 18
+                : position.y - 8;
+            return (
+              <g
+                key={node.id}
+                style={{ cursor: "pointer", opacity: fade }}
+                onClick={event => {
+                  event.stopPropagation();
+                  setSelectedNodeId(current => (current === node.id ? null : node.id));
+                }}
+              >
+                <circle
+                  cx={position.x}
+                  cy={position.y}
+                  r={radius}
+                  fill={fill}
+                  fillOpacity={0.9}
+                  stroke={isSelected ? "#0F172A" : "#FFFFFF"}
+                  strokeWidth={isSelected ? 2.5 : 1.2}
+                />
+                {showLabel ? (
+                  <>
+                    <text x={focusLabelX} y={focusLabelY} textAnchor={focusAnchor} fill="#1E3A8A" fontSize={graphDetailMode === "focus" ? 10.5 : 11} fontWeight="700">
+                      {node.label}
+                    </text>
+                    <text
+                      x={focusLabelX}
+                      y={focusLabelY + 16}
+                      textAnchor={focusAnchor}
+                      fill="#0F172A"
+                      fontSize={graphDetailMode === "focus" ? 11.5 : 12}
+                      fontWeight="700"
+                      style={{ cursor: "pointer" }}
+                      onClick={event => {
+                        event.stopPropagation();
+                        window.open(formatBscScanAddress(node.address), "_blank", "noopener,noreferrer");
+                      }}
+                    >
+                      {formatAddressDisplay(node.address)}
+                    </text>
+                    <text x={focusLabelX} y={focusLabelY + 30} textAnchor={focusAnchor} fill="#64748B" fontSize="10">
+                      {compactNumber(node.amount)} · {node.transferCount} 笔
+                    </text>
+                  </>
+                ) : null}
+                <title>{`${node.label}\n${node.address}\n${compactNumber(node.amount)} · ${node.transferCount} 笔`}</title>
+              </g>
+            );
+          })}
+        </svg>
+      </div>
+    </div>
+  );
+});
+
+const LargeTransferBilateralCanvas = memo(function LargeTransferBilateralCanvas({
+  graph,
+  scope,
+}: {
+  graph: LargeTransferBilateralGraph;
+  scope: "dex" | "cex";
+}) {
+  const { nodesByColumn, nodePositions, canvasWidth, canvasHeight, columnX } = useMemo(() => {
+    const columns = [0, 1, 2, 3, 4].map(column =>
+      graph.nodes
+        .filter(node => node.column === column)
+        .sort((left, right) => right.amount - left.amount)
+    ) as LargeTransferBilateralNode[][];
+    const columnGap = 400;
+    const baseX = 80;
+    const nodeWidth = 228;
+    const topPadding = 90;
+    const rowGap = 18;
+    const nodeHeight = 72;
+    const canvasHeight = Math.max(
+      1240,
+      ...columns.map(nodes => nodes.length * nodeHeight + Math.max(0, nodes.length - 1) * rowGap + topPadding * 2)
+    );
+    const canvasWidth = baseX + columnGap * 4 + nodeWidth + 180;
+    const columnX = [0, 1, 2, 3, 4].map(index => baseX + index * columnGap);
+    const nodePositions = new Map<string, { x: number; y: number; width: number; height: number; node: LargeTransferBilateralNode }>();
+
+    columns.forEach((nodes, columnIndex) => {
+      const totalHeight = nodes.length * nodeHeight + Math.max(0, nodes.length - 1) * rowGap;
+      let currentY = Math.max(topPadding, canvasHeight / 2 - totalHeight / 2);
+      nodes.forEach(node => {
+        nodePositions.set(node.id, {
+          x: columnX[columnIndex],
+          y: currentY,
+          width: nodeWidth,
+          height: nodeHeight,
+          node,
+        });
+        currentY += nodeHeight + rowGap;
+      });
+    });
+
+    return {
+      nodesByColumn: columns,
+      nodePositions,
+      canvasWidth,
+      canvasHeight,
+      columnX,
+    };
+  }, [graph]);
+
+  const columnTitles =
+    scope === "dex"
+      ? ["来源二层", "净卖出地址", "DEX 地址", "净买入地址", "去向二层"]
+      : ["来源二层", "转入 CEX 前一层", "CEX 地址", "从 CEX 流出地址", "去向二层"];
+
+  const colorForKind = (kind: string, isCenter = false) => {
+    if (isCenter) return "#1D4ED8";
+    if (/binance|bybit|gate|okx|cex/i.test(kind)) return "#2563EB";
+    if (/contract|合约/i.test(kind)) return "#7C3AED";
+    return "#60A5FA";
+  };
+
+  return (
+    <div className="rounded-[24px] border border-[#E2E8F0] bg-[#FCFDFF] p-4">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <div className="text-sm font-semibold text-[#0F172A]">{scope === "dex" ? "DEX 大额流向图谱" : "CEX 大额流向图谱"}</div>
+          <div className="mt-1 text-xs text-[#64748B]">
+            中间为{scope === "dex" ? "DEX" : "CEX"}核心地址，左侧追溯上游来源，右侧查看后续去向。
+          </div>
+        </div>
+        <div className="text-sm text-[#64748B]">
+          当前可见地址 {graph.nodes.length} · 当前可见路径 {graph.links.length} · 当前总额 {compactNumber(graph.totalAmount)}
+        </div>
+      </div>
+
+      <div className="overflow-auto rounded-[20px] border border-[#E2E8F0] bg-white" style={{ height: 980 }}>
+        <svg width={canvasWidth} height={canvasHeight} className="block">
+          <defs>
+            <marker id={`bilateral-arrow-${scope}`} viewBox="0 0 10 10" refX="8" refY="5" markerWidth="4" markerHeight="4" orient="auto">
+              <path d="M 0 1 L 8 5 L 0 9 z" fill="rgba(37,99,235,0.72)" />
+            </marker>
+          </defs>
+
+          {columnTitles.map((title, index) => (
+            <g key={title}>
+              <text x={columnX[index]} y={34} fill="#1E40AF" fontSize="16" fontWeight="700">
+                {title}
+              </text>
+              <text x={columnX[index]} y={54} fill="#64748B" fontSize="11">
+                {nodesByColumn[index].length} / {nodesByColumn[index].length} 个地址
+              </text>
+            </g>
+          ))}
+
+          {graph.links.map(link => {
+            const source = nodePositions.get(link.source);
+            const target = nodePositions.get(link.target);
+            if (!source || !target) return null;
+            const startX = source.x + source.width;
+            const startY = source.y + source.height / 2;
+            const endX = target.x;
+            const endY = target.y + target.height / 2;
+            const controlX = (startX + endX) / 2;
+            const midX = (startX + endX) / 2;
+            const midY = (startY + endY) / 2;
+            const ratioText = formatPercent(link.ratioOfSupply ?? 0);
+
+            return (
+              <g key={link.id}>
+                <path
+                  d={`M ${startX} ${startY} C ${controlX} ${startY}, ${controlX} ${endY}, ${endX} ${endY}`}
+                  fill="none"
+                  stroke="rgba(147,197,253,0.55)"
+                  strokeWidth={1.7}
+                  markerEnd={`url(#bilateral-arrow-${scope})`}
+                />
+                <rect x={midX - 44} y={midY - 12} width={88} height={24} rx={12} fill="#FFFFFF" opacity={0.97} stroke="rgba(148,163,184,0.18)" />
+                <text x={midX} y={midY - 1} textAnchor="middle" fill="#334155" fontSize="9" fontWeight="700">
+                  {compactNumber(link.amount, 1)}
+                </text>
+                <text x={midX} y={midY + 8} textAnchor="middle" fill="#64748B" fontSize="8">
+                  {ratioText}
+                </text>
+              </g>
+            );
+          })}
+
+          {Array.from(nodePositions.values()).map(({ node, x, y, width, height }) => {
+            const isCenter = graph.centerIds.includes(node.id);
+            const fill = colorForKind(node.kind, isCenter);
+            const titleText =
+              isCenter
+                ? `${scope === "dex" ? "DEX" : "CEX"} 核心地址`
+                : node.label.length > 18
+                  ? `${node.label.slice(0, 18)}…`
+                  : node.label;
+            return (
+              <g key={node.id}>
+                <rect x={x} y={y} rx={10} ry={10} width={width} height={height} fill={fill} opacity={0.96} stroke="#FFFFFF" strokeWidth={1} />
+                <text x={x + 12} y={y + 20} fill="#FFFFFF" fontSize="10" fontWeight="700">
+                  {titleText}
+                </text>
+                <text
+                  x={x + 12}
+                  y={y + 40}
+                  fill="#FFFFFF"
+                  fontSize="11"
+                  fontWeight="700"
+                  style={{ cursor: "pointer" }}
+                  onClick={event => {
+                    event.stopPropagation();
+                    window.open(formatBscScanAddress(node.address), "_blank", "noopener,noreferrer");
+                  }}
+                >
+                  {formatAddressDisplay(node.address)}
+                </text>
+                <text x={x + 12} y={y + 60} fill="#DBEAFE" fontSize="9">
+                  {compactNumber(node.amount, 1)} · {node.transferCount} 笔
+                </text>
+              </g>
+            );
+          })}
+        </svg>
+      </div>
+    </div>
+  );
+});
+
 export default function OnChainBoard() {
   const [selectedSymbol, setSelectedSymbol] = useState("BSB");
   const [tokenQuery, setTokenQuery] = useState("BSB");
-  const [activeView, setActiveView] = useState<"overview" | "fund-flow" | "holders">("overview");
+  const [activeView, setActiveView] = useState<"overview" | "fund-flow" | "holders" | "large-transfers">("overview");
   const [isFlowFullscreenOpen, setIsFlowFullscreenOpen] = useState(false);
   const [flowMinAmount, setFlowMinAmount] = useState(0);
   const [collapsedNodeIds, setCollapsedNodeIds] = useState<Set<string>>(new Set());
   const [holderPage, setHolderPage] = useState(1);
+  const [largeTransferSearch, setLargeTransferSearch] = useState("");
+  const [largeTransferInput, setLargeTransferInput] = useState("");
+  const [largeTransferSortOrder, setLargeTransferSortOrder] = useState<"asc" | "desc">("desc");
+  const [largeTransferMode, setLargeTransferMode] = useState<"list" | "graph">("list");
+  const [largeTransferScope, setLargeTransferScope] = useState<LargeTransferScope>("all");
   const [trendDays, setTrendDays] = useState<30 | 60 | 90>(30);
   const [visibleTrendKeys, setVisibleTrendKeys] = useState<string[]>(["controlRate", "netFlowRatio"]);
   const [copiedHolderTokenAddress, setCopiedHolderTokenAddress] = useState(false);
+  const [copiedLargeTransferAddress, setCopiedLargeTransferAddress] = useState<string | null>(null);
   const [isTokenPickerOpen, setIsTokenPickerOpen] = useState(false);
   const tokenPickerRef = useRef<HTMLDivElement | null>(null);
   const onchainTokensQuery = trpc.onchain.listTokens.useQuery(
@@ -1038,7 +2129,7 @@ export default function OnChainBoard() {
       limitPerLayer: 36,
     },
     {
-      enabled: activeView === "fund-flow",
+      enabled: activeView === "fund-flow" || activeView === "large-transfers",
       staleTime: 5 * 60 * 1000,
       refetchOnWindowFocus: false,
       refetchOnReconnect: false,
@@ -1057,6 +2148,52 @@ export default function OnChainBoard() {
       refetchOnReconnect: false,
     }
   );
+  const largeTransfersQuery = trpc.onchain.getLargeTransfers.useQuery(
+    {
+      symbol: selectedSymbol,
+      page: 1,
+      pageSize: 500,
+      search: largeTransferSearch || undefined,
+      sortOrder: largeTransferSortOrder,
+    },
+    {
+      enabled: activeView === "large-transfers",
+      staleTime: 5 * 60 * 1000,
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: false,
+    }
+  );
+
+  const initialFlowAddressSet = useMemo(
+    () => new Set((fundFlowQuery.data?.nodes ?? []).map(node => node.address.toLowerCase())),
+    [fundFlowQuery.data?.nodes]
+  );
+  const scopedLargeTransferItems = useMemo(
+    () =>
+      buildScopedLargeTransferItems(
+        (largeTransfersQuery.data?.items as LargeTransferRecord[] | undefined) ?? [],
+        largeTransferScope,
+        initialFlowAddressSet
+      ),
+    [largeTransfersQuery.data?.items, largeTransferScope, initialFlowAddressSet]
+  );
+  const scopedLargeTransferGraphItems = useMemo(
+    () =>
+      largeTransferScope === "dex" || largeTransferScope === "cex"
+        ? buildNetTransferItems(scopedLargeTransferItems)
+        : scopedLargeTransferItems,
+    [scopedLargeTransferItems, largeTransferScope]
+  );
+
+  const largeTransferGraph = useMemo(() => {
+    if (!scopedLargeTransferGraphItems.length) return null;
+    return buildLargeTransferGraph(scopedLargeTransferGraphItems);
+  }, [scopedLargeTransferGraphItems]);
+  const largeTransferBilateralGraph = useMemo(() => {
+    if (largeTransferScope !== "dex" && largeTransferScope !== "cex") return null;
+    if (!scopedLargeTransferItems.length) return null;
+    return buildLargeTransferBilateralGraph(scopedLargeTransferItems, largeTransferScope);
+  }, [scopedLargeTransferItems, largeTransferScope]);
 
   const flowTokenOptions = useMemo<OnchainTokenOption[]>(() => {
     const items = onchainTokensQuery.data?.items ?? [];
@@ -1220,6 +2357,42 @@ export default function OnChainBoard() {
       };
   const hasFundFlowResult = Boolean(fundFlowQuery.data);
   const hasFundFlowNodes = fundFlowGraph.nodes.length > 0;
+  const initialLargeFlowGraph: FlowGraph = useMemo(() => {
+    if (!fundFlowQuery.data || !largeTransfersQuery.data?.thresholdAmount) {
+      return {
+        nodes: [],
+        links: [],
+        summaries: fundFlowGraph.summaries,
+        totalAmount: 0,
+      };
+    }
+    const threshold = largeTransfersQuery.data.thresholdAmount;
+    const visibleLinks = fundFlowQuery.data.links.filter(link => link.amount >= threshold);
+    const visibleNodeIds = new Set<string>();
+    visibleLinks.forEach(link => {
+      visibleNodeIds.add(link.source);
+      visibleNodeIds.add(link.target);
+    });
+    const visibleNodes = fundFlowQuery.data.nodes.filter(node => visibleNodeIds.has(node.id));
+    const summaries = fundFlowQuery.data.summaries.map(summary => {
+      const layerNodes = visibleNodes.filter(node => node.layer === summary.layer);
+      return {
+        ...summary,
+        count: layerNodes.length,
+        totalAmount: layerNodes.reduce((sum, node) => sum + node.amount, 0),
+      };
+    });
+    return {
+      nodes: visibleNodes,
+      links: visibleLinks.map(link => ({
+        source: link.source,
+        target: link.target,
+        amount: link.amount,
+      })),
+      summaries,
+      totalAmount: visibleLinks.reduce((sum, link) => sum + link.amount, 0),
+    };
+  }, [fundFlowQuery.data, largeTransfersQuery.data?.thresholdAmount, fundFlowGraph.summaries]);
 
   useEffect(() => {
     setCollapsedNodeIds(new Set());
@@ -1228,6 +2401,14 @@ export default function OnChainBoard() {
 
   useEffect(() => {
     setHolderPage(1);
+  }, [selectedSymbol]);
+
+  useEffect(() => {
+    setLargeTransferSearch("");
+    setLargeTransferInput("");
+    setLargeTransferSortOrder("desc");
+    setLargeTransferScope("all");
+    setCopiedLargeTransferAddress(null);
   }, [selectedSymbol]);
 
   const handleRefresh = () => {
@@ -1251,6 +2432,22 @@ export default function OnChainBoard() {
       setSelectedSymbol(match.symbol);
       setTokenQuery(match.symbol);
       setIsTokenPickerOpen(false);
+    }
+  };
+
+  const handleLargeTransferSearch = () => {
+    setLargeTransferSearch(largeTransferInput.trim());
+  };
+
+  const handleCopyLargeTransferAddress = async (address: string) => {
+    try {
+      await navigator.clipboard.writeText(address);
+      setCopiedLargeTransferAddress(address);
+      window.setTimeout(() => {
+        setCopiedLargeTransferAddress(current => (current === address ? null : current));
+      }, 1200);
+    } catch {
+      setCopiedLargeTransferAddress(null);
     }
   };
 
@@ -1383,10 +2580,11 @@ export default function OnChainBoard() {
           { key: "overview", label: "总览" },
           { key: "fund-flow", label: "资金流图" },
           { key: "holders", label: "Holder" },
+          { key: "large-transfers", label: "大额转账" },
         ].map(item => (
           <button
             key={item.key}
-            onClick={() => setActiveView(item.key as "overview" | "fund-flow" | "holders")}
+            onClick={() => setActiveView(item.key as "overview" | "fund-flow" | "holders" | "large-transfers")}
             className={cn(
               "rounded-full px-4 py-2 text-sm font-medium transition",
               activeView === item.key
@@ -1668,6 +2866,257 @@ export default function OnChainBoard() {
                           {item.balanceChange7d != null ? `${item.balanceChange7d >= 0 ? "+" : ""}${compactNumber(item.balanceChange7d)}` : "—"}
                         </TableCell>
                         <TableCell className="text-center">{item.isNew ? "是" : "—"}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+          </div>
+        </div>
+      ) : null}
+
+      {activeView === "large-transfers" ? (
+        <div className="space-y-6">
+          <div className="grid gap-3 md:grid-cols-4">
+            <Card className="rounded-[18px] border border-white/80 bg-white/90 shadow-[0_10px_24px_rgba(71,85,105,0.08)]">
+              <CardContent className="p-3.5">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#64748B]">大额阈值</div>
+                <div className="mt-1 text-base font-semibold text-[#0F172A]">
+                  {largeTransfersQuery.data?.thresholdAmount != null ? compactNumber(largeTransfersQuery.data.thresholdAmount) : "—"}
+                </div>
+                <div className="mt-1 text-xs text-[#64748B]">总代币量的 0.01%</div>
+              </CardContent>
+            </Card>
+            <Card className="rounded-[18px] border border-white/80 bg-white/90 shadow-[0_10px_24px_rgba(71,85,105,0.08)]">
+              <CardContent className="p-3.5">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#64748B]">总记录数</div>
+                <div className="mt-1 text-base font-semibold text-[#0F172A]">{largeTransfersQuery.data?.total?.toLocaleString() ?? "—"}</div>
+              </CardContent>
+            </Card>
+            <Card className="rounded-[18px] border border-white/80 bg-white/90 shadow-[0_10px_24px_rgba(71,85,105,0.08)]">
+              <CardContent className="p-3.5">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#64748B]">Token Address</div>
+                {largeTransfersQuery.data?.tokenAddress ? (
+                  <a
+                    href={formatBscScanAddress(largeTransfersQuery.data.tokenAddress)}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="mt-1 block truncate text-sm font-semibold text-[#1D4ED8] hover:text-[#1E40AF] hover:underline"
+                    title={largeTransfersQuery.data.tokenAddress}
+                  >
+                    {formatAddressDisplay(largeTransfersQuery.data.tokenAddress)}
+                  </a>
+                ) : (
+                  <div className="mt-1 text-sm font-semibold text-[#0F172A]">—</div>
+                )}
+              </CardContent>
+            </Card>
+            <Card className="rounded-[18px] border border-white/80 bg-white/90 shadow-[0_10px_24px_rgba(71,85,105,0.08)]">
+              <CardContent className="p-3.5">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#64748B]">当前结果</div>
+                <div className="mt-1 text-base font-semibold text-[#0F172A]">
+                  {largeTransfersQuery.data ? `${scopedLargeTransferItems.length} / ${largeTransfersQuery.data.total}` : "—"}
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+
+          <div className="rounded-[24px] border border-white/80 bg-white/90 p-4 shadow-[0_14px_36px_rgba(71,85,105,0.08)]">
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <div className="text-lg font-semibold text-[#0F172A]">{scopeLabel(largeTransferScope)}{largeTransferMode === "graph" ? "图谱" : "列表"}</div>
+                <div className="mt-1 text-sm text-[#64748B]">
+                  初始看阈值以上的大额转账；DEX / CEX 模式会围绕相关地址补一层上游和下游，便于判断是否存在打散或回流。
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="inline-flex rounded-full border border-[#D7E3F4] bg-white p-1">
+                  {[
+                    { key: "all", label: "全部" },
+                    { key: "initial", label: "初始大额流向" },
+                    { key: "dex", label: "DEX 大额流向" },
+                    { key: "cex", label: "CEX 大额流向" },
+                  ].map(option => (
+                    <button
+                      key={option.key}
+                      type="button"
+                      onClick={() => setLargeTransferScope(option.key as LargeTransferScope)}
+                      className={cn(
+                        "rounded-full px-3 py-1.5 text-sm font-medium transition",
+                        largeTransferScope === option.key ? "bg-[#1D4ED8] text-white" : "text-[#475569] hover:text-[#1D4ED8]"
+                      )}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+                <div className="inline-flex rounded-full border border-[#D7E3F4] bg-white p-1">
+                  {[
+                    { key: "list", label: "列表" },
+                    { key: "graph", label: "图模式" },
+                  ].map(option => (
+                    <button
+                      key={option.key}
+                      type="button"
+                      onClick={() => setLargeTransferMode(option.key as "list" | "graph")}
+                      className={cn(
+                        "rounded-full px-3 py-1.5 text-sm font-medium transition",
+                        largeTransferMode === option.key ? "bg-[#1D4ED8] text-white" : "text-[#475569] hover:text-[#1D4ED8]"
+                      )}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+                <div className="flex h-10 items-center rounded-full border border-[#D7E3F4] bg-white px-3">
+                  <Search className="mr-2 h-4 w-4 text-[#64748B]" />
+                  <input
+                    value={largeTransferInput}
+                    onChange={event => setLargeTransferInput(event.target.value)}
+                    onKeyDown={event => {
+                      if (event.key === "Enter") {
+                        handleLargeTransferSearch();
+                      }
+                    }}
+                    placeholder="搜索 from / to 地址"
+                    className="w-[220px] border-0 bg-transparent text-sm text-[#0F172A] outline-none"
+                  />
+                  {largeTransferInput || largeTransferSearch ? (
+                    <button
+                      type="button"
+                      className="ml-2 text-xs text-[#64748B] transition hover:text-[#1D4ED8]"
+                      onClick={() => {
+                        setLargeTransferInput("");
+                        setLargeTransferSearch("");
+                      }}
+                    >
+                      清空
+                    </button>
+                  ) : null}
+                </div>
+                <Button variant="secondary" className="h-10 rounded-full" onClick={handleLargeTransferSearch}>
+                  搜索地址
+                </Button>
+                <Button
+                  variant="secondary"
+                  className="h-10 rounded-full"
+                  onClick={() => {
+                    setLargeTransferSortOrder(current => (current === "desc" ? "asc" : "desc"));
+                  }}
+                >
+                  时间{largeTransferSortOrder === "desc" ? "倒序" : "正序"}
+                </Button>
+              </div>
+            </div>
+
+            {largeTransfersQuery.isLoading ? (
+              <div className="flex h-[560px] items-center justify-center rounded-[20px] border border-[#E2E8F0] bg-[#FCFDFF] text-sm text-[#64748B]">
+                正在加载大额转账数据...
+              </div>
+            ) : largeTransfersQuery.error ? (
+              <div className="flex h-[560px] items-center justify-center rounded-[20px] border border-[#E2E8F0] bg-[#FCFDFF] text-sm text-[#64748B]">
+                大额转账数据加载失败
+              </div>
+            ) : !largeTransfersQuery.data || scopedLargeTransferItems.length === 0 ? (
+              <div className="flex h-[560px] items-center justify-center rounded-[20px] border border-[#E2E8F0] bg-[#FCFDFF] text-sm text-[#64748B]">
+                当前币种暂无符合条件的{scopeLabel(largeTransferScope)}记录
+              </div>
+            ) : largeTransferMode === "graph" && largeTransferScope === "initial" ? (
+              initialLargeFlowGraph.nodes.length > 0 ? (
+                <FundFlowCanvas
+                  graph={initialLargeFlowGraph}
+                  minAmount={largeTransfersQuery.data?.thresholdAmount ?? 0}
+                  collapsedNodeIds={collapsedNodeIds}
+                  onToggleCollapse={toggleCollapsedNode}
+                  viewportHeight={900}
+                />
+              ) : (
+                <div className="flex h-[560px] items-center justify-center rounded-[20px] border border-[#E2E8F0] bg-[#FCFDFF] text-sm text-[#64748B]">
+                  初始 5 层转账里暂无符合阈值的大额流向
+                </div>
+              )
+            ) : largeTransferMode === "graph" && (largeTransferScope === "dex" || largeTransferScope === "cex") && largeTransferBilateralGraph ? (
+              <LargeTransferBilateralCanvas
+                graph={largeTransferBilateralGraph}
+                scope={largeTransferScope}
+              />
+            ) : largeTransferMode === "graph" && largeTransferGraph ? (
+              <LargeTransferGraphCanvas
+                graph={largeTransferGraph}
+                defaultView={largeTransferScope === "dex" || largeTransferScope === "cex" ? "all" : "focus"}
+              />
+            ) : (
+              <div className="overflow-hidden rounded-[20px] border border-[#E2E8F0] bg-white">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>时间</TableHead>
+                      <TableHead>From</TableHead>
+                      <TableHead>From 标签</TableHead>
+                      <TableHead>To</TableHead>
+                      <TableHead>To 标签</TableHead>
+                      <TableHead className="text-right">数量</TableHead>
+                      <TableHead className="text-right">占总量</TableHead>
+                      <TableHead>Tx</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {scopedLargeTransferItems.map(item => (
+                      <TableRow key={`${item.txhash}-${item.logIndex ?? "na"}-${item.fromAddress}-${item.toAddress}`}>
+                        <TableCell>{item.blockTime ? item.blockTime.replace("T", " ").slice(0, 19) : "—"}</TableCell>
+                        <TableCell>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              className="font-mono text-sm text-[#1D4ED8] underline"
+                              onClick={() => window.open(formatBscScanAddress(item.fromAddress), "_blank", "noopener,noreferrer")}
+                            >
+                              {formatAddressDisplay(item.fromAddress)}
+                            </button>
+                            <button
+                              type="button"
+                              className="text-[#64748B] transition hover:text-[#1D4ED8]"
+                              onClick={() => handleCopyLargeTransferAddress(item.fromAddress)}
+                              title={copiedLargeTransferAddress === item.fromAddress ? "已复制" : "复制地址"}
+                            >
+                              {copiedLargeTransferAddress === item.fromAddress ? "✓" : <Copy className="h-3.5 w-3.5" />}
+                            </button>
+                          </div>
+                        </TableCell>
+                        <TableCell>{item.fromLabel}</TableCell>
+                        <TableCell>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              className="font-mono text-sm text-[#1D4ED8] underline"
+                              onClick={() => window.open(formatBscScanAddress(item.toAddress), "_blank", "noopener,noreferrer")}
+                            >
+                              {formatAddressDisplay(item.toAddress)}
+                            </button>
+                            <button
+                              type="button"
+                              className="text-[#64748B] transition hover:text-[#1D4ED8]"
+                              onClick={() => handleCopyLargeTransferAddress(item.toAddress)}
+                              title={copiedLargeTransferAddress === item.toAddress ? "已复制" : "复制地址"}
+                            >
+                              {copiedLargeTransferAddress === item.toAddress ? "✓" : <Copy className="h-3.5 w-3.5" />}
+                            </button>
+                          </div>
+                        </TableCell>
+                        <TableCell>{item.toLabel}</TableCell>
+                        <TableCell className="text-right">{item.amount != null ? compactNumber(item.amount) : "—"}</TableCell>
+                        <TableCell className="text-right">{item.ratioOfSupply != null ? formatPercent(item.ratioOfSupply) : "—"}</TableCell>
+                        <TableCell>
+                          <a
+                            href={`https://bscscan.com/tx/${item.txhash}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="font-mono text-xs text-[#1D4ED8] underline"
+                          >
+                            {item.txhash.slice(0, 10)}...
+                          </a>
+                        </TableCell>
                       </TableRow>
                     ))}
                   </TableBody>

@@ -12,7 +12,9 @@ import {
   getExchangeHoldersViewBySymbol,
   getOnchainFundFlowBySymbol,
   getOnchainHoldersBySymbol,
+  getOnchainLargeTransfersBySymbol,
   getTokenFundingViewBySymbol,
+  getTokenSocialHeatViewBySymbol,
   getTokenKlineBySymbol,
   getTokenDepthViewBySymbol,
   getTokenDepthTrendBySymbol,
@@ -287,6 +289,7 @@ export const appRouter = router({
         z
           .object({
             query: z.string().trim().optional(),
+            symbols: z.array(z.string().trim().min(1)).optional(),
             exchangeIds: z.array(z.number().int().positive()).optional(),
             marketType: z.enum(["spot", "perps"]).optional(),
             sortBy: z.enum(["listedAt", "marketCap", "volume24h"]).optional(),
@@ -443,6 +446,15 @@ export const appRouter = router({
       .query(async ({ input }) => {
         return await getTokenFundingViewBySymbol(input.symbol);
       }),
+    getSocialHeatView: publicProcedure
+      .input(
+        z.object({
+          symbol: z.string().trim().min(1),
+        })
+      )
+      .query(async ({ input }) => {
+        return await getTokenSocialHeatViewBySymbol(input.symbol);
+      }),
   }),
 
   onchain: router({
@@ -485,6 +497,24 @@ export const appRouter = router({
           date: input.date,
           page: input.page,
           pageSize: input.pageSize,
+        });
+      }),
+    getLargeTransfers: publicProcedure
+      .input(
+        z.object({
+          symbol: z.string().trim().min(1),
+          page: z.number().int().min(1).optional(),
+          pageSize: z.number().int().min(10).max(500).optional(),
+          search: z.string().trim().optional(),
+          sortOrder: z.enum(["asc", "desc"]).optional(),
+        })
+      )
+      .query(async ({ input }) => {
+        return await getOnchainLargeTransfersBySymbol(input.symbol, {
+          page: input.page,
+          pageSize: input.pageSize,
+          search: input.search,
+          sortOrder: input.sortOrder,
         });
       }),
   }),
