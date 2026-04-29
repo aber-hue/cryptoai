@@ -27,6 +27,7 @@ import {
   Check,
   Clock3,
   Copy,
+  Download,
   ExternalLink,
   GitBranch,
   Globe,
@@ -270,6 +271,11 @@ function formatUnlockAmount(value: number | null) {
 function formatUnlockPercent(value: number | null) {
   if (value == null || Number.isNaN(value)) return "--";
   return `${value.toFixed(4)}%`;
+}
+
+function toCsvValue(value: string | number | null | undefined) {
+  if (value == null) return '""';
+  return `"${String(value).replace(/"/g, '""')}"`;
 }
 
 function formatPlainNumber(value: number | null) {
@@ -720,6 +726,7 @@ export default function CoinDetail() {
   const [location, setLocation] = useLocation();
   const utils = trpc.useUtils();
   const searchParams = new URLSearchParams(typeof window !== "undefined" ? window.location.search : "");
+  const returnTo = searchParams.get("from") || "/market";
   const initialTab = searchParams.get("tab");
   const initialDepthRange = searchParams.get("depthRange");
   const initialActiveTab: "listing" | "depth" | "unlock" | "onchain" | "holders" | "funding" | "social" =
@@ -773,6 +780,14 @@ export default function CoinDetail() {
   const [depthRange, setDepthRange] = useState<30 | 90 | 180 | 365>(initialDepthRangeDays);
   const [depthMarketType, setDepthMarketType] = useState<"spot" | "perps">(initialDepthMarketType);
   const [copiedAddress, setCopiedAddress] = useState<string | null>(null);
+  const activeSymbol = (coinId ?? fallbackToken.symbol).toUpperCase();
+  const canLoadTokenData = Boolean(coinId ?? fallbackToken.symbol);
+  const shouldLoadListing = activeTab === "listing";
+  const shouldLoadDepth = activeTab === "depth";
+  const shouldLoadUnlock = activeTab === "unlock";
+  const shouldLoadHolders = activeTab === "holders";
+  const shouldLoadFunding = activeTab === "funding";
+  const shouldLoadSocial = activeTab === "social";
   const watchlistQuery = trpc.market.getWatchlist.useQuery();
   const toggleWatchlistMutation = trpc.market.toggleWatchlist.useMutation({
     onSuccess: async () => {
@@ -780,44 +795,44 @@ export default function CoinDetail() {
     },
   });
   const tokenProfileQuery = trpc.token.getProfile.useQuery(
-    { symbol: (coinId ?? fallbackToken.symbol).toUpperCase() },
-    { enabled: Boolean(coinId ?? fallbackToken.symbol) }
+    { symbol: activeSymbol },
+    { enabled: canLoadTokenData }
   );
   const tokenUnlockQuery = trpc.token.getUnlockView.useQuery(
-    { symbol: (coinId ?? fallbackToken.symbol).toUpperCase() },
-    { enabled: Boolean(coinId ?? fallbackToken.symbol) }
+    { symbol: activeSymbol },
+    { enabled: canLoadTokenData && shouldLoadUnlock }
   );
   const tokenListingQuery = trpc.token.getListingView.useQuery(
-    { symbol: (coinId ?? fallbackToken.symbol).toUpperCase() },
-    { enabled: Boolean(coinId ?? fallbackToken.symbol) }
+    { symbol: activeSymbol },
+    { enabled: canLoadTokenData && shouldLoadListing }
   );
   const tokenKlineQuery = trpc.token.getKline.useQuery(
-    { symbol: (coinId ?? fallbackToken.symbol).toUpperCase(), range: listingRange },
-    { enabled: Boolean(coinId ?? fallbackToken.symbol) }
+    { symbol: activeSymbol, range: listingRange },
+    { enabled: canLoadTokenData && shouldLoadListing }
   );
   const tokenHoldersQuery = trpc.token.getHoldersView.useQuery(
-    { symbol: (coinId ?? fallbackToken.symbol).toUpperCase(), timeframe: positionTimeframe },
-    { enabled: Boolean(coinId ?? fallbackToken.symbol) }
+    { symbol: activeSymbol, timeframe: positionTimeframe },
+    { enabled: canLoadTokenData && shouldLoadHolders }
   );
   const tokenFundingQuery = trpc.token.getFundingView.useQuery(
-    { symbol: (coinId ?? fallbackToken.symbol).toUpperCase() },
-    { enabled: Boolean(coinId ?? fallbackToken.symbol) }
+    { symbol: activeSymbol },
+    { enabled: canLoadTokenData && shouldLoadFunding }
   );
   const tokenSocialHeatQuery = trpc.token.getSocialHeatView.useQuery(
-    { symbol: (coinId ?? fallbackToken.symbol).toUpperCase() },
-    { enabled: Boolean(coinId ?? fallbackToken.symbol) }
+    { symbol: activeSymbol },
+    { enabled: canLoadTokenData && shouldLoadSocial }
   );
   const tokenDepthQuery = trpc.token.getDepthView.useQuery(
-    { symbol: (coinId ?? fallbackToken.symbol).toUpperCase(), marketType: depthMarketType },
-    { enabled: Boolean(coinId ?? fallbackToken.symbol) }
+    { symbol: activeSymbol, marketType: depthMarketType },
+    { enabled: canLoadTokenData && shouldLoadDepth }
   );
   const tokenDepthTrendQuery = trpc.token.getDepthTrend.useQuery(
     {
-      symbol: (coinId ?? fallbackToken.symbol).toUpperCase(),
+      symbol: activeSymbol,
       days: depthRange,
       marketType: depthMarketType,
     },
-    { enabled: Boolean(coinId ?? fallbackToken.symbol) }
+    { enabled: canLoadTokenData && shouldLoadDepth }
   );
   const tokenProfile = tokenProfileQuery.data;
   const token = {
@@ -878,6 +893,39 @@ export default function CoinDetail() {
       : null;
   const unlockCategories = tokenUnlockQuery.data?.categories ?? [];
   const unlockRows = tokenUnlockQuery.data?.rows ?? [];
+  const canDownloadUnlockCsv = unlockRows.length > 0;
+  const downloadUnlockCsv = () => {
+    if (!canDownloadUnlockCsv) return;
+
+    const headers = [
+      "日期",
+      ...unlockCategories.map(category => `${category.label} (${category.ratio.toFixed(2)}%)`),
+      "Monthly Total Release",
+      "Monthly Release %",
+      "Cumulative Release",
+      "Cumulative Release %",
+    ];
+    const rows = unlockRows.map(row => [
+      formatUnlockDate(row.unlockDate),
+      ...unlockCategories.map(category => formatUnlockAmount(row.categoryValues[category.key] ?? null)),
+      formatUnlockAmount(row.monthlyTotalRelease),
+      formatUnlockPercent(row.monthlyReleaseRatio),
+      formatUnlockAmount(row.cumulativeRelease),
+      formatUnlockPercent(row.cumulativeReleaseRatio),
+    ]);
+    const csv = [headers, ...rows]
+      .map(columns => columns.map(value => toCsvValue(value)).join(","))
+      .join("\n");
+    const blob = new Blob([`\uFEFF${csv}`], { type: "text/csv;charset=utf-8;" });
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${token.symbol.toLowerCase()}-unlock.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.URL.revokeObjectURL(url);
+  };
   const listingTimelineItems = tokenListingQuery.data?.items.length
     ? tokenListingQuery.data.items.map((item, index) => ({
       id: item.id,
@@ -921,6 +969,7 @@ export default function CoinDetail() {
         operationSteps: item.operationSteps,
         endTime: item.endTime,
         rewardDistributionTime: item.rewardDistributionTime,
+        publishedAt: item.publishedAt,
       }))
     : listingTimelineRows.map(item => ({
         ...item,
@@ -941,6 +990,7 @@ export default function CoinDetail() {
         operationSteps: null,
         endTime: null,
         rewardDistributionTime: null,
+        publishedAt: null,
       }));
   const listingChartGroups = useMemo(() => {
     const grouped = new Map<
@@ -1139,7 +1189,7 @@ export default function CoinDetail() {
 
   return (
     <div className="space-y-6">
-      <Link href="/market" className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground">
+      <Link href={returnTo} className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground">
         <ArrowLeft className="h-4 w-4" />
         返回总览
       </Link>
@@ -1837,13 +1887,14 @@ export default function CoinDetail() {
                                 <th className="px-4 py-4">15分钟价</th>
                                 <th className="px-4 py-4">15分钟涨跌</th>
                                 <th className="px-4 py-4">ATH</th>
+                                <th className="px-4 py-4">公告时间</th>
                                 <th className="px-4 py-4 text-right">公告</th>
                               </tr>
                             </thead>
                             <tbody>
                               {listingOnlyItems.length === 0 ? (
                                 <tr>
-                                  <td colSpan={11} className="px-4 py-10 text-center text-sm text-muted-foreground">
+                                  <td colSpan={12} className="px-4 py-10 text-center text-sm text-muted-foreground">
                                     当前暂无上币事件数据
                                   </td>
                                 </tr>
@@ -1888,6 +1939,7 @@ export default function CoinDetail() {
                                         "—"
                                       )}
                                     </td>
+                                    <td className="px-4 py-4">{item.publishedAt ? formatListingDateTime(item.publishedAt) : "—"}</td>
                                     <td className="px-4 py-4 text-right">
                                       {item.link ? (
                                         <a href={item.link} target="_blank" rel="noreferrer" className="inline-flex items-center text-[#101828] hover:text-[#0f66d8]">
@@ -1914,13 +1966,14 @@ export default function CoinDetail() {
                                 <th className="px-4 py-4">占比</th>
                                 <th className="px-4 py-4">活动时间</th>
                                 <th className="px-4 py-4">发奖时间</th>
+                                <th className="px-4 py-4">公告时间</th>
                                 <th className="px-4 py-4 text-right">公告</th>
                               </tr>
                             </thead>
                             <tbody>
                               {activityOnlyItems.length === 0 ? (
                                 <tr>
-                                  <td colSpan={7} className="px-4 py-10 text-center text-sm text-muted-foreground">
+                                  <td colSpan={8} className="px-4 py-10 text-center text-sm text-muted-foreground">
                                     当前暂无活动事件数据
                                   </td>
                                 </tr>
@@ -1970,6 +2023,7 @@ export default function CoinDetail() {
                                       : "—"}
                                   </td>
                                   <td className="px-4 py-4">{item.rewardDistributionTime ? formatListingDateTime(item.rewardDistributionTime) : "—"}</td>
+                                  <td className="px-4 py-4">{item.publishedAt ? formatListingDateTime(item.publishedAt) : "—"}</td>
                                   <td className="px-4 py-4 text-right">
                                     {item.link ? (
                                       <a href={item.link} target="_blank" rel="noreferrer" className="inline-flex items-center text-[#101828] hover:text-[#0f66d8]">
@@ -1995,9 +2049,21 @@ export default function CoinDetail() {
           {activeTab === "unlock" && (
             <Card className="rounded-[28px] border border-white/70 bg-white/78 shadow-[0_16px_40px_rgba(83,102,138,0.08)]">
               <CardContent className="p-6">
-                <div className="mb-5">
-                  <h2 className="section-title text-[oklch(var(--crypto-ink))]">代币解锁完整表</h2>
-                  <div className="mt-2 text-muted-foreground">按日期汇总类别释放量、月度释放总量与累计占比</div>
+                <div className="mb-5 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <h2 className="section-title text-[oklch(var(--crypto-ink))]">代币解锁完整表</h2>
+                    <div className="mt-2 text-muted-foreground">按日期汇总类别释放量、月度释放总量与累计占比</div>
+                  </div>
+                  {canDownloadUnlockCsv ? (
+                    <button
+                      type="button"
+                      onClick={downloadUnlockCsv}
+                      className="inline-flex items-center gap-2 self-start rounded-full border border-[#d8e0eb] bg-white px-3.5 py-2 text-sm font-medium text-[#344054] transition hover:border-[#b8c7da] hover:text-[#101828]"
+                    >
+                      <Download className="h-4 w-4" />
+                      下载 CSV
+                    </button>
+                  ) : null}
                 </div>
                 {tokenUnlockQuery.isError ? (
                   <div className="mb-4 rounded-2xl border border-[#fecaca] bg-[#fff1f2] px-4 py-3 text-sm text-[#b42318]">

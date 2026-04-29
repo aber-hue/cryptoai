@@ -390,6 +390,19 @@ function buildScopedLargeTransferItems(
 }
 
 function buildNetTransferItems(items: LargeTransferRecord[]) {
+  const inferredSupplySamples = items
+    .map(item => {
+      const amount = Number(item.amount ?? 0);
+      const ratio = Number(item.ratioOfSupply ?? 0);
+      if (amount <= 0 || ratio <= 0) return null;
+      return amount / (ratio / 100);
+    })
+    .filter((value): value is number => value != null && Number.isFinite(value) && value > 0);
+  const inferredTotalSupply =
+    inferredSupplySamples.length > 0
+      ? inferredSupplySamples.reduce((sum, value) => sum + value, 0) / inferredSupplySamples.length
+      : null;
+
   const pairMap = new Map<
     string,
     {
@@ -401,7 +414,6 @@ function buildNetTransferItems(items: LargeTransferRecord[]) {
       rightMeta: Pick<LargeTransferRecord, "toLabel" | "toKind">;
       latestBlockTime: string | null;
       transferCount: number;
-      ratioSum: number;
     }
   >();
 
@@ -428,7 +440,6 @@ function buildNetTransferItems(items: LargeTransferRecord[]) {
           : { toLabel: item.fromLabel, toKind: item.fromKind },
       latestBlockTime: item.blockTime,
       transferCount: 0,
-      ratioSum: 0,
     };
 
     if (item.fromAddress.toLowerCase() === left) {
@@ -437,7 +448,6 @@ function buildNetTransferItems(items: LargeTransferRecord[]) {
       current.rightToLeft += amount;
     }
     current.transferCount += 1;
-    current.ratioSum += item.ratioOfSupply ?? 0;
     if ((item.blockTime ?? "") > (current.latestBlockTime ?? "")) {
       current.latestBlockTime = item.blockTime;
     }
@@ -460,7 +470,7 @@ function buildNetTransferItems(items: LargeTransferRecord[]) {
         fromKind: isLeftToRight ? entry.leftMeta.fromKind : entry.rightMeta.toKind,
         toKind: isLeftToRight ? entry.rightMeta.toKind : entry.leftMeta.fromKind,
         amount: Math.abs(net),
-        ratioOfSupply: entry.ratioSum,
+        ratioOfSupply: inferredTotalSupply ? (Math.abs(net) / inferredTotalSupply) * 100 : null,
         value: null,
       } satisfies LargeTransferRecord;
     })
@@ -470,7 +480,7 @@ function buildNetTransferItems(items: LargeTransferRecord[]) {
 function buildLargeTransferBilateralGraph(items: LargeTransferRecord[], scope: "dex" | "cex"): LargeTransferBilateralGraph | null {
   const matcher = scope === "dex" ? isDexLikeMeta : isCexLikeMeta;
   const netItems = buildNetTransferItems(items);
-  if (netItems.length === 0) return null;
+  if (items.length === 0 || netItems.length === 0) return null;
 
   const incidentAmount = new Map<string, number>();
   const addressMeta = new Map<
@@ -482,47 +492,101 @@ function buildLargeTransferBilateralGraph(items: LargeTransferRecord[], scope: "
   >();
   const seedAddresses = new Set<string>();
 
-  netItems.forEach(item => {
+  items.forEach(item => {
     const amount = item.amount ?? 0;
-    incidentAmount.set(item.fromAddress, (incidentAmount.get(item.fromAddress) ?? 0) + amount);
-    incidentAmount.set(item.toAddress, (incidentAmount.get(item.toAddress) ?? 0) + amount);
-    if (!addressMeta.has(item.fromAddress)) {
-      addressMeta.set(item.fromAddress, { label: item.fromLabel, kind: item.fromKind });
+    const fromAddress = item.fromAddress.toLowerCase();
+    const toAddress = item.toAddress.toLowerCase();
+    incidentAmount.set(fromAddress, (incidentAmount.get(fromAddress) ?? 0) + amount);
+    incidentAmount.set(toAddress, (incidentAmount.get(toAddress) ?? 0) + amount);
+    if (!addressMeta.has(fromAddress)) {
+      addressMeta.set(fromAddress, { label: item.fromLabel, kind: item.fromKind });
     }
-    if (!addressMeta.has(item.toAddress)) {
-      addressMeta.set(item.toAddress, { label: item.toLabel, kind: item.toKind });
+    if (!addressMeta.has(toAddress)) {
+      addressMeta.set(toAddress, { label: item.toLabel, kind: item.toKind });
     }
-    if (matcher(item.fromLabel, item.fromKind)) seedAddresses.add(item.fromAddress);
-    if (matcher(item.toLabel, item.toKind)) seedAddresses.add(item.toAddress);
+    if (matcher(item.fromLabel, item.fromKind)) seedAddresses.add(fromAddress);
+    if (matcher(item.toLabel, item.toKind)) seedAddresses.add(toAddress);
   });
 
   const centerIds = Array.from(seedAddresses).sort((left, right) => (incidentAmount.get(right) ?? 0) - (incidentAmount.get(left) ?? 0));
   if (centerIds.length === 0) return null;
 
   const centerIdSet = new Set(centerIds);
-  const directInbound = netItems
-    .filter(item => centerIdSet.has(item.toAddress) && !centerIdSet.has(item.fromAddress))
-    .sort((a, b) => (b.amount ?? 0) - (a.amount ?? 0));
-  const directOutbound = netItems
-    .filter(item => centerIdSet.has(item.fromAddress) && !centerIdSet.has(item.toAddress))
-    .sort((a, b) => (b.amount ?? 0) - (a.amount ?? 0));
-  const leftOneIds = new Set(directInbound.map(item => item.fromAddress));
-  const rightOneIds = new Set(directOutbound.map(item => item.toAddress));
+  const centerFlowMap = new Map<string, { intoCenter: number; outOfCenter: number }>();
+  items.forEach(item => {
+    const fromAddress = item.fromAddress.toLowerCase();
+    const toAddress = item.toAddress.toLowerCase();
+    const amount = item.amount ?? 0;
+    if (amount <= 0) return;
+    if (centerIdSet.has(toAddress) && !centerIdSet.has(fromAddress)) {
+      const current = centerFlowMap.get(fromAddress) ?? { intoCenter: 0, outOfCenter: 0 };
+      current.intoCenter += amount;
+      centerFlowMap.set(fromAddress, current);
+    }
+    if (centerIdSet.has(fromAddress) && !centerIdSet.has(toAddress)) {
+      const current = centerFlowMap.get(toAddress) ?? { intoCenter: 0, outOfCenter: 0 };
+      current.outOfCenter += amount;
+      centerFlowMap.set(toAddress, current);
+    }
+  });
 
-  const leftTwo = netItems.filter(
-    item =>
-      leftOneIds.has(item.toAddress) &&
-      !centerIdSet.has(item.fromAddress) &&
-      !leftOneIds.has(item.fromAddress) &&
-      !rightOneIds.has(item.fromAddress)
+  const leftOneIds = new Set<string>();
+  const rightOneIds = new Set<string>();
+  centerFlowMap.forEach((flow, address) => {
+    const netToCenter = flow.intoCenter - flow.outOfCenter;
+    if (netToCenter > 0) {
+      leftOneIds.add(address);
+    } else if (netToCenter < 0) {
+      rightOneIds.add(address);
+    }
+  });
+
+  netItems.forEach(item => {
+    const fromAddress = item.fromAddress.toLowerCase();
+    const toAddress = item.toAddress.toLowerCase();
+    if (centerIdSet.has(toAddress) && !centerIdSet.has(fromAddress)) {
+      leftOneIds.add(fromAddress);
+    }
+    if (centerIdSet.has(fromAddress) && !centerIdSet.has(toAddress)) {
+      rightOneIds.add(toAddress);
+    }
+  });
+
+  const leftTwoIds = new Set(
+    items
+      .filter(
+        item =>
+          leftOneIds.has(item.toAddress.toLowerCase()) &&
+          !centerIdSet.has(item.fromAddress.toLowerCase()) &&
+          !leftOneIds.has(item.fromAddress.toLowerCase()) &&
+          !rightOneIds.has(item.fromAddress.toLowerCase())
+      )
+      .map(item => item.fromAddress.toLowerCase())
   );
-  const rightTwo = netItems.filter(
-    item =>
-      rightOneIds.has(item.fromAddress) &&
-      !centerIdSet.has(item.toAddress) &&
-      !leftOneIds.has(item.toAddress) &&
-      !rightOneIds.has(item.toAddress)
+  const rightTwoIds = new Set(
+    items
+      .filter(
+        item =>
+          rightOneIds.has(item.fromAddress.toLowerCase()) &&
+          !centerIdSet.has(item.toAddress.toLowerCase()) &&
+          !leftOneIds.has(item.toAddress.toLowerCase()) &&
+          !rightOneIds.has(item.toAddress.toLowerCase())
+      )
+      .map(item => item.toAddress.toLowerCase())
   );
+
+  const selectedLinks = netItems.filter(item => {
+    const fromAddress = item.fromAddress.toLowerCase();
+    const toAddress = item.toAddress.toLowerCase();
+    if (centerIdSet.has(toAddress) && leftOneIds.has(fromAddress)) return true;
+    if (centerIdSet.has(fromAddress) && rightOneIds.has(toAddress)) return true;
+    if (centerIdSet.has(fromAddress) && leftOneIds.has(toAddress)) return true;
+    if (centerIdSet.has(toAddress) && rightOneIds.has(fromAddress)) return true;
+    if (leftTwoIds.has(fromAddress) && leftOneIds.has(toAddress)) return true;
+    if (rightOneIds.has(fromAddress) && rightTwoIds.has(toAddress)) return true;
+    return false;
+  });
+  if (selectedLinks.length === 0) return null;
 
   const nodeMap = new Map<string, LargeTransferBilateralNode>();
   const ensureNode = (address: string, column: 0 | 1 | 2 | 3 | 4) => {
@@ -546,17 +610,12 @@ function buildLargeTransferBilateralGraph(items: LargeTransferRecord[], scope: "
   };
 
   centerIds.forEach(address => ensureNode(address, 2));
-  directInbound.forEach(item => ensureNode(item.fromAddress, 1));
-  directOutbound.forEach(item => ensureNode(item.toAddress, 3));
-  leftTwo.forEach(item => ensureNode(item.fromAddress, 0));
-  rightTwo.forEach(item => ensureNode(item.toAddress, 4));
+  leftOneIds.forEach(address => ensureNode(address, 1));
+  rightOneIds.forEach(address => ensureNode(address, 3));
+  leftTwoIds.forEach(address => ensureNode(address, 0));
+  rightTwoIds.forEach(address => ensureNode(address, 4));
 
-  const links = [
-    ...leftTwo,
-    ...directInbound,
-    ...directOutbound,
-    ...rightTwo,
-  ].map<LargeTransferBilateralLink>(item => ({
+  const links = selectedLinks.map<LargeTransferBilateralLink>(item => ({
     id: `${item.fromAddress}->${item.toAddress}`,
     source: item.fromAddress,
     target: item.toAddress,
@@ -1988,6 +2047,13 @@ const LargeTransferBilateralCanvas = memo(function LargeTransferBilateralCanvas(
     return "#60A5FA";
   };
 
+  const colorLegend = [
+    { color: "#1D4ED8", label: `${scope === "dex" ? "DEX" : "CEX"} 核心地址` },
+    { color: "#2563EB", label: "交易所 / CEX 标签地址" },
+    { color: "#7C3AED", label: "合约 / 池子 / Router 地址" },
+    { color: "#60A5FA", label: "普通地址 / 未知地址" },
+  ];
+
   return (
     <div className="rounded-[24px] border border-[#E2E8F0] bg-[#FCFDFF] p-4">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
@@ -1997,8 +2063,18 @@ const LargeTransferBilateralCanvas = memo(function LargeTransferBilateralCanvas(
             中间为{scope === "dex" ? "DEX" : "CEX"}核心地址，左侧追溯上游来源，右侧查看后续去向。
           </div>
         </div>
-        <div className="text-sm text-[#64748B]">
-          当前可见地址 {graph.nodes.length} · 当前可见路径 {graph.links.length} · 当前总额 {compactNumber(graph.totalAmount)}
+        <div className="flex flex-wrap items-center justify-end gap-3">
+          <div className="flex flex-wrap items-center gap-3 text-xs text-[#64748B]">
+            {colorLegend.map(item => (
+              <span key={item.label} className="inline-flex items-center gap-1.5">
+                <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: item.color }} />
+                {item.label}
+              </span>
+            ))}
+          </div>
+          <div className="text-sm text-[#64748B]">
+            当前可见地址 {graph.nodes.length} · 当前可见路径 {graph.links.length} · 当前总额 {compactNumber(graph.totalAmount)}
+          </div>
         </div>
       </div>
 
@@ -2057,21 +2133,26 @@ const LargeTransferBilateralCanvas = memo(function LargeTransferBilateralCanvas(
           {Array.from(nodePositions.values()).map(({ node, x, y, width, height }) => {
             const isCenter = graph.centerIds.includes(node.id);
             const fill = colorForKind(node.kind, isCenter);
-            const titleText =
-              isCenter
-                ? `${scope === "dex" ? "DEX" : "CEX"} 核心地址`
-                : node.label.length > 18
-                  ? `${node.label.slice(0, 18)}…`
-                  : node.label;
+            const titleText = node.label.length > 22 ? `${node.label.slice(0, 22)}…` : node.label;
+            const roleText = isCenter
+              ? `${scope === "dex" ? "DEX" : "CEX"} 核心地址`
+              : node.kind && node.kind !== node.label && node.kind !== "普通地址"
+                ? node.kind
+                : null;
             return (
               <g key={node.id}>
                 <rect x={x} y={y} rx={10} ry={10} width={width} height={height} fill={fill} opacity={0.96} stroke="#FFFFFF" strokeWidth={1} />
                 <text x={x + 12} y={y + 20} fill="#FFFFFF" fontSize="10" fontWeight="700">
                   {titleText}
                 </text>
+                {roleText ? (
+                  <text x={x + 12} y={y + 31} fill="#DBEAFE" fontSize="8.5" fontWeight="600">
+                    {roleText.length > 26 ? `${roleText.slice(0, 26)}…` : roleText}
+                  </text>
+                ) : null}
                 <text
                   x={x + 12}
-                  y={y + 40}
+                  y={roleText ? y + 48 : y + 40}
                   fill="#FFFFFF"
                   fontSize="11"
                   fontWeight="700"
@@ -2083,7 +2164,7 @@ const LargeTransferBilateralCanvas = memo(function LargeTransferBilateralCanvas(
                 >
                   {formatAddressDisplay(node.address)}
                 </text>
-                <text x={x + 12} y={y + 60} fill="#DBEAFE" fontSize="9">
+                <text x={x + 12} y={roleText ? y + 64 : y + 56} fill="#DBEAFE" fontSize="9">
                   {compactNumber(node.amount, 1)} · {node.transferCount} 笔
                 </text>
               </g>
@@ -2116,6 +2197,16 @@ export default function OnChainBoard() {
   const tokenPickerRef = useRef<HTMLDivElement | null>(null);
   const onchainTokensQuery = trpc.onchain.listTokens.useQuery(
     { limit: 60 },
+    {
+      staleTime: 5 * 60 * 1000,
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: false,
+    }
+  );
+  const overviewQuery = trpc.onchain.getOverview.useQuery(
+    {
+      symbol: selectedSymbol,
+    },
     {
       staleTime: 5 * 60 * 1000,
       refetchOnWindowFocus: false,
@@ -2263,14 +2354,62 @@ export default function OnChainBoard() {
     tokenDashboards[0];
   const latestDashboardDate = dashboardDates[0];
   const snapshot = dashboard.dates[latestDashboardDate] ?? dashboard.dates["2026-04-15"];
+  const overview = overviewQuery.data;
   const trendWindow = dashboard.trend90d.slice(-trendDays);
+
+  const overviewTokenName = overview?.name ?? snapshot.tokenName;
+  const overviewTokenSymbol = overview?.symbol ?? snapshot.tokenSymbol;
+  const overviewPriceUsd = overview?.currentPrice ?? snapshot.priceUsd;
+  const overviewPriceChange24h = overview?.priceChange24h ?? snapshot.priceChange24h;
+  const overviewTotalSupply = overview?.totalSupply ?? snapshot.totalSupply;
+  const overviewCirculatingSupply = overview?.circulatingSupply ?? snapshot.circulatingSupply;
+  const overviewMarketCap = overview?.marketCap ?? snapshot.marketCap;
+  const overviewFdv = overview?.fdv ?? snapshot.fdv;
+  const overviewHolderCount = overview?.tokenHolderCount ?? snapshot.holderCount;
+  const overviewHolderDelta =
+    overview?.holderCountChange24h ??
+    (snapshot.holderCountChange1d / Math.max(snapshot.holderCount - snapshot.holderCountChange1d, 1)) * 100;
+  const overviewLogo = overviewTokenSymbol.slice(0, 1).toUpperCase() || dashboard.logo;
+  const overviewTop10Balance = overview?.top10Balance ?? snapshot.top10Balance;
+  const overviewTop10Ratio = overview?.top10Ratio ?? snapshot.top10Ratio;
+  const overviewTop50Balance = overview?.top50Balance ?? snapshot.top50Balance;
+  const overviewTop50Ratio = overview?.top50Ratio ?? snapshot.top50Ratio;
+  const overviewTop100Balance = overview?.top100Balance ?? snapshot.top100Balance;
+  const overviewTop100Ratio = overview?.top100Ratio ?? snapshot.top100Ratio;
+  const overviewIncreaseRows =
+    overview?.increaseRows && overview.increaseRows.length > 0
+      ? overview.increaseRows.map(row => ({
+          address: formatAddressDisplay(row.address),
+          label: row.label,
+          changeBalance: row.changeBalance,
+          currentBalance: row.currentBalance ?? undefined,
+          firstSeen: row.firstSeen ?? "—",
+          href: formatBscScanAddress(row.address),
+        }))
+      : snapshot.increaseRows;
+  const overviewDecreaseRows =
+    overview?.decreaseRows && overview.decreaseRows.length > 0
+      ? overview.decreaseRows.map(row => ({
+          address: formatAddressDisplay(row.address),
+          label: row.label,
+          changeBalance: row.changeBalance,
+          currentBalance: row.currentBalance ?? undefined,
+          href: formatBscScanAddress(row.address),
+        }))
+      : snapshot.decreaseRows;
 
   const controlSpark = seriesSlice(dashboard.trend90d, "controlRate", 7).map(item => item.value);
   const whaleSpark = seriesSlice(dashboard.trend90d, "whaleNetOutflow", 7).map(item => item.value);
-  const holderTrendData = dashboard.trend90d.slice(-30).map(point => ({
-    date: point.shortDate,
-    holderCount: point.holderCount,
-  }));
+  const holderTrendData =
+    overview?.holderHistory && overview.holderHistory.length > 0
+      ? overview.holderHistory.map(point => ({
+          date: point.snapshotDate.slice(5),
+          holderCount: point.holderCount,
+        }))
+      : dashboard.trend90d.slice(-30).map(point => ({
+          date: point.shortDate,
+          holderCount: point.holderCount,
+        }));
   const controlRateTrendData = dashboard.trend90d.slice(-30).map(point => ({
     date: point.shortDate,
     controlRate: point.controlRate,
@@ -3044,7 +3183,7 @@ export default function OnChainBoard() {
             ) : largeTransferMode === "graph" && largeTransferGraph ? (
               <LargeTransferGraphCanvas
                 graph={largeTransferGraph}
-                defaultView={largeTransferScope === "dex" || largeTransferScope === "cex" ? "all" : "focus"}
+                defaultView={largeTransferScope === "initial" ? "focus" : "all"}
               />
             ) : (
               <div className="overflow-hidden rounded-[20px] border border-[#E2E8F0] bg-white">
@@ -3173,35 +3312,52 @@ export default function OnChainBoard() {
             <div className="rounded-[20px] border border-[#E2E8F0] bg-[linear-gradient(180deg,#ffffff_0%,#f8fbff_100%)] p-4 md:col-span-2">
               <div className="flex items-center gap-4">
                 <div className="flex h-16 w-16 items-center justify-center rounded-[20px] bg-[#DBEAFE] text-2xl font-semibold text-[#1D4ED8]">
-                  {dashboard.logo}
+                  {overviewLogo}
                 </div>
                 <div>
-                  <div className="metric-value text-[#0F172A]">{snapshot.tokenName}</div>
-                  <div className="mt-1 text-sm text-[#64748B]">{snapshot.tokenSymbol}</div>
+                  <div className="metric-value text-[#0F172A]">{overviewTokenName}</div>
+                  <div className="mt-1 text-sm text-[#64748B]">{overviewTokenSymbol}</div>
                 </div>
               </div>
               <div className="mt-5 flex flex-wrap items-end gap-3">
-                <div className="metric-value-strong text-[#0F172A]">{compactCurrency(snapshot.priceUsd)}</div>
-                <div className={cn("pb-1 text-lg font-medium", percentTone(snapshot.priceChange24h))}>
-                  {snapshot.priceChange24h > 0 ? "+" : ""}
-                  {formatPercent(snapshot.priceChange24h)}
+                <div className="metric-value-strong text-[#0F172A]">
+                  {overviewPriceUsd != null ? compactCurrency(overviewPriceUsd) : "—"}
+                </div>
+                <div className={cn("pb-1 text-lg font-medium", percentTone(overviewPriceChange24h ?? 0))}>
+                  {(overviewPriceChange24h ?? 0) > 0 ? "+" : ""}
+                  {overviewPriceChange24h != null ? formatPercent(overviewPriceChange24h) : "—"}
                 </div>
               </div>
             </div>
 
-            <MetricTile label="总发行量" value={compactNumber(snapshot.totalSupply)} tooltip={snapshot.totalSupply.toLocaleString()} />
+            <MetricTile
+              label="总发行量"
+              value={overviewTotalSupply != null ? compactNumber(overviewTotalSupply) : "—"}
+              tooltip={overviewTotalSupply != null ? overviewTotalSupply.toLocaleString() : undefined}
+            />
             <MetricTile
               label="流通量"
-              value={`${compactNumber(snapshot.circulatingSupply)} / ${formatPercent(
-                snapshot.circulatingSupply / snapshot.totalSupply * 100
-              )}`}
-              tooltip={snapshot.circulatingSupply.toLocaleString()}
+              value={
+                overviewCirculatingSupply != null && overviewTotalSupply
+                  ? `${compactNumber(overviewCirculatingSupply)} / ${formatPercent(
+                      (overviewCirculatingSupply / overviewTotalSupply) * 100
+                    )}`
+                  : "—"
+              }
+              tooltip={overviewCirculatingSupply != null ? overviewCirculatingSupply.toLocaleString() : undefined}
             />
-            <MetricTile label="市值 / FDV" value={`${compactCurrency(snapshot.marketCap)} / ${compactCurrency(snapshot.fdv)}`} />
+            <MetricTile
+              label="市值 / FDV"
+              value={
+                overviewMarketCap != null && overviewFdv != null
+                  ? `${compactCurrency(overviewMarketCap)} / ${compactCurrency(overviewFdv)}`
+                  : "—"
+              }
+            />
             <MetricTile
               label="持币人数"
-              value={snapshot.holderCount.toLocaleString()}
-              delta={snapshot.holderCountChange1d / Math.max(snapshot.holderCount - snapshot.holderCountChange1d, 1) * 100}
+              value={overviewHolderCount != null ? overviewHolderCount.toLocaleString() : "—"}
+              delta={Number.isFinite(overviewHolderDelta) ? overviewHolderDelta : undefined}
             />
             <MetricTile
               label="控盘率"
@@ -3271,9 +3427,30 @@ export default function OnChainBoard() {
         <DashboardCard title="C. 持仓集中度" subtitle="Top 10 / 50 / 100 地址与持币人数趋势">
           <div className="grid gap-5">
             <div className="grid gap-3 sm:grid-cols-3">
-              <MetricTile label="Top 10 持有量" value={`${compactNumber(snapshot.top10Balance)} / ${formatPercent(snapshot.top10Ratio)}`} />
-              <MetricTile label="Top 50 持有量" value={`${compactNumber(snapshot.top50Balance)} / ${formatPercent(snapshot.top50Ratio)}`} />
-              <MetricTile label="Top 100 持有量" value={`${compactNumber(snapshot.top100Balance)} / ${formatPercent(snapshot.top100Ratio)}`} />
+              <MetricTile
+                label="Top 10 持有量"
+                value={
+                  overviewTop10Balance != null && overviewTop10Ratio != null
+                    ? `${compactNumber(overviewTop10Balance)} / ${formatPercent(overviewTop10Ratio)}`
+                    : "—"
+                }
+              />
+              <MetricTile
+                label="Top 50 持有量"
+                value={
+                  overviewTop50Balance != null && overviewTop50Ratio != null
+                    ? `${compactNumber(overviewTop50Balance)} / ${formatPercent(overviewTop50Ratio)}`
+                    : "—"
+                }
+              />
+              <MetricTile
+                label="Top 100 持有量"
+                value={
+                  overviewTop100Balance != null && overviewTop100Ratio != null
+                    ? `${compactNumber(overviewTop100Balance)} / ${formatPercent(overviewTop100Ratio)}`
+                    : "—"
+                }
+              />
             </div>
             <div className="rounded-[22px] border border-[#E2E8F0] bg-[#F8FAFC] p-4">
               <div className="mb-4 flex items-center justify-between">
@@ -3281,7 +3458,9 @@ export default function OnChainBoard() {
                   <div className="text-sm font-semibold text-[#0F172A]">持币人数 30 天柱形图</div>
                   <div className="mt-1 text-xs text-[#64748B]">用日维度看新增持有人变化更直观</div>
                 </div>
-                <div className="metric-value-strong text-[#1D4ED8]">{snapshot.holderCount.toLocaleString()}</div>
+                <div className="metric-value-strong text-[#1D4ED8]">
+                  {overviewHolderCount != null ? overviewHolderCount.toLocaleString() : "—"}
+                </div>
               </div>
               <div className="h-[320px]">
                 <ResponsiveContainer width="100%" height="100%">
@@ -3459,7 +3638,7 @@ export default function OnChainBoard() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {snapshot.increaseRows.map(row => (
+                {overviewIncreaseRows.map(row => (
                   <TableRow key={row.address} className="border-[#E2E8F0]">
                     <TableCell>
                       <a className="font-medium text-[#1D4ED8] hover:underline" href={row.href} target="_blank" rel="noreferrer">
@@ -3487,7 +3666,7 @@ export default function OnChainBoard() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {snapshot.decreaseRows.map(row => (
+                {overviewDecreaseRows.map(row => (
                   <TableRow key={row.address} className="border-[#E2E8F0]">
                     <TableCell>
                       <a className="font-medium text-[#1D4ED8] hover:underline" href={row.href} target="_blank" rel="noreferrer">

@@ -230,6 +230,7 @@ type TokenListingViewResult = {
     operationSteps: string | null;
     endTime: string | null;
     rewardDistributionTime: string | null;
+    publishedAt: string | null;
     url: string | null;
   }>;
 };
@@ -546,6 +547,48 @@ type AvailableOnchainTokenResult = {
     transferCount: number;
     holderCount: number;
     dexActionCount: number;
+  }>;
+};
+
+type OnchainOverviewResult = {
+  tokenId: number;
+  symbol: string;
+  name: string;
+  logoUrl: string | null;
+  currentPrice: number | null;
+  priceChange24h: number | null;
+  totalSupply: number | null;
+  circulatingSupply: number | null;
+  marketCap: number | null;
+  fdv: number | null;
+  tokenHolderCount: number | null;
+  holderCountChange24h: number | null;
+  tokenAddress: string | null;
+  holderSnapshotDate: string | null;
+  top10Balance: number | null;
+  top10Ratio: number | null;
+  top50Balance: number | null;
+  top50Ratio: number | null;
+  top100Balance: number | null;
+  top100Ratio: number | null;
+  holderHistory: Array<{
+    snapshotDate: string;
+    holderCount: number;
+  }>;
+  increaseRows: Array<{
+    address: string;
+    label: string;
+    kind: string;
+    changeBalance: number;
+    currentBalance: number | null;
+    firstSeen: string | null;
+  }>;
+  decreaseRows: Array<{
+    address: string;
+    label: string;
+    kind: string;
+    changeBalance: number;
+    currentBalance: number | null;
   }>;
 };
 
@@ -1652,6 +1695,279 @@ export async function getTokenProfileBySymbol(symbol: string): Promise<TokenProf
   };
 }
 
+export async function getOnchainOverviewBySymbol(symbol: string): Promise<OnchainOverviewResult | null> {
+  const bigQuery = getBigQueryClient();
+  const dataset = process.env.BIGQUERY_DATASET;
+  const normalizedSymbol = symbol.trim().toUpperCase();
+  const fallbackToken = fallbackOnchainTokens[normalizedSymbol] ?? null;
+
+  let profile: TokenProfileResult | null = null;
+  try {
+    profile = await getTokenProfileBySymbol(symbol);
+  } catch {
+    profile = null;
+  }
+
+  if (!profile) {
+    return null;
+  }
+
+  const preferredAddress =
+    profile.addresses.find(item => {
+      const chain = item.chainName.toLowerCase();
+      return chain.includes("bnb") || chain.includes("bsc") || chain.includes("binance");
+    })?.address ??
+    profile.addresses[0]?.address ??
+    fallbackToken?.addresses[0] ??
+    null;
+
+  if (!dataset || !preferredAddress) {
+    return {
+      tokenId: profile.tokenId,
+      symbol: profile.symbol,
+      name: profile.name,
+      logoUrl: profile.logoUrl,
+      currentPrice: profile.currentPrice,
+      priceChange24h: profile.priceChange24h,
+      totalSupply: profile.totalSupply,
+      circulatingSupply: profile.circulatingSupply,
+      marketCap: profile.marketCap,
+      fdv: profile.fdv,
+      tokenHolderCount: profile.tokenHolderCount,
+      holderCountChange24h: null,
+      tokenAddress: preferredAddress?.toLowerCase() ?? null,
+      holderSnapshotDate: null,
+      top10Balance: null,
+      top10Ratio: null,
+      top50Balance: null,
+      top50Ratio: null,
+      top100Balance: null,
+      top100Ratio: null,
+      holderHistory: [],
+      increaseRows: [],
+      decreaseRows: [],
+    };
+  }
+
+  try {
+    const holderCountsQuery = `
+      SELECT
+        CAST(snapshot_date AS STRING) AS snapshotDate,
+        COUNT(*) AS holderCount
+      FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.token_holder_snapshot\`
+      WHERE LOWER(token_address) = @tokenAddress
+      GROUP BY snapshotDate
+      ORDER BY snapshotDate DESC
+      LIMIT 30
+    `;
+
+    const [holderCountRows] = await bigQuery.query({
+      query: holderCountsQuery,
+      params: {
+        tokenAddress: preferredAddress.toLowerCase(),
+      },
+      useLegacySql: false,
+    });
+
+    const latestHolderCount = Number((holderCountRows[0] as { holderCount?: string | number } | undefined)?.holderCount ?? NaN);
+    const previousHolderCount = Number((holderCountRows[1] as { holderCount?: string | number } | undefined)?.holderCount ?? NaN);
+    const resolvedHolderCount =
+      Number.isFinite(latestHolderCount) && latestHolderCount > 0 ? latestHolderCount : profile.tokenHolderCount;
+    const holderCountChange24h =
+      Number.isFinite(latestHolderCount) &&
+      Number.isFinite(previousHolderCount) &&
+      previousHolderCount > 0
+        ? ((latestHolderCount - previousHolderCount) / previousHolderCount) * 100
+        : null;
+    const holderHistory = holderCountRows
+      .map(row => ({
+        snapshotDate: String((row as { snapshotDate?: string }).snapshotDate ?? "").trim(),
+        holderCount: Number((row as { holderCount?: string | number }).holderCount ?? 0),
+      }))
+      .filter(item => item.snapshotDate && Number.isFinite(item.holderCount))
+      .reverse();
+
+    const topBalanceQuery = `
+      SELECT
+        SUM(IF(balance_rank <= 10, SAFE_CAST(balance AS NUMERIC), 0)) AS top10Balance,
+        SUM(IF(balance_rank <= 50, SAFE_CAST(balance AS NUMERIC), 0)) AS top50Balance,
+        SUM(IF(balance_rank <= 100, SAFE_CAST(balance AS NUMERIC), 0)) AS top100Balance
+      FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.token_holder_snapshot\`
+      WHERE LOWER(token_address) = @tokenAddress
+        AND snapshot_date = DATE(@snapshotDate)
+    `;
+    const [topBalanceRows] = await bigQuery.query({
+      query: topBalanceQuery,
+      params: {
+        tokenAddress: preferredAddress.toLowerCase(),
+        snapshotDate: holderHistory.at(-1)?.snapshotDate ?? String((holderCountRows[0] as { snapshotDate?: string } | undefined)?.snapshotDate ?? ""),
+      },
+      useLegacySql: false,
+    });
+    const top10Balance = toNullableNumber((topBalanceRows[0] as { top10Balance?: string | number | null } | undefined)?.top10Balance);
+    const top50Balance = toNullableNumber((topBalanceRows[0] as { top50Balance?: string | number | null } | undefined)?.top50Balance);
+    const top100Balance = toNullableNumber((topBalanceRows[0] as { top100Balance?: string | number | null } | undefined)?.top100Balance);
+    const totalSupply = profile.totalSupply ?? 0;
+    const latestSnapshotDate =
+      holderHistory.at(-1)?.snapshotDate ??
+      String((holderCountRows[0] as { snapshotDate?: string } | undefined)?.snapshotDate ?? "");
+
+    const topChangesQuery = `
+      SELECT
+        LOWER(holder_address) AS holderAddress,
+        balance,
+        balance_delta24h AS balanceChange24h,
+        is_new AS isNew
+      FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.token_holder_snapshot\`
+      WHERE LOWER(token_address) = @tokenAddress
+        AND snapshot_date = DATE(@snapshotDate)
+      ORDER BY SAFE_CAST(balance AS NUMERIC) DESC
+      LIMIT 200
+    `;
+    const [topChangeRows] = await bigQuery.query({
+      query: topChangesQuery,
+      params: {
+        tokenAddress: preferredAddress.toLowerCase(),
+        snapshotDate: latestSnapshotDate,
+      },
+      useLegacySql: false,
+    });
+    const topChangeAddresses = topChangeRows
+      .map(row => String((row as { holderAddress?: string }).holderAddress ?? "").toLowerCase())
+      .filter(Boolean);
+    const [topWalletRows] = topChangeAddresses.length
+      ? await bigQuery.query({
+          query: `
+            SELECT
+              LOWER(address) AS address,
+              tag_label,
+              tags_base,
+              is_contract,
+              CAST(last_tx_time AS STRING) AS lastTxTime
+            FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.wallet_info\`
+            WHERE LOWER(address) IN UNNEST(@addresses)
+          `,
+          params: { addresses: topChangeAddresses },
+          useLegacySql: false,
+        })
+      : [[]];
+    const topWalletMeta = new Map<
+      string,
+      {
+        label: string;
+        kind: string;
+        isContract: boolean;
+        lastTxTime: string | null;
+      }
+    >();
+    topWalletRows.forEach(row => {
+      const address = String((row as { address?: string }).address ?? "").toLowerCase();
+      if (!address) return;
+      const tagLabel = (row as { tag_label?: string | null }).tag_label ?? null;
+      const tagsBase = (row as { tags_base?: string | null }).tags_base ?? null;
+      const isContract = Boolean((row as { is_contract?: boolean | null }).is_contract);
+      topWalletMeta.set(address, {
+        label: formatAddressTagLabel(tagLabel ?? tagsBase),
+        kind: tagsBase ?? (isContract ? "合约地址" : "普通地址"),
+        isContract,
+        lastTxTime: String((row as { lastTxTime?: string | null }).lastTxTime ?? "").trim() || null,
+      });
+    });
+
+    const topChangeEntries = topChangeRows.map(row => {
+      const address = String((row as { holderAddress?: string }).holderAddress ?? "").toLowerCase();
+      const rawChangeBalance = toNullableNumber((row as { balanceChange24h?: string | number | null }).balanceChange24h) ?? 0;
+      const currentBalance = toNullableNumber((row as { balance?: string | number | null }).balance);
+      const meta = topWalletMeta.get(address);
+      return {
+        address,
+        label: meta?.label ?? "普通地址",
+        kind: meta?.kind ?? "普通地址",
+        rawChangeBalance,
+        currentBalance,
+        firstSeen: Boolean((row as { isNew?: boolean | null }).isNew) ? latestSnapshotDate : meta?.lastTxTime ?? null,
+      };
+    });
+
+    const increaseRows = topChangeEntries
+      .filter(item => item.rawChangeBalance > 0)
+      .map(item => ({
+        address: item.address,
+        label: item.label,
+        kind: item.kind,
+        changeBalance: item.rawChangeBalance,
+        currentBalance: item.currentBalance,
+        firstSeen: item.firstSeen,
+      }))
+      .sort((left, right) => right.changeBalance - left.changeBalance)
+      .slice(0, 10);
+
+    const decreaseRows = topChangeEntries
+      .filter(item => item.rawChangeBalance < 0)
+      .map(item => ({
+        address: item.address,
+        label: item.label,
+        kind: item.kind,
+        changeBalance: Math.abs(item.rawChangeBalance),
+        currentBalance: item.currentBalance,
+      }))
+      .sort((left, right) => right.changeBalance - left.changeBalance)
+      .slice(0, 10);
+
+    return {
+      tokenId: profile.tokenId,
+      symbol: profile.symbol,
+      name: profile.name,
+      logoUrl: profile.logoUrl,
+      currentPrice: profile.currentPrice,
+      priceChange24h: profile.priceChange24h,
+      totalSupply: profile.totalSupply,
+      circulatingSupply: profile.circulatingSupply,
+      marketCap: profile.marketCap,
+      fdv: profile.fdv,
+      tokenHolderCount: resolvedHolderCount,
+      holderCountChange24h,
+      tokenAddress: preferredAddress.toLowerCase(),
+      holderSnapshotDate: String((holderCountRows[0] as { snapshotDate?: string } | undefined)?.snapshotDate ?? "").trim() || null,
+      top10Balance,
+      top10Ratio: totalSupply > 0 && top10Balance != null ? (top10Balance / totalSupply) * 100 : null,
+      top50Balance,
+      top50Ratio: totalSupply > 0 && top50Balance != null ? (top50Balance / totalSupply) * 100 : null,
+      top100Balance,
+      top100Ratio: totalSupply > 0 && top100Balance != null ? (top100Balance / totalSupply) * 100 : null,
+      holderHistory,
+      increaseRows,
+      decreaseRows,
+    };
+  } catch {
+    return {
+      tokenId: profile.tokenId,
+      symbol: profile.symbol,
+      name: profile.name,
+      logoUrl: profile.logoUrl,
+      currentPrice: profile.currentPrice,
+      priceChange24h: profile.priceChange24h,
+      totalSupply: profile.totalSupply,
+      circulatingSupply: profile.circulatingSupply,
+      marketCap: profile.marketCap,
+      fdv: profile.fdv,
+      tokenHolderCount: profile.tokenHolderCount,
+      holderCountChange24h: null,
+      tokenAddress: preferredAddress.toLowerCase(),
+      holderSnapshotDate: null,
+      top10Balance: null,
+      top10Ratio: null,
+      top50Balance: null,
+      top50Ratio: null,
+      top100Balance: null,
+      top100Ratio: null,
+      holderHistory: [],
+      increaseRows: [],
+      decreaseRows: [],
+    };
+  }
+}
+
 export async function getTokenUnlockViewBySymbol(symbol: string): Promise<TokenUnlockViewResult | null> {
   const currentPool = getPool();
   const profile = await getTokenProfileBySymbol(symbol);
@@ -1817,6 +2133,7 @@ export async function getTokenListingViewBySymbol(symbol: string): Promise<Token
       pricePost15m: number | null;
       changePost15m: number | null;
       title: string | null;
+      publishedAt: string | null;
       url: string | null;
     })[]
   >(
@@ -1836,6 +2153,7 @@ export async function getTokenListingViewBySymbol(symbol: string): Promise<Token
         el.price_post_15m AS pricePost15m,
         el.change_post_15m AS changePost15m,
         ea.title AS title,
+        ea.published_at AS publishedAt,
         ea.url AS url
       FROM exchange_listings el
       LEFT JOIN exchange_platforms ep ON ep.id = el.exchange_id
@@ -1865,6 +2183,7 @@ export async function getTokenListingViewBySymbol(symbol: string): Promise<Token
       startTime: string | null;
       endTime: string | null;
       rewardDistributionTime: string | null;
+      publishedAt: string | null;
       url: string | null;
     })[]
   >(
@@ -1887,6 +2206,7 @@ export async function getTokenListingViewBySymbol(symbol: string): Promise<Token
         ea.start_time AS startTime,
         ea.end_time AS endTime,
         ea.reward_distribution_time AS rewardDistributionTime,
+        ann.published_at AS publishedAt,
         ann.url AS url
       FROM exchange_activities ea
       LEFT JOIN exchange_platforms ep ON ep.id = ea.exchange_id
@@ -1926,6 +2246,7 @@ export async function getTokenListingViewBySymbol(symbol: string): Promise<Token
       operationSteps: null,
       endTime: null,
       rewardDistributionTime: null,
+      publishedAt: row.publishedAt,
       url: row.url,
     })),
     ...activityRows.map((row, index) => ({
@@ -1956,6 +2277,7 @@ export async function getTokenListingViewBySymbol(symbol: string): Promise<Token
       operationSteps: row.operationSteps,
       endTime: row.endTime,
       rewardDistributionTime: row.rewardDistributionTime,
+      publishedAt: row.publishedAt,
       url: row.url,
     })),
   ].sort((left, right) => {
@@ -3570,8 +3892,8 @@ export async function getOnchainHoldersBySymbol(
       LOWER(holder_address) AS holderAddress,
       balance,
       balance_rank AS balanceRank,
-      balance_change24h AS balanceChange24h,
-      balance_change7d AS balanceChange7d,
+      balance_delta24h AS balanceChange24h,
+      balance_delta7d AS balanceChange7d,
       is_new AS isNew
     FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.token_holder_snapshot\`
     WHERE LOWER(token_address) = @tokenAddress

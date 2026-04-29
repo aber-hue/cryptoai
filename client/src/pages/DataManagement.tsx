@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -275,36 +275,100 @@ function matchesSelectedExchange(
   );
 }
 
+function dedupeTokensById(items: any[]) {
+  const seen = new Set<number>();
+  const deduped: any[] = [];
+
+  for (const item of items) {
+    const tokenId = Number(item?.tokenId);
+    if (!Number.isFinite(tokenId) || seen.has(tokenId)) continue;
+    seen.add(tokenId);
+    deduped.push(item);
+  }
+
+  return deduped;
+}
+
+function getMarketSearchParams() {
+  const params = new URLSearchParams(
+    typeof window !== "undefined" ? window.location.search : ""
+  );
+
+  const tab = params.get("tab");
+  const coinScope = params.get("scope");
+  const marketType = params.get("marketType");
+  const tokenQuery = params.get("query");
+  const sortField = params.get("sortField");
+  const sortDirection = params.get("sortDirection");
+  const selectedExchanges = params
+    .get("exchanges")
+    ?.split(",")
+    .map(item => decodeURIComponent(item).trim())
+    .filter(Boolean);
+
+  return {
+    tab: tab === "announcements" ? "announcements" : "coins",
+    coinScope: coinScope === "watchlist" ? "watchlist" : "all",
+    marketType: marketType === "perps" ? "perps" : "spot",
+    tokenQuery: tokenQuery ?? "",
+    sortField:
+      sortField === "rank" ||
+      sortField === "symbol" ||
+      sortField === "listedAt" ||
+      sortField === "price" ||
+      sortField === "totalSupply" ||
+      sortField === "circulatingSupply" ||
+      sortField === "fdv" ||
+      sortField === "marketCap" ||
+      sortField === "volume24h"
+        ? sortField
+        : "listedAt",
+    sortDirection: sortDirection === "asc" ? "asc" : "desc",
+    selectedExchanges: selectedExchanges ?? [],
+  } as const;
+}
+
 export default function DataManagement() {
-  const [, setLocation] = useLocation();
-  const [tab, setTab] = useState<BoardTab>("coins");
-  const [coinScope, setCoinScope] = useState<CoinScope>("all");
+  const [location, setLocation] = useLocation();
+  const utils = trpc.useUtils();
+  const initialMarketParams = useMemo(() => getMarketSearchParams(), []);
+  const [tab, setTab] = useState<BoardTab>(initialMarketParams.tab);
+  const [coinScope, setCoinScope] = useState<CoinScope>(initialMarketParams.coinScope);
   const [announcementView, setAnnouncementView] = useState<"card" | "list">("card");
   const [announcementType, setAnnouncementType] = useState<
     "all" | "listing" | "delisting" | "event" | "other"
   >("all");
   const [announcementExchange, setAnnouncementExchange] = useState("全部交易所");
-  const [marketType, setMarketType] = useState<MarketType>("spot");
-  const [selectedExchanges, setSelectedExchanges] = useState<string[]>([]);
-  const [tokenQuery, setTokenQuery] = useState("");
+  const [marketType, setMarketType] = useState<MarketType>(initialMarketParams.marketType);
+  const [selectedExchanges, setSelectedExchanges] = useState<string[]>(initialMarketParams.selectedExchanges);
+  const [tokenQuery, setTokenQuery] = useState(initialMarketParams.tokenQuery);
   const [announcementQuery, setAnnouncementQuery] = useState("");
-  const [sortField, setSortField] = useState<SortField>("listedAt");
-  const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
+  const [sortField, setSortField] = useState<SortField>(initialMarketParams.sortField);
+  const [sortDirection, setSortDirection] = useState<SortDirection>(initialMarketParams.sortDirection);
   const watchlistQuery = trpc.market.getWatchlist.useQuery();
   const watchlistSymbols = useMemo(
     () => (watchlistQuery.data?.items ?? []).map(item => item.symbol.trim().toUpperCase()).filter(Boolean),
     [watchlistQuery.data?.items]
   );
+  const [allLoadedTokens, setAllLoadedTokens] = useState<any[]>([]);
+  const [isLoadingMoreTokens, setIsLoadingMoreTokens] = useState(false);
+  const [hasLoadedAllTokens, setHasLoadedAllTokens] = useState(false);
+  const marketTokenBaseInput = useMemo(
+    () => ({
+      query: tokenQuery.trim() || undefined,
+      symbols: coinScope === "watchlist" ? watchlistSymbols : undefined,
+      marketType: coinScope === "watchlist" ? undefined : marketType,
+      sortBy:
+        sortField === "marketCap" || sortField === "volume24h" || sortField === "listedAt"
+          ? sortField
+          : "listedAt",
+      sortOrder: sortDirection,
+    }),
+    [coinScope, marketType, sortDirection, sortField, tokenQuery, watchlistSymbols]
+  );
 
   const marketTokensQuery = trpc.market.listTokens.useQuery({
-    query: tokenQuery.trim() || undefined,
-    symbols: coinScope === "watchlist" ? watchlistSymbols : undefined,
-    marketType: coinScope === "watchlist" ? undefined : marketType,
-    sortBy:
-      sortField === "marketCap" || sortField === "volume24h" || sortField === "listedAt"
-        ? sortField
-        : "listedAt",
-    sortOrder: sortDirection,
+    ...marketTokenBaseInput,
     page: 1,
     pageSize: 40,
   });
@@ -332,12 +396,12 @@ export default function DataManagement() {
 
   const filteredTokens = useMemo(() => {
     const watchlistSymbolSet = new Set(watchlistSymbols);
-    const filtered = (marketTokensQuery.data?.items ?? [])
+    const filtered = allLoadedTokens
       .filter(token => {
         const matchesExchange =
           selectedExchanges.length === 0 ||
           selectedExchanges.every(selectedExchange =>
-            token.exchanges.some(exchange =>
+            token.exchanges.some((exchange: any) =>
               matchesSelectedExchange(
                 exchange.exchangeName,
                 selectedExchange,
@@ -365,7 +429,7 @@ export default function DataManagement() {
         fdv: formatCompactCurrency(token.fdv),
         marketCap: formatCompactCurrency(token.marketCap),
         volume24h: formatCompactCurrency(token.volume24h),
-        exchanges: token.exchanges.map(exchange => ({
+        exchanges: token.exchanges.map((exchange: any) => ({
           name: exchange.exchangeName,
           displayName: getExchangeDisplayName(exchange.exchangeName),
           logoUrl: exchange.exchangeLogoUrl,
@@ -409,7 +473,105 @@ export default function DataManagement() {
       ...token,
       rank: index + 1,
     }));
-  }, [coinScope, marketTokensQuery.data?.items, marketType, selectedExchanges, sortDirection, sortField, watchlistSymbols]);
+  }, [allLoadedTokens, coinScope, marketType, selectedExchanges, sortDirection, sortField, watchlistSymbols]);
+
+  useEffect(() => {
+    if (!marketTokensQuery.data?.items) return;
+
+    const initialItems = dedupeTokensById(marketTokensQuery.data.items);
+    setAllLoadedTokens(initialItems);
+    setHasLoadedAllTokens(initialItems.length < 40);
+  }, [marketTokensQuery.data?.items]);
+
+  useEffect(() => {
+    if (marketTokensQuery.isLoading || marketTokensQuery.isError || !marketTokensQuery.data?.items) {
+      return;
+    }
+
+    const firstPageItems = dedupeTokensById(marketTokensQuery.data.items);
+    if (firstPageItems.length < 40) {
+      setIsLoadingMoreTokens(false);
+      setHasLoadedAllTokens(true);
+      return;
+    }
+
+    let cancelled = false;
+
+    const loadRemainingPages = async () => {
+      setIsLoadingMoreTokens(true);
+
+      try {
+        let page = 2;
+        let mergedItems = firstPageItems;
+
+        while (!cancelled) {
+          const nextPage = await utils.market.listTokens.fetch({
+            ...marketTokenBaseInput,
+            page,
+            pageSize: 40,
+          });
+          const nextItems = dedupeTokensById(nextPage.items ?? []);
+
+          if (cancelled) return;
+
+          if (nextItems.length === 0) {
+            setHasLoadedAllTokens(true);
+            break;
+          }
+
+          mergedItems = dedupeTokensById([...mergedItems, ...nextItems]);
+          setAllLoadedTokens(mergedItems);
+
+          if (nextItems.length < 40) {
+            setHasLoadedAllTokens(true);
+            break;
+          }
+
+          page += 1;
+        }
+      } finally {
+        if (!cancelled) {
+          setIsLoadingMoreTokens(false);
+        }
+      }
+    };
+
+    void loadRemainingPages();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [marketTokenBaseInput, marketTokensQuery.data?.items, marketTokensQuery.isError, marketTokensQuery.isLoading, utils.market.listTokens]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const params = new URLSearchParams(window.location.search);
+    params.set("tab", tab);
+    params.set("scope", coinScope);
+    params.set("marketType", marketType);
+
+    if (tokenQuery.trim()) {
+      params.set("query", tokenQuery.trim());
+    } else {
+      params.delete("query");
+    }
+
+    params.set("sortField", sortField);
+    params.set("sortDirection", sortDirection);
+
+    if (selectedExchanges.length > 0) {
+      params.set("exchanges", selectedExchanges.map(item => encodeURIComponent(item)).join(","));
+    } else {
+      params.delete("exchanges");
+    }
+
+    const nextUrl = `${location.split("?")[0]}?${params.toString()}`;
+    const currentUrl = `${window.location.pathname}${window.location.search}`;
+    if (nextUrl !== currentUrl) {
+      window.history.replaceState(null, "", nextUrl);
+    }
+  }, [coinScope, location, marketType, selectedExchanges, sortDirection, sortField, tab, tokenQuery]);
 
   const filteredAnnouncements = useMemo(() => {
     return (announcementsQuery.data?.items ?? [])
@@ -730,6 +892,15 @@ export default function DataManagement() {
                 <div className="mt-1 break-all text-[#7a271a]">{marketTokensErrorMessage}</div>
               </div>
             ) : null}
+            {!marketTokensQuery.isError && !marketTokensQuery.isLoading ? (
+              <div className="border-b border-[#eef2f6] bg-[#fbfcfe] px-5 py-3 text-xs text-muted-foreground">
+                {isLoadingMoreTokens
+                  ? `已加载 ${allLoadedTokens.length} 个代币，正在后台继续拉取剩余数据...`
+                  : hasLoadedAllTokens
+                    ? `已加载全部 ${allLoadedTokens.length} 个代币`
+                    : `已加载 ${allLoadedTokens.length} 个代币`}
+              </div>
+            ) : null}
             <div className="overflow-x-auto">
             <table className="min-w-full text-sm">
               <thead className="border-b border-[#d8e0eb] text-left text-[13px] font-semibold text-[oklch(var(--crypto-ink))]">
@@ -774,7 +945,13 @@ export default function DataManagement() {
                   <tr
                     key={token.raw.tokenId}
                     className="cursor-pointer border-b border-[#e7edf4] text-[13px] text-[oklch(var(--crypto-ink))] transition-colors hover:bg-[#f8fafc]"
-                    onClick={() => setLocation(`/coin/${token.symbol.toLowerCase()}`)}
+                    onClick={() => {
+                      const currentMarketUrl =
+                        typeof window !== "undefined"
+                          ? `${window.location.pathname}${window.location.search}`
+                          : `${location.split("?")[0]}`;
+                      setLocation(`/coin/${token.symbol.toLowerCase()}?from=${encodeURIComponent(currentMarketUrl)}`);
+                    }}
                   >
                     <td className="px-3 py-3 align-top">{token.rank}</td>
                     <td className="px-3 py-3 align-top">
@@ -812,20 +989,20 @@ export default function DataManagement() {
                     <td className="px-3 py-3 align-top">
                       <div className="min-w-[160px]">
                         <ExchangeSummaryList
-                          items={token.exchanges.filter(exchange => exchange.rawType !== "perps")}
+                          items={token.exchanges.filter((exchange: any) => exchange.rawType !== "perps")}
                         />
                       </div>
                     </td>
                     <td className="px-3 py-3 align-top">
                       <div className="min-w-[150px]">
                         <ExchangeSummaryList
-                          items={token.exchanges.filter(exchange => exchange.rawType === "perps")}
+                          items={token.exchanges.filter((exchange: any) => exchange.rawType === "perps")}
                         />
                       </div>
                     </td>
                     <td className="px-3 py-3 align-top">
                       {(() => {
-                        const recentVenueExchange = token.exchanges.find(exchange => exchange.name === token.recentVenue);
+                        const recentVenueExchange = token.exchanges.find((exchange: any) => exchange.name === token.recentVenue);
 
                         if (!recentVenueExchange) {
                           return token.recentVenue;

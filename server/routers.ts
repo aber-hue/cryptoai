@@ -13,6 +13,7 @@ import {
   getOnchainFundFlowBySymbol,
   getOnchainHoldersBySymbol,
   getOnchainLargeTransfersBySymbol,
+  getOnchainOverviewBySymbol,
   getTokenFundingViewBySymbol,
   getTokenSocialHeatViewBySymbol,
   getTokenKlineBySymbol,
@@ -466,6 +467,15 @@ export const appRouter = router({
       )
       .query(async ({ input }) => {
         return await listAvailableOnchainTokens(input?.limit ?? 20);
+      }),
+    getOverview: publicProcedure
+      .input(
+        z.object({
+          symbol: z.string().trim().min(1),
+        })
+      )
+      .query(async ({ input }) => {
+        return await getOnchainOverviewBySymbol(input.symbol);
       }),
     getFundFlow: publicProcedure
       .input(
