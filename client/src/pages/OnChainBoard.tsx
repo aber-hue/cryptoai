@@ -2355,6 +2355,9 @@ export default function OnChainBoard() {
   const latestDashboardDate = dashboardDates[0];
   const snapshot = dashboard.dates[latestDashboardDate] ?? dashboard.dates["2026-04-15"];
   const overview = overviewQuery.data;
+  const overviewIsLoading =
+    activeView === "overview" && (overviewQuery.isLoading || (!overviewQuery.data && !overviewQuery.error));
+  const overviewHasError = activeView === "overview" && !!overviewQuery.error;
   const trendWindow = dashboard.trend90d.slice(-trendDays);
 
   const overviewTokenName = overview?.name ?? snapshot.tokenName;
@@ -3301,6 +3304,28 @@ export default function OnChainBoard() {
       ) : null}
 
       {activeView === "overview" ? (
+        overviewIsLoading ? (
+          <DashboardCard title="总览加载中" subtitle="正在拉取链上代币基础信息与持仓概览">
+            <div className="flex min-h-[360px] flex-col items-center justify-center gap-4 rounded-[24px] border border-dashed border-[#DBEAFE] bg-[#F8FBFF] px-6 text-center">
+              <div className="flex h-14 w-14 items-center justify-center rounded-full bg-white shadow-sm">
+                <RefreshCw className="h-6 w-6 animate-spin text-[#1D4ED8]" />
+              </div>
+              <div className="space-y-1">
+                <div className="text-base font-semibold text-[#0F172A]">正在加载 {selectedSymbol} 的总览数据</div>
+                <div className="text-sm text-[#64748B]">真实数据未返回前，不展示本地 mock 内容。</div>
+              </div>
+            </div>
+          </DashboardCard>
+        ) : overviewHasError ? (
+          <DashboardCard title="总览加载失败" subtitle="链上总览真实数据暂时不可用">
+            <div className="flex min-h-[240px] flex-col items-center justify-center gap-3 rounded-[24px] border border-dashed border-[#FECACA] bg-[#FFFBFB] px-6 text-center">
+              <div className="text-base font-semibold text-[#0F172A]">当前未能拉取 {selectedSymbol} 的总览数据</div>
+              <div className="max-w-[560px] text-sm text-[#64748B]">
+                请点击右上角“刷新”重试；如果只有总览失败而资金流 / Holder 正常，通常是总览聚合查询暂时未返回。
+              </div>
+            </div>
+          </DashboardCard>
+        ) : (
         <>
       <DashboardCard
         title="A. 代币基础信息"
@@ -3803,6 +3828,7 @@ export default function OnChainBoard() {
         </div>
         </div>
         </>
+        )
       ) : null}
     </div>
   );

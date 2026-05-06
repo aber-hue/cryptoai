@@ -1382,10 +1382,24 @@ function buildLeveragedTokenExclusionSql() {
   `;
 }
 
+function buildAlphaOnlyVenueExclusionSql() {
+  return `
+    EXISTS (
+      SELECT 1
+      FROM exchange_listings el_visible
+      JOIN exchange_platforms ep_visible ON ep_visible.id = el_visible.exchange_id
+      WHERE el_visible.token_id = tp.id
+        AND ep_visible.market_type NOT IN ('tradfi', 'onchain')
+        AND ep_visible.name NOT IN ('Gate Alpha', 'KuCoin Alpha')
+    )
+  `;
+}
+
 function buildMarketFilters(input: MarketListInput) {
   const conditions: string[] = [
     "COALESCE(tp.coin_tags, '') NOT LIKE '%STOCK%'",
     buildLeveragedTokenExclusionSql(),
+    buildAlphaOnlyVenueExclusionSql(),
   ];
   const params: Array<string | number> = [];
 
