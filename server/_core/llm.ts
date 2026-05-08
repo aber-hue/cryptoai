@@ -214,9 +214,19 @@ const resolveApiUrl = () =>
     ? `${ENV.forgeApiUrl.replace(/\/$/, "")}/v1/chat/completions`
     : "https://forge.manus.im/v1/chat/completions";
 
+const resolveOpenAIResponsesUrl = () => {
+  const configured = ENV.openaiApiUrl.trim();
+  if (!configured) return "";
+  if (configured.endsWith("/v1/responses")) return configured;
+  return `${configured.replace(/\/$/, "")}/v1/responses`;
+};
+
+const shouldUseOpenAIResponses = () =>
+  ENV.openaiApiKey.trim().length > 0 && resolveOpenAIResponsesUrl().length > 0;
+
 const assertApiKey = () => {
-  if (!ENV.forgeApiKey) {
-    throw new Error("OPENAI_API_KEY is not configured");
+  if (!shouldUseOpenAIResponses() && !ENV.forgeApiKey) {
+    throw new Error("No LLM credentials configured");
   }
 };
 
@@ -267,6 +277,15 @@ const normalizeResponseFormat = ({
 
 export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
   assertApiKey();
+
+  if (shouldUseOpenAIResponses()) {
+    return await invokeOpenAIResponses(params);
+  }
+
+  return await invokeForgeChatCompletions(params);
+}
+
+async function invokeForgeChatCompletions(params: InvokeParams): Promise<InvokeResult> {
 
   const {
     messages,
@@ -329,4 +348,177 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
   }
 
   return (await response.json()) as InvokeResult;
+}
+
+async function invokeOpenAIResponses(params: InvokeParams): Promise<InvokeResult> {
+  const {
+    messages,
+    outputSchema,
+    output_schema,
+    responseFormat,
+    response_format,
+  } = params;
+
+  const normalizedResponseFormat = normalizeResponseFormat({
+    responseFormat,
+    response_format,
+    outputSchema,
+    output_schema,
+  });
+
+  const payload: Record<string, unknown> = {
+    model: ENV.openaiModel || "gpt-5.5",
+    input: messages.map(normalizeOpenAIInputMessage),
+  };
+
+  if (normalizedResponseFormat?.type === "json_schema") {
+    payload.text = {
+      format: {
+        type: "json_schema",
+        name: normalizedResponseFormat.json_schema.name,
+        schema: normalizedResponseFormat.json_schema.schema,
+        ...(typeof normalizedResponseFormat.json_schema.strict === "boolean"
+          ? { strict: normalizedResponseFormat.json_schema.strict }
+          : {}),
+      },
+    };
+  } else if (normalizedResponseFormat?.type === "json_object") {
+    payload.text = {
+      format: {
+        type: "json_schema",
+        name: "json_object",
+        schema: {
+          type: "object",
+          additionalProperties: true,
+        },
+      },
+    };
+  }
+
+  const response = await fetch(resolveOpenAIResponsesUrl(), {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${ENV.openaiApiKey}`,
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(
+      `OpenAI Responses invoke failed: ${response.status} ${response.statusText} – ${errorText}`
+    );
+  }
+
+  const raw = (await response.json()) as Record<string, unknown>;
+  const outputText = extractResponsesOutputText(raw);
+
+  return {
+    id: String(raw.id ?? ""),
+    created: Number(raw.created_at ?? Date.now()),
+    model: String(raw.model ?? ENV.openaiModel ?? "gpt-5.5"),
+    choices: [
+      {
+        index: 0,
+        message: {
+          role: "assistant",
+          content: outputText,
+        },
+        finish_reason: String(raw.status ?? "completed"),
+      },
+    ],
+    usage: normalizeUsage(raw.usage),
+  };
+}
+
+function normalizeOpenAIInputMessage(message: Message) {
+  return {
+    role: normalizeOpenAIRole(message.role),
+    content: ensureArray(message.content).map(part => normalizeOpenAIContentPart(part)),
+  };
+}
+
+function normalizeOpenAIRole(role: Role): "system" | "user" | "assistant" {
+  if (role === "system") return "system";
+  if (role === "assistant") return "assistant";
+  return "user";
+}
+
+function normalizeOpenAIContentPart(part: MessageContent) {
+  if (typeof part === "string") {
+    return {
+      type: "input_text",
+      text: part,
+    };
+  }
+
+  if (part.type === "text") {
+    return {
+      type: "input_text",
+      text: part.text,
+    };
+  }
+
+  if (part.type === "image_url") {
+    return {
+      type: "input_image",
+      image_url: part.image_url.url,
+      detail: part.image_url.detail,
+    };
+  }
+
+  if (part.type === "file_url") {
+    return {
+      type: "input_text",
+      text: part.file_url.url,
+    };
+  }
+
+  return {
+    type: "input_text",
+    text: JSON.stringify(part),
+  };
+}
+
+function extractResponsesOutputText(raw: Record<string, unknown>) {
+  if (typeof raw.output_text === "string" && raw.output_text.trim()) {
+    return raw.output_text;
+  }
+
+  const output = Array.isArray(raw.output) ? raw.output : [];
+  const texts: string[] = [];
+
+  for (const item of output) {
+    if (!item || typeof item !== "object") continue;
+    const content = Array.isArray((item as { content?: unknown[] }).content)
+      ? (item as { content: unknown[] }).content
+      : [];
+
+    for (const part of content) {
+      if (
+        part &&
+        typeof part === "object" &&
+        typeof (part as { text?: unknown }).text === "string"
+      ) {
+        texts.push((part as { text: string }).text);
+      }
+    }
+  }
+
+  return texts.join("\n").trim();
+}
+
+function normalizeUsage(usage: unknown) {
+  if (!usage || typeof usage !== "object") return undefined;
+  const value = usage as Record<string, unknown>;
+  const inputTokens = Number(value.input_tokens ?? 0);
+  const outputTokens = Number(value.output_tokens ?? 0);
+  const totalTokens = Number(value.total_tokens ?? inputTokens + outputTokens);
+
+  return {
+    prompt_tokens: inputTokens,
+    completion_tokens: outputTokens,
+    total_tokens: totalTokens,
+  };
 }

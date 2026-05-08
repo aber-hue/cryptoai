@@ -3,6 +3,8 @@ import { callDataApi } from "../_core/dataApi";
 import {
   getOnchainFundFlowBySymbol,
   getOnchainHoldersBySymbol,
+  getRecentListingsByExchanges,
+  screenTokensByDailyBullishStreak,
   getTokenDepthTrendBySymbol,
   getTokenDepthViewBySymbol,
   getTokenListingViewBySymbol,
@@ -100,6 +102,124 @@ export async function runAnnouncementSearchTool(
       symbol: symbol ?? null,
     },
   };
+}
+
+export async function runExchangeRecentListingsTool(options: {
+  exchangeSlugs: string[];
+  days?: number;
+  marketType?: "spot" | "perps" | null;
+}): Promise<ChatToolResult | null> {
+  const rawData = await getRecentListingsByExchanges(options);
+  const data = {
+    ...rawData,
+    items: rawData.items.filter(item => matchesListingMarketType(item.title, options.marketType ?? null)),
+  };
+  if (data.items.length === 0) return null;
+
+  const exchangesLabel = options.exchangeSlugs.map(toExchangeLabel).join(" / ");
+  const latest = data.items[0];
+
+  return {
+    toolName: "get_exchange_recent_listings",
+    title: `${exchangesLabel} 最近上币`,
+    source: "exchange_announcements",
+    summary: `最近 ${options.days ?? 60} 天共命中 ${data.total} 条上币公告，最新一条是 ${latest.exchangeName} 的 ${latest.title}`,
+    data: {
+      ...data,
+      days: options.days ?? 60,
+      exchangeSlugs: options.exchangeSlugs,
+      marketType: options.marketType ?? null,
+      fetchedAt: timestamp(),
+    },
+  };
+}
+
+export async function runExchangeListingFilterTool(options: {
+  includeExchanges: string[];
+  excludeExchanges: string[];
+  days: number;
+  marketType?: "spot" | "perps" | null;
+}) {
+  const allExchanges = Array.from(new Set([...options.includeExchanges, ...options.excludeExchanges]));
+  const data = await getRecentListingsByExchanges({
+    exchangeSlugs: allExchanges,
+    days: options.days,
+    limit: 200,
+  });
+
+  if (data.items.length === 0) return null;
+
+  const listingMap = new Map<
+    string,
+    {
+      symbol: string;
+      title: string;
+      exchanges: Set<string>;
+      events: Array<{
+        exchangeSlug: string | null;
+        exchangeName: string;
+        publishedAt: string | null;
+        title: string;
+        url: string | null;
+      }>;
+    }
+  >();
+
+  for (const item of data.items) {
+    if (!matchesListingMarketType(item.title, options.marketType ?? null)) continue;
+    const symbol = extractListingSymbol(item.title);
+    if (!symbol || !item.exchangeSlug) continue;
+    const current = listingMap.get(symbol) ?? {
+      symbol,
+      title: item.title,
+      exchanges: new Set<string>(),
+      events: [],
+    };
+    current.exchanges.add(item.exchangeSlug);
+    current.events.push({
+      exchangeSlug: item.exchangeSlug,
+      exchangeName: item.exchangeName,
+      publishedAt: item.publishedAt,
+      title: item.title,
+      url: item.url,
+    });
+    listingMap.set(symbol, current);
+  }
+
+  const matched = Array.from(listingMap.values()).filter(entry => {
+    const hasAllIncluded = options.includeExchanges.every(exchange => entry.exchanges.has(exchange));
+    const hasAnyExcluded = options.excludeExchanges.some(exchange => entry.exchanges.has(exchange));
+    return hasAllIncluded && !hasAnyExcluded;
+  });
+
+  const includedLabel = options.includeExchanges.map(toExchangeLabel).join(" + ");
+  const excludedLabel = options.excludeExchanges.map(toExchangeLabel).join(" + ");
+
+  return {
+    toolName: "filter_exchange_listings",
+    title: "交易所上币筛选",
+    source: "exchange_announcements",
+    summary:
+      excludedLabel.length > 0
+        ? `最近 ${options.days} 天里，同时上了 ${includedLabel}、但没有上 ${excludedLabel} 的代币共 ${matched.length} 个`
+        : `最近 ${options.days} 天里，同时上了 ${includedLabel} 的代币共 ${matched.length} 个`,
+    data: {
+      days: options.days,
+      marketType: options.marketType ?? null,
+      includeExchanges: options.includeExchanges,
+      excludeExchanges: options.excludeExchanges,
+      matched: matched.map(item => ({
+        symbol: item.symbol,
+        exchanges: Array.from(item.exchanges),
+        events: item.events.sort((left, right) => {
+          const leftTs = left.publishedAt ? new Date(left.publishedAt).getTime() : 0;
+          const rightTs = right.publishedAt ? new Date(right.publishedAt).getTime() : 0;
+          return rightTs - leftTs;
+        }),
+      })),
+      fetchedAt: timestamp(),
+    },
+  } satisfies ChatToolResult;
 }
 
 export async function runDepthViewTool(
@@ -224,6 +344,26 @@ export async function runWebSearchTool(query: string): Promise<ChatToolResult | 
   }
 }
 
+export async function runBullishStreakScreenTool(options?: {
+  streakDays?: number;
+  marketType?: "spot" | "perps";
+  maxTokens?: number;
+}): Promise<ChatToolResult | null> {
+  const data = await screenTokensByDailyBullishStreak(options);
+  if (data.scannedTokens === 0) return null;
+
+  return {
+    toolName: "screen_daily_bullish_streak",
+    title: `连续 ${data.streakDays} 天日线收涨筛选`,
+    source: "listMarketTokens + token_kline_api",
+    summary: `扫描 ${data.scannedTokens} 个已收录代币，命中 ${data.matchedTokens} 个连续 ${data.streakDays} 天日线收涨的代币`,
+    data: {
+      ...data,
+      fetchedAt: timestamp(),
+    },
+  };
+}
+
 function formatNumber(value: number | null | undefined) {
   if (value == null || Number.isNaN(value)) return "N/A";
   if (Math.abs(value) >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(2)}B`;
@@ -271,4 +411,37 @@ function pickString(item: Record<string, unknown>, keys: string[]) {
     if (typeof value === "string" && value.trim()) return value.trim();
   }
   return null;
+}
+
+function toExchangeLabel(slug: string) {
+  const normalized = slug.trim().toLowerCase();
+  if (normalized === "upbit") return "Upbit";
+  if (normalized === "bithumb") return "Bithumb";
+  return normalized;
+}
+
+function extractListingSymbol(title: string) {
+  const symbolInParens = title.match(/\(([A-Z0-9]{2,12})\)/);
+  if (symbolInParens?.[1]) return symbolInParens[1];
+
+  const leadingToken = title.match(/^([A-Za-z][A-Za-z0-9.+-]{1,20})\s/);
+  if (leadingToken?.[1]) return leadingToken[1].toUpperCase();
+
+  return null;
+}
+
+function matchesListingMarketType(title: string, marketType: "spot" | "perps" | null) {
+  if (!marketType) return true;
+
+  const upper = title.toUpperCase();
+  const isPerps = /PERPETUAL|FUTURES|PERPS|CONTRACT/.test(upper);
+  if (marketType === "perps") {
+    return isPerps;
+  }
+
+  if (marketType === "spot") {
+    return !isPerps;
+  }
+
+  return true;
 }

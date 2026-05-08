@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { mockCryptoAiDataSource } from "@/features/crypto-ai/data-source";
 import { trpc } from "@/lib/trpc";
+import { parseUtcDateLike } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { ArrowUpRight, Clock3, RefreshCw, Search, Sparkles } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -30,8 +31,8 @@ function statusTone(status: SignalStatus) {
 
 function formatDateTime(value: string | Date | null | undefined) {
   if (!value) return "—";
-  const date = value instanceof Date ? value : new Date(value);
-  if (Number.isNaN(date.getTime())) return "—";
+  const date = parseUtcDateLike(value);
+  if (!date) return "—";
   return new Intl.DateTimeFormat("zh-CN", {
     month: "2-digit",
     day: "2-digit",

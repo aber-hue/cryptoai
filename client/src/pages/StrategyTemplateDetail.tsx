@@ -7,6 +7,7 @@ import {
   type SignalEventView,
 } from "@/features/crypto-ai/template-lab";
 import { trpc } from "@/lib/trpc";
+import { parseUtcDateLike } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { ArrowLeft, Beaker, Clock3, RefreshCw, Target } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -15,8 +16,8 @@ import { toast } from "sonner";
 
 function formatDateTime(value: string | Date | null | undefined) {
   if (!value) return "—";
-  const date = value instanceof Date ? value : new Date(value);
-  if (Number.isNaN(date.getTime())) return "—";
+  const date = parseUtcDateLike(value);
+  if (!date) return "—";
   return new Intl.DateTimeFormat("zh-CN", {
     month: "2-digit",
     day: "2-digit",

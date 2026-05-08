@@ -12,6 +12,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { trpc } from "@/lib/trpc";
+import { parseUtcDateLike } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { useLocation } from "wouter";
 import {
@@ -77,12 +78,14 @@ function formatPrice(value: number) {
 
 function formatDateTime(value: string | null) {
   if (!value) return "—";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
+  const date = parseUtcDateLike(value);
+  if (!date) return value;
   const year = date.getFullYear();
   const month = `${date.getMonth() + 1}`.padStart(2, "0");
   const day = `${date.getDate()}`.padStart(2, "0");
-  return `${year}/${month}/${day}`;
+  const hours = `${date.getHours()}`.padStart(2, "0");
+  const minutes = `${date.getMinutes()}`.padStart(2, "0");
+  return `${year}/${month}/${day} ${hours}:${minutes}`;
 }
 
 function formatCompactAmount(value: number | null, digits = 2) {
@@ -169,8 +172,8 @@ function formatAnnouncementExchangeName(exchangeSlug: string | null) {
 
 function formatAnnouncementDateTime(value: string | null) {
   if (!value) return "—";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
+  const date = parseUtcDateLike(value);
+  if (!date) return value;
   const year = date.getFullYear();
   const month = `${date.getMonth() + 1}`.padStart(2, "0");
   const day = `${date.getDate()}`.padStart(2, "0");
@@ -181,8 +184,8 @@ function formatAnnouncementDateTime(value: string | null) {
 
 function formatRelativeTime(value: string | null) {
   if (!value) return "—";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "—";
+  const date = parseUtcDateLike(value);
+  if (!date) return "—";
 
   const diffMinutes = Math.max(0, Math.floor((Date.now() - date.getTime()) / 60_000));
   if (diffMinutes < 1) return "刚刚";
@@ -202,8 +205,8 @@ function formatRelativeTime(value: string | null) {
 
 function formatCountdownOrDateTime(value: string | null) {
   if (!value) return "—";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
+  const date = parseUtcDateLike(value);
+  if (!date) return value;
 
   const diffMs = date.getTime() - Date.now();
   if (diffMs > 0) {
@@ -451,7 +454,7 @@ export default function DataManagement() {
         case "symbol":
           return a.symbol.localeCompare(b.symbol) * direction;
         case "listedAt":
-          return (new Date(a.listedAt).getTime() - new Date(b.listedAt).getTime()) * direction;
+          return ((parseUtcDateLike(a.listedAt)?.getTime() ?? 0) - (parseUtcDateLike(b.listedAt)?.getTime() ?? 0)) * direction;
         case "price":
           return (a.price - b.price) * direction;
         case "totalSupply":

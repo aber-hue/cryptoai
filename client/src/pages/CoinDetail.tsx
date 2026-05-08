@@ -6,6 +6,7 @@ import {
   type PositionTimeframe,
 } from "@/features/crypto-ai/market-data";
 import { trpc } from "@/lib/trpc";
+import { parseUtcDateLike, SHANGHAI_TIME_ZONE } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -174,7 +175,6 @@ function AssetLogo({
   );
 }
 
-const SHANGHAI_TIME_ZONE = "Asia/Shanghai";
 const SHANGHAI_KEY_FORMATTER = new Intl.DateTimeFormat("en-CA", {
   timeZone: SHANGHAI_TIME_ZONE,
   year: "numeric",
@@ -227,9 +227,7 @@ function shiftDateKey(value: string, offsetDays: number) {
 }
 
 function parseValidDate(value: string | null | undefined) {
-  if (!value) return null;
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? null : date;
+  return parseUtcDateLike(value);
 }
 
 function formatInShanghai(
@@ -390,14 +388,14 @@ function buildListingTrendSeries(
   }> = sortedKlines;
 
   groups.forEach(group => {
-    const rawTime = group.rawDate ? new Date(group.rawDate).getTime() : Number.NaN;
+    const rawTime = group.rawDate ? (parseUtcDateLike(group.rawDate)?.getTime() ?? Number.NaN) : Number.NaN;
     if (Number.isNaN(rawTime)) return;
 
     let targetIndex = points.findIndex(point => toDateKey(point.rawDate) === toDateKey(group.rawDate));
     if (targetIndex === -1) {
       let minDistance = Number.POSITIVE_INFINITY;
       points.forEach((point, index) => {
-        const distance = Math.abs(new Date(point.rawDate).getTime() - rawTime);
+        const distance = Math.abs((parseUtcDateLike(point.rawDate)?.getTime() ?? Number.NaN) - rawTime);
         if (distance < minDistance) {
           minDistance = distance;
           targetIndex = index;
@@ -773,6 +771,7 @@ export default function CoinDetail() {
   const [activeTab, setActiveTab] = useState<
     "listing" | "depth" | "unlock" | "onchain" | "holders" | "funding" | "social"
   >(initialActiveTab);
+  const [socialSort, setSocialSort] = useState<"latest" | "views">("latest");
   const [listingRange, setListingRange] = useState<"1m" | "3m" | "6m" | "1y">("3m");
   const [positionTimeframe, setPositionTimeframe] = useState<PositionTimeframe>("4h");
   const [listingView, setListingView] = useState<"timeline" | "list">("list");
@@ -1029,8 +1028,8 @@ export default function CoinDetail() {
     });
 
     return Array.from(grouped.values()).sort((left, right) => {
-      const leftTime = left.rawDate ? new Date(left.rawDate).getTime() : 0;
-      const rightTime = right.rawDate ? new Date(right.rawDate).getTime() : 0;
+      const leftTime = left.rawDate ? (parseUtcDateLike(left.rawDate)?.getTime() ?? 0) : 0;
+      const rightTime = right.rawDate ? (parseUtcDateLike(right.rawDate)?.getTime() ?? 0) : 0;
       return leftTime - rightTime;
     });
   }, [listingTimelineItems, token.price]);
@@ -1173,6 +1172,21 @@ export default function CoinDetail() {
   const teamMembers = tokenFundingQuery.data?.teamMembers ?? [];
   const socialSummary = tokenSocialHeatQuery.data?.summary;
   const socialTweets = tokenSocialHeatQuery.data?.tweets ?? [];
+  const sortedSocialTweets = useMemo(() => {
+    const items = [...socialTweets];
+    if (socialSort === "views") {
+      return items.sort((left, right) => {
+        const viewDiff = (right.viewCount ?? -1) - (left.viewCount ?? -1);
+        if (viewDiff !== 0) return viewDiff;
+        return (parseValidDate(right.publishedAt)?.getTime() ?? 0) - (parseValidDate(left.publishedAt)?.getTime() ?? 0);
+      });
+    }
+
+    return items.sort(
+      (left, right) =>
+        (parseValidDate(right.publishedAt)?.getTime() ?? 0) - (parseValidDate(left.publishedAt)?.getTime() ?? 0)
+    );
+  }, [socialSort, socialTweets]);
 
   const detailTabs: Array<{ id: "listing" | "depth" | "unlock" | "onchain" | "holders" | "funding" | "social"; label: string; icon: LucideIcon }> = [
     { id: "listing", label: "上市策略", icon: Clock3 },
@@ -2548,6 +2562,29 @@ export default function CoinDetail() {
               </Card>
 
               <div className="space-y-4">
+                <div className="flex items-center justify-end">
+                  <div className="inline-flex rounded-full border border-[#d8e0eb] bg-white p-1 shadow-[0_8px_20px_rgba(15,23,42,0.04)]">
+                    {([
+                      ["latest", "最新"],
+                      ["views", "按浏览量"],
+                    ] as const).map(([value, label]) => (
+                      <button
+                        key={value}
+                        type="button"
+                        onClick={() => setSocialSort(value)}
+                        className={cn(
+                          "rounded-full px-4 py-2 text-sm font-medium transition",
+                          socialSort === value
+                            ? "bg-[#111827] text-white shadow-[0_8px_16px_rgba(17,24,39,0.16)]"
+                            : "text-[#667085] hover:text-[#111827]"
+                        )}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
                 {tokenSocialHeatQuery.isLoading ? (
                   <div className="rounded-[24px] border border-white/70 bg-white/78 px-6 py-10 text-center text-sm text-muted-foreground shadow-[0_16px_40px_rgba(83,102,138,0.08)]">
                     正在加载 X / KOL 推文数据...
@@ -2560,7 +2597,7 @@ export default function CoinDetail() {
                   </div>
                 ) : null}
 
-                {socialTweets.map(tweet => (
+                {sortedSocialTweets.map(tweet => (
                   <Card
                     key={tweet.id}
                     className="rounded-[24px] border border-white/70 bg-white/78 shadow-[0_16px_40px_rgba(83,102,138,0.08)]"

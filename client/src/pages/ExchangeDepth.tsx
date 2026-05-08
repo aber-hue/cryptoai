@@ -1,4 +1,5 @@
 import { Card, CardContent } from "@/components/ui/card";
+import { parseUtcDateLike, SHANGHAI_TIME_ZONE } from "@/lib/time";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import {
@@ -15,8 +16,6 @@ import { ArrowLeft } from "lucide-react";
 import { useState } from "react";
 import { Link, useParams } from "wouter";
 
-const SHANGHAI_TIME_ZONE = "Asia/Shanghai";
-
 function formatDepth(value: number | null) {
   if (value == null || Number.isNaN(value)) return "—";
   if (value >= 1_000_000) return `$${(value / 1_000_000).toFixed(2)}M`;
@@ -25,8 +24,8 @@ function formatDepth(value: number | null) {
 }
 
 function formatDateLabel(value: string) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
+  const date = parseUtcDateLike(value);
+  if (!date) return value;
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: SHANGHAI_TIME_ZONE,
     month: "2-digit",
@@ -38,8 +37,8 @@ function formatDateLabel(value: string) {
 }
 
 function formatDepthAxisLabel(value: string, timeframe: "1h" | "4h" | "12h" | "1d") {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
+  const date = parseUtcDateLike(value);
+  if (!date) return value;
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: SHANGHAI_TIME_ZONE,
     month: "2-digit",
@@ -61,8 +60,8 @@ function formatDepthAxisLabel(value: string, timeframe: "1h" | "4h" | "12h" | "1
 }
 
 function formatTableDate(value: string, timeframe: "1h" | "4h" | "12h" | "1d") {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
+  const date = parseUtcDateLike(value);
+  if (!date) return value;
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: SHANGHAI_TIME_ZONE,
     year: "numeric",
@@ -113,7 +112,9 @@ export default function ExchangeDepth() {
     spread: item.spread,
   }));
   const latestFirstDepthRows = [...depthTrendData].sort(
-    (left, right) => new Date(right.rawDate).getTime() - new Date(left.rawDate).getTime()
+    (left, right) =>
+      (parseUtcDateLike(right.rawDate)?.getTime() ?? 0) -
+      (parseUtcDateLike(left.rawDate)?.getTime() ?? 0)
   );
 
   const backHref = coinId

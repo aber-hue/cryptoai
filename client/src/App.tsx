@@ -11,6 +11,7 @@ import ExchangeStrategy from "./pages/ExchangeStrategy";
 import DataAnalysis from "./pages/DataAnalysis";
 import StrategyTemplateDetail from "./pages/StrategyTemplateDetail";
 import OnChainBoard from "./pages/OnChainBoard";
+import CexFlowDetail from "./pages/CexFlowDetail";
 import DataManagement from "./pages/DataManagement";
 import ComponentShowcase from "./pages/ComponentShowcase";
 import Navbar from "./components/Navbar";
@@ -32,6 +33,7 @@ function Router() {
             <Route path={"/analysis"} component={DataAnalysis} />
             <Route path={"/analysis/:strategyId"} component={StrategyTemplateDetail} />
             <Route path={"/onchain"} component={OnChainBoard} />
+            <Route path={"/onchain/cex-flow/:symbol"} component={CexFlowDetail} />
             <Route path={"/chat"} component={ComponentShowcase} />
             <Route path={"/404"} component={NotFound} />
             <Route component={NotFound} />

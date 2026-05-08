@@ -2,6 +2,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import type { PositionTimeframe } from "@/features/crypto-ai/market-data";
 import { trpc } from "@/lib/trpc";
+import { parseUtcDateLike, SHANGHAI_TIME_ZONE } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { useState } from "react";
 import { ArrowLeft } from "lucide-react";
@@ -27,12 +28,8 @@ function formatFundingRate(value: number | null) {
   return `${value.toFixed(3)}%`;
 }
 
-const SHANGHAI_TIME_ZONE = "Asia/Shanghai";
-
 function parseValidDate(value: string | null | undefined) {
-  if (!value) return null;
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? null : date;
+  return parseUtcDateLike(value);
 }
 
 function formatInShanghai(
@@ -115,7 +112,9 @@ export default function ExchangeStrategy() {
   const detail = exchangeHoldersQuery.data;
   const series = detail?.series ?? [];
   const latestFirstRows = [...series].sort(
-    (left, right) => new Date(right.snapshotDate).getTime() - new Date(left.snapshotDate).getTime()
+    (left, right) =>
+      (parseValidDate(right.snapshotDate)?.getTime() ?? 0) -
+      (parseValidDate(left.snapshotDate)?.getTime() ?? 0)
   );
   const chartData = series.map(point => ({
     label: formatSeriesLabel(point.snapshotDate),

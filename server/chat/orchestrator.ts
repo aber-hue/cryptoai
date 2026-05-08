@@ -1,9 +1,14 @@
 import { z } from "zod";
 import { invokeLLM } from "../_core/llm";
+import { extractExchanges, extractRecentDays, parseIntent } from "./intent";
+import { runSqlFallbackTool, shouldAttemptSqlFallback } from "./sql";
 import {
   runAnnouncementSearchTool,
+  runBullishStreakScreenTool,
   runDepthTrendTool,
   runDepthViewTool,
+  runExchangeListingFilterTool,
+  runExchangeRecentListingsTool,
   runListingTool,
   runOnchainFundFlowTool,
   runOnchainHoldersTool,
@@ -17,6 +22,7 @@ import type {
   ChatCitation,
   ChatExecutionStep,
   ChatInputMessage,
+  ChatIntent,
   ChatSignalContext,
   ChatTaskType,
   ChatToolResult,
@@ -24,6 +30,7 @@ import type {
 
 const taskTypeSchema = z.enum([
   "general",
+  "exchange_listing_overview",
   "token_overview",
   "liquidity_analysis",
   "unlock_analysis",
@@ -64,8 +71,17 @@ export async function orchestrateChatMessage(
   }
 ): Promise<ChatAnswerPayload> {
   const latestUserMessage = [...messages].reverse().find(message => message.role === "user")?.content?.trim() ?? "";
-  const detectedSymbol = options?.signalContext?.symbol ?? extractSymbol(messages);
   const taskType = classifyTask(latestUserMessage, options);
+  const intent = parseIntent({
+    messages,
+    taskType,
+    signalContext: options?.signalContext,
+  });
+  const detectedExchanges = intent.kind === "exchange_listing_filter" ? intent.includeExchanges : extractExchanges(messages);
+  const detectedSymbol =
+    intent.kind === "exchange_listing_filter" || detectedExchanges.length > 0
+      ? null
+      : options?.signalContext?.symbol ?? extractSymbol(messages);
   const executionSteps = buildExecutionSteps(taskType, detectedSymbol);
 
   if (!latestUserMessage) {
@@ -73,6 +89,7 @@ export async function orchestrateChatMessage(
       message: "我还没收到具体问题。你可以直接说例如“分析一下 BTC 最近两周的深度和解锁压力”。",
       keyFindings: [],
       suggestedNextActions: ["给我一个 token symbol，比如 BTC、ETH、SOL"],
+      intent: null,
       taskType: "general",
       detectedSymbol: null,
       citations: [],
@@ -81,6 +98,134 @@ export async function orchestrateChatMessage(
       usedTools: [],
       usedFallback: true,
     };
+  }
+
+  if (intent.kind === "exchange_listing_filter") {
+    return await handleExchangeListingFilterIntent({
+      intent,
+      executionSteps,
+    });
+  }
+
+  if (taskType === "exchange_listing_overview" && detectedExchanges.length > 0) {
+    const stepMap = new Map(executionSteps.map(step => [step.id, { ...step }]));
+    markStep(stepMap, "parse-intent", "completed", `任务类型: ${taskType}`);
+    markStep(stepMap, "resolve-symbol", "completed", `交易所: ${detectedExchanges.join(", ")}`);
+    markStep(stepMap, "load-data", "running");
+
+    const days = extractRecentDays(latestUserMessage);
+    const toolResults = (await Promise.all([
+      runExchangeRecentListingsTool({
+        exchangeSlugs: detectedExchanges,
+        days,
+      }),
+      runAnnouncementSearchTool(latestUserMessage),
+    ])).filter((item): item is ChatToolResult => Boolean(item));
+
+    const citations = toolResults.map(toCitation);
+    const artifacts = buildArtifacts(null, taskType, toolResults);
+    const llmAnswer = await composeAnswer({
+      latestUserMessage,
+      taskType,
+      symbol: null,
+      toolResults,
+      signalContext: options?.signalContext,
+    });
+
+    markStep(
+      stepMap,
+      "load-data",
+      toolResults.length > 0 ? "completed" : "failed",
+      toolResults.length > 0 ? `已加载 ${toolResults.length} 个交易所上币数据块` : "没有取到最近上币数据"
+    );
+    markStep(stepMap, "compose-answer", "completed", llmAnswer.usedFallback ? "使用规则化降级回答" : "已生成结构化分析回答");
+    markStep(stepMap, "produce-artifact", artifacts.length > 0 ? "completed" : "pending");
+
+    return {
+      message: llmAnswer.message,
+      keyFindings: llmAnswer.keyFindings,
+      suggestedNextActions: llmAnswer.suggestedNextActions,
+      intent,
+      taskType,
+      detectedSymbol: null,
+      citations,
+      executionSteps: Array.from(stepMap.values()),
+      artifacts,
+      usedTools: toolResults.map(tool => tool.toolName),
+      usedFallback: llmAnswer.usedFallback,
+    };
+  }
+
+  if (!detectedSymbol && isBullishStreakScreenRequest(latestUserMessage)) {
+    const stepMap = new Map(executionSteps.map(step => [step.id, { ...step }]));
+    markStep(stepMap, "parse-intent", "completed", `任务类型: ${taskType}`);
+    markStep(stepMap, "resolve-symbol", "completed", "无需单币 symbol，转批量 K 线筛选");
+    markStep(stepMap, "load-data", "running", "遍历已收录代币并拉取日线 K 线");
+
+    const toolResult = await runBullishStreakScreenTool({
+      streakDays: extractStreakDays(latestUserMessage),
+      marketType: /合约|perp|perps|永续/i.test(latestUserMessage) ? "perps" : "spot",
+    });
+
+    if (!toolResult) {
+      markStep(stepMap, "load-data", "failed", "没有拿到可用的批量 K 线筛选结果");
+      markStep(stepMap, "compose-answer", "completed", "已返回空结果说明");
+      markStep(stepMap, "produce-artifact", "failed", "本次没有生成文件型产物");
+
+      return {
+        message: "我尝试批量筛选连续收涨代币了，但这次没有拿到可用的 K 线结果。",
+        keyFindings: ["本次批量 K 线筛选没有返回结果。"],
+        suggestedNextActions: ["可以缩小范围，比如指定某个交易所或先查最近上币代币。"],
+        intent,
+        taskType,
+        detectedSymbol: null,
+        citations: [],
+        executionSteps: Array.from(stepMap.values()),
+        artifacts: [],
+        usedTools: [],
+        usedFallback: true,
+      };
+    }
+
+    const citations = [toCitation(toolResult)];
+    const llmAnswer = await composeAnswer({
+      latestUserMessage,
+      taskType,
+      symbol: null,
+      toolResults: [toolResult],
+      signalContext: options?.signalContext,
+    });
+
+    markStep(stepMap, "load-data", "completed", toolResult.summary);
+    markStep(stepMap, "compose-answer", "completed", llmAnswer.usedFallback ? "使用规则化降级回答" : "已基于批量 K 线筛选生成回答");
+    markStep(stepMap, "produce-artifact", "pending", "本次未生成文件型产物");
+
+    return {
+      message: llmAnswer.message,
+      keyFindings: llmAnswer.keyFindings,
+      suggestedNextActions: llmAnswer.suggestedNextActions,
+      intent,
+      taskType,
+      detectedSymbol: null,
+      citations,
+      executionSteps: Array.from(stepMap.values()),
+      artifacts: [],
+      usedTools: [toolResult.toolName],
+      usedFallback: llmAnswer.usedFallback,
+    };
+  }
+
+  if (!detectedSymbol && intent.kind === "general") {
+    const sqlFallbackPayload = await maybeHandleSqlFallback({
+      latestUserMessage,
+      taskType,
+      executionSteps,
+      signalContext: options?.signalContext,
+    });
+
+    if (sqlFallbackPayload) {
+      return sqlFallbackPayload;
+    }
   }
 
   if (!detectedSymbol && taskType !== "general") {
@@ -118,6 +263,7 @@ export async function orchestrateChatMessage(
         message: llmAnswer.message,
         keyFindings: llmAnswer.keyFindings,
         suggestedNextActions: llmAnswer.suggestedNextActions,
+        intent,
         taskType,
         detectedSymbol: null,
         citations,
@@ -132,6 +278,7 @@ export async function orchestrateChatMessage(
       message: "这条任务我已经识别成数据分析类请求了，但还缺少明确的代币 symbol。你可以直接说“分析 BTC”或“看一下 ETH 的链上 holder”。",
       keyFindings: ["当前缺少可定位的数据实体，暂时没有调用内部数据源。"],
       suggestedNextActions: ["补充一个 symbol，比如 BTC、ETH、SOL、ENA"],
+      intent,
       taskType,
       detectedSymbol: null,
       citations: [],
@@ -190,6 +337,7 @@ export async function orchestrateChatMessage(
     message: llmAnswer.message,
     keyFindings: llmAnswer.keyFindings,
     suggestedNextActions: llmAnswer.suggestedNextActions,
+    intent,
     taskType,
     detectedSymbol: symbol,
     citations,
@@ -197,6 +345,179 @@ export async function orchestrateChatMessage(
     artifacts,
     usedTools,
     usedFallback: llmAnswer.usedFallback,
+  };
+}
+
+async function maybeHandleSqlFallback(input: {
+  latestUserMessage: string;
+  taskType: ChatTaskType;
+  executionSteps: ChatExecutionStep[];
+  signalContext?: ChatSignalContext;
+}): Promise<ChatAnswerPayload | null> {
+  if (!shouldAttemptSqlFallback(input.latestUserMessage, input.taskType)) {
+    return null;
+  }
+
+  const stepMap = new Map(input.executionSteps.map(step => [step.id, { ...step }]));
+  markStep(stepMap, "parse-intent", "completed", `任务类型: ${input.taskType}`);
+  markStep(stepMap, "resolve-symbol", "completed", "未命中单币 symbol，转 SQL 研究模式");
+  markStep(stepMap, "load-data", "running", "尝试生成只读 SQL");
+
+  try {
+    const result = await runSqlFallbackTool({
+      latestUserMessage: input.latestUserMessage,
+      taskType: input.taskType,
+    });
+
+    if (!result.ok) {
+      markStep(stepMap, "load-data", "failed", result.reason);
+      markStep(stepMap, "compose-answer", "completed", "已解释当前能力缺口");
+      markStep(stepMap, "produce-artifact", "failed", "本次没有生成文件型产物");
+
+      return {
+        message: [
+          "我已经尝试把这条问题转成只读 SQL 查询了，但当前这套真实数据还接不住这个问题。",
+          "",
+          `原因：${result.reason}`,
+          result.missingCapability ? `缺口：${result.missingCapability}` : null,
+          result.assumptions.length > 0 ? `假设：${result.assumptions.join("；")}` : null,
+        ]
+          .filter(Boolean)
+          .join("\n"),
+        keyFindings: [
+          "这次不是单纯没理解，而是已经进入 SQL 回退后仍然发现当前白名单数据不足",
+          result.missingCapability ? `缺少的数据能力是 ${result.missingCapability}` : "当前 SQL 回退没有拿到可执行计划",
+        ],
+        suggestedNextActions: [
+          "补一张能支持这类筛选的结构化表或视图",
+          "或者把你关心的筛选逻辑告诉我，我来补一个固定 executor",
+        ],
+        intent: {
+          kind: "general",
+          taskType: input.taskType,
+          originalQuery: input.latestUserMessage,
+        },
+        taskType: input.taskType,
+        detectedSymbol: null,
+        citations: [],
+        executionSteps: Array.from(stepMap.values()),
+        artifacts: [],
+        usedTools: [],
+        usedFallback: true,
+      };
+    }
+
+    const citations = [toCitation(result.toolResult)];
+    const llmAnswer = await composeAnswer({
+      latestUserMessage: input.latestUserMessage,
+      taskType: input.taskType,
+      symbol: null,
+      toolResults: [result.toolResult],
+      signalContext: input.signalContext,
+    });
+
+    markStep(stepMap, "load-data", "completed", "已执行只读 SQL 查询");
+    markStep(stepMap, "compose-answer", "completed", llmAnswer.usedFallback ? "使用规则化降级回答" : "已基于 SQL 结果生成回答");
+    markStep(stepMap, "produce-artifact", "pending", "SQL 回退默认不生成文件产物");
+
+    return {
+      message: llmAnswer.message,
+      keyFindings: llmAnswer.keyFindings,
+      suggestedNextActions: llmAnswer.suggestedNextActions,
+      intent: {
+        kind: "general",
+        taskType: input.taskType,
+        originalQuery: input.latestUserMessage,
+      },
+      taskType: input.taskType,
+      detectedSymbol: null,
+      citations,
+      executionSteps: Array.from(stepMap.values()),
+      artifacts: [],
+      usedTools: [result.toolResult.toolName],
+      usedFallback: llmAnswer.usedFallback,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "SQL fallback failed";
+    markStep(stepMap, "load-data", "failed", message);
+    markStep(stepMap, "compose-answer", "completed", "已返回错误说明");
+    markStep(stepMap, "produce-artifact", "failed", "本次没有生成文件型产物");
+
+    return {
+      message: `我尝试转成只读 SQL 查询了，但执行阶段失败：${message}`,
+      keyFindings: ["SQL 回退已经触发，但执行失败。"],
+      suggestedNextActions: ["我可以继续收紧 SQL 白名单或改成固定执行器"],
+      intent: {
+        kind: "general",
+        taskType: input.taskType,
+        originalQuery: input.latestUserMessage,
+      },
+      taskType: input.taskType,
+      detectedSymbol: null,
+      citations: [],
+      executionSteps: Array.from(stepMap.values()),
+      artifacts: [],
+      usedTools: [],
+      usedFallback: true,
+    };
+  }
+}
+
+async function handleExchangeListingFilterIntent(input: {
+  intent: Extract<ChatIntent, { kind: "exchange_listing_filter" }>;
+  executionSteps: ChatExecutionStep[];
+}): Promise<ChatAnswerPayload> {
+  const { intent, executionSteps } = input;
+  const stepMap = new Map(executionSteps.map(step => [step.id, { ...step }]));
+  markStep(stepMap, "parse-intent", "completed", `任务类型: ${intent.taskType}`);
+  markStep(
+    stepMap,
+    "resolve-symbol",
+    "completed",
+    `包含: ${intent.includeExchanges.join(", ")} | 排除: ${intent.excludeExchanges.join(", ") || "无"} | 时间: ${intent.days}天`
+  );
+  markStep(stepMap, "load-data", "running");
+
+    const toolResults = (await Promise.all([
+      runExchangeListingFilterTool({
+        includeExchanges: intent.includeExchanges,
+        excludeExchanges: intent.excludeExchanges,
+        days: intent.days,
+        marketType: intent.marketType,
+      }),
+      runExchangeRecentListingsTool({
+        exchangeSlugs: intent.includeExchanges,
+        days: intent.days,
+        marketType: intent.marketType,
+      }),
+    ])).filter((item): item is ChatToolResult => Boolean(item));
+
+  markStep(
+    stepMap,
+    "load-data",
+    toolResults.length > 0 ? "completed" : "failed",
+    toolResults.length > 0 ? `已加载 ${toolResults.length} 个筛选数据块` : "没有取到筛选数据"
+  );
+  markStep(stepMap, "compose-answer", "completed", "已生成结构化筛选结果");
+
+  const citations = toolResults.map(toCitation);
+  const artifacts = buildArtifacts(null, intent.taskType, toolResults);
+  markStep(stepMap, "produce-artifact", artifacts.length > 0 ? "completed" : "pending");
+
+  const answer = buildExchangeListingFilterAnswer(intent, toolResults);
+
+  return {
+    message: answer.message,
+    keyFindings: answer.keyFindings,
+    suggestedNextActions: answer.suggestedNextActions,
+    intent,
+    taskType: intent.taskType,
+    detectedSymbol: null,
+    citations,
+    executionSteps: Array.from(stepMap.values()),
+    artifacts,
+    usedTools: toolResults.map(tool => tool.toolName),
+    usedFallback: false,
   };
 }
 
@@ -275,6 +596,7 @@ function classifyTask(
   const normalized = message.toLowerCase();
   if (options?.workspace === "signal" || options?.signalContext) return "signal_analysis";
   if (/\b(signal|setup|trigger|watch|watchlist)\b|信号|触发|观察位|埋伏|预警|规则/.test(normalized)) return "signal_analysis";
+  if (/(upbit|bithumb|binance|okx|bybit|coinbase|kraken).*(上线|上币|listing|list)|最近.*上了.*(upbit|bithumb|binance|okx|bybit|coinbase|kraken)/.test(normalized)) return "exchange_listing_overview";
   if (/最新|新闻|news|headline|research|最近公告|搜一下|search/.test(normalized)) return "news_research";
   if (/全维度|全面|综合|体检|full check|overview|完整看一下/.test(normalized)) return "full_checkup";
   if (/解锁|unlock/.test(normalized)) return "unlock_analysis";
@@ -284,6 +606,24 @@ function classifyTask(
   if (/深度|流动性|买盘|卖盘|book|order book|depth/.test(normalized)) return "liquidity_analysis";
   if (/价格|市值|fdv|token|代币|项目|分析/.test(normalized)) return "token_overview";
   return "general";
+}
+
+function isBullishStreakScreenRequest(message: string) {
+  return /连续\s*\d+\s*天.*日线.*收涨|连续[一二三四五六七八九十]+\s*天.*日线.*收涨|日线收涨的代币|帮我找出.*收涨的代币/i.test(
+    message
+  );
+}
+
+function extractStreakDays(message: string) {
+  const digitMatch = message.match(/连续\s*(\d+)\s*天/);
+  if (digitMatch) {
+    return Number(digitMatch[1]);
+  }
+
+  if (/连续三天/.test(message)) return 3;
+  if (/连续四天/.test(message)) return 4;
+  if (/连续五天/.test(message)) return 5;
+  return 4;
 }
 
 function extractSymbol(messages: ChatInputMessage[]) {
@@ -301,6 +641,13 @@ function extractSymbol(messages: ChatInputMessage[]) {
     "DEPTH",
     "HOLDER",
     "FLOW",
+    "UPBIT",
+    "BITHUMB",
+    "BINANCE",
+    "BYBIT",
+    "OKX",
+    "KRAKEN",
+    "COINBASE",
   ]);
 
   for (const message of [...messages].reverse()) {
@@ -351,19 +698,95 @@ function toCitation(tool: ChatToolResult): ChatCitation {
   };
 }
 
+function buildExchangeListingFilterAnswer(
+  intent: Extract<ChatIntent, { kind: "exchange_listing_filter" }>,
+  toolResults: ChatToolResult[]
+) {
+  const filterResult = toolResults.find(tool => tool.toolName === "filter_exchange_listings");
+  const payload = (filterResult?.data ?? null) as
+    | {
+        matched?: Array<{
+          symbol: string;
+          exchanges: string[];
+          events: Array<{
+            exchangeSlug: string | null;
+            exchangeName: string;
+            publishedAt: string | null;
+            title: string;
+            url: string | null;
+          }>;
+        }>;
+      }
+    | null;
+
+  const matched = payload?.matched ?? [];
+  const includeLabel = intent.includeExchanges.map(formatExchangeLabel).join(" 和 ");
+  const excludeLabel = intent.excludeExchanges.map(formatExchangeLabel).join(" 和 ");
+  const intro =
+    excludeLabel.length > 0
+      ? `最近 ${intent.days} 天里，同时上了 ${includeLabel}，但没有上 ${excludeLabel} 的代币共有 ${matched.length} 个。`
+      : `最近 ${intent.days} 天里，同时上了 ${includeLabel} 的代币共有 ${matched.length} 个。`;
+
+  return {
+    message: [
+      intro,
+      "",
+      matched.length > 0 ? "名单：" : "这次没有匹配到符合条件的代币。",
+      ...matched.slice(0, 20).map(item => {
+        const eventText = item.events
+          .slice(0, 3)
+          .map(event => `${formatExchangeLabel(event.exchangeSlug ?? event.exchangeName)} ${formatDate(event.publishedAt)}`)
+          .join(" | ");
+        return `- ${item.symbol}${eventText ? `: ${eventText}` : ""}`;
+      }),
+    ].join("\n"),
+    keyFindings: [
+      `${includeLabel} 作为包含条件，排除 ${excludeLabel || "无"} 后剩余 ${matched.length} 个代币`,
+      matched.length > 0 ? `前几个结果是 ${matched.slice(0, 5).map(item => item.symbol).join(", ")}` : "当前筛选结果为空",
+    ],
+    suggestedNextActions: [
+      "继续补充交易对和市场类型筛选",
+      "继续拆成只上其中一家、或同时上多家的交集查询",
+    ],
+  };
+}
+
+function formatExchangeLabel(value: string) {
+  const normalized = value.toLowerCase();
+  if (normalized === "upbit") return "Upbit";
+  if (normalized === "bithumb") return "Bithumb";
+  if (normalized === "coinbase") return "Coinbase";
+  if (normalized === "bybit") return "Bybit";
+  if (normalized === "binance") return "Binance";
+  if (normalized === "okx") return "OKX";
+  if (normalized === "kraken") return "Kraken";
+  return value;
+}
+
+function formatDate(value: string | null) {
+  if (!value) return "未知时间";
+  return value.slice(0, 10);
+}
+
 function buildArtifacts(
   symbol: string | null,
   taskType: ChatTaskType,
   toolResults: ChatToolResult[]
 ): ChatArtifact[] {
   if (!symbol || toolResults.length === 0 || taskType === "general") {
+    if (taskType !== "exchange_listing_overview") {
+      return [];
+    }
+  }
+
+  if (!symbol && taskType !== "exchange_listing_overview") {
     return [];
   }
 
   return [
     {
-      id: `artifact-${symbol.toLowerCase()}-${taskType}`,
-      name: `${symbol}_${taskType}_brief.md`,
+      id: `artifact-${(symbol ?? "market").toLowerCase()}-${taskType}`,
+      name: `${symbol ?? "market"}_${taskType}_brief.md`,
       type: "report",
       createdAt: new Date().toISOString(),
       status: "ready",
@@ -508,6 +931,8 @@ function suggestNextActions(taskType: ChatTaskType, symbol: string | null) {
       return [`继续分析 ${resolvedSymbol} 上线后 14 天深度变化`, `补一版 ${resolvedSymbol} 活动发放可能带来的抛压判断`];
     case "news_research":
       return [`继续追踪 ${resolvedSymbol} 最近 7 天公告和新闻主题`, `把 ${resolvedSymbol} 公告事件和深度变化放在一起看`];
+    case "exchange_listing_overview":
+      return ["继续按交易所拆分最近上币名单", "继续补充这些新币的上线时间、交易对和是否为 KRW/USDT 市场"];
     case "liquidity_analysis":
       return [`继续看 ${resolvedSymbol} 各交易所深度差异`, `结合 ${resolvedSymbol} 解锁节奏判断流动性承接能力`];
     case "onchain_holders":
@@ -528,6 +953,8 @@ function taskLabel(taskType: ChatTaskType) {
   switch (taskType) {
     case "token_overview":
       return "概览";
+    case "exchange_listing_overview":
+      return "交易所上币概览";
     case "liquidity_analysis":
       return "流动性分析";
     case "unlock_analysis":

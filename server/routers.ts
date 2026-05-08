@@ -11,9 +11,12 @@ import {
   getExchangeDepthViewBySymbol,
   getExchangeHoldersViewBySymbol,
   getOnchainFundFlowBySymbol,
+  getOnchainCexFlowTransferDetailsBySymbol,
+  getOnchainCexFlowsBySymbol,
   getOnchainHoldersBySymbol,
   getOnchainLargeTransfersBySymbol,
   getOnchainOverviewBySymbol,
+  getOnchainPoolAddsBySymbol,
   getTokenFundingViewBySymbol,
   getTokenSocialHeatViewBySymbol,
   getTokenKlineBySymbol,
@@ -169,6 +172,7 @@ export const appRouter = router({
             executionSteps: payload.executionSteps,
             detectedSymbol: payload.detectedSymbol,
             taskType: payload.taskType,
+            intent: payload.intent ?? null,
             usedTools: payload.usedTools,
             suggestedNextActions: payload.suggestedNextActions,
             workspace: input.workspace ?? "free_chat",
@@ -254,6 +258,7 @@ export const appRouter = router({
           })),
           citations: Array.isArray(state?.citations) ? state.citations : [],
           executionSteps: Array.isArray(state?.executionSteps) ? state.executionSteps : [],
+          intent: state?.intent ?? null,
           usedTools: Array.isArray(state?.usedTools) ? state.usedTools : [],
           suggestedNextActions: Array.isArray(state?.suggestedNextActions) ? state.suggestedNextActions : [],
           artifacts: result.artifacts.map(artifact => ({
@@ -525,6 +530,40 @@ export const appRouter = router({
           pageSize: input.pageSize,
           search: input.search,
           sortOrder: input.sortOrder,
+        });
+      }),
+    getCexFlows: publicProcedure
+      .input(
+        z.object({
+          symbol: z.string().trim().min(1),
+        })
+      )
+      .query(async ({ input }) => {
+        return await getOnchainCexFlowsBySymbol(input.symbol);
+      }),
+    getPoolAdds: publicProcedure
+      .input(
+        z.object({
+          symbol: z.string().trim().min(1),
+        })
+      )
+      .query(async ({ input }) => {
+        return await getOnchainPoolAddsBySymbol(input.symbol);
+      }),
+    getCexFlowTransfers: publicProcedure
+      .input(
+        z.object({
+          symbol: z.string().trim().min(1),
+          date: z.string().trim().min(1),
+          exchange: z.string().trim().optional(),
+          direction: z.enum(["all", "inflow", "outflow"]),
+        })
+      )
+      .query(async ({ input }) => {
+        return await getOnchainCexFlowTransferDetailsBySymbol(input.symbol, {
+          date: input.date,
+          exchange: input.exchange,
+          direction: input.direction,
         });
       }),
   }),

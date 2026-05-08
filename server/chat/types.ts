@@ -1,5 +1,6 @@
 export type ChatTaskType =
   | "general"
+  | "exchange_listing_overview"
   | "token_overview"
   | "liquidity_analysis"
   | "unlock_analysis"
@@ -36,6 +37,26 @@ export type ChatSignalContext = {
     source: string;
   }>;
 };
+
+export type ExchangeListingFilterIntent = {
+  kind: "exchange_listing_filter";
+  taskType: "exchange_listing_overview";
+  days: number;
+  includeExchanges: string[];
+  excludeExchanges: string[];
+  requireAllIncluded: boolean;
+  requireAllExcluded: boolean;
+  marketType: "spot" | "perps" | null;
+  originalQuery: string;
+};
+
+export type GeneralIntent = {
+  kind: "general";
+  taskType: ChatTaskType;
+  originalQuery: string;
+};
+
+export type ChatIntent = ExchangeListingFilterIntent | GeneralIntent;
 
 export type ChatExecutionStep = {
   id: string;
@@ -74,6 +95,7 @@ export type ChatAnswerPayload = {
   message: string;
   keyFindings: string[];
   suggestedNextActions: string[];
+  intent?: ChatIntent | null;
   taskType: ChatTaskType;
   detectedSymbol: string | null;
   citations: ChatCitation[];

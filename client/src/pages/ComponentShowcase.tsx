@@ -47,12 +47,15 @@ type WorkspaceTask = {
     status: "pending" | "running" | "completed" | "failed";
     detail?: string;
   }>;
+  intent: Record<string, unknown> | null;
   detectedSymbol: string | null;
   taskType: string;
   usedTools: string[];
 };
 
 const workspace = mockCryptoAiDataSource.getFreeChatWorkspace();
+const TASKS_STORAGE_KEY = "crypto-ai-free-chat-tasks";
+const ACTIVE_TASK_STORAGE_KEY = "crypto-ai-free-chat-active-task-id";
 const introMessage: ChatMessage = {
   role: "assistant",
   content:
@@ -73,15 +76,65 @@ function createTask(title = "新对话"): WorkspaceTask {
     citations: [],
     artifacts: [],
     executionSteps: [],
+    intent: null,
     detectedSymbol: null,
     taskType: "general",
     usedTools: [],
   };
 }
 
+function getDefaultTasks() {
+  return [createTask("新建分析任务")];
+}
+
+function loadPersistedTasks() {
+  if (typeof window === "undefined") {
+    return getDefaultTasks();
+  }
+
+  try {
+    const raw = window.localStorage.getItem(TASKS_STORAGE_KEY);
+    if (!raw) {
+      return getDefaultTasks();
+    }
+
+    const parsed = JSON.parse(raw) as WorkspaceTask[];
+    if (!Array.isArray(parsed) || parsed.length === 0) {
+      return getDefaultTasks();
+    }
+
+    return parsed.map(task => ({
+      ...task,
+      messages: Array.isArray(task.messages) && task.messages.length > 0 ? task.messages : [introMessage],
+      citations: Array.isArray(task.citations) ? task.citations : [],
+      artifacts: Array.isArray(task.artifacts) ? task.artifacts : [],
+      executionSteps: Array.isArray(task.executionSteps) ? task.executionSteps : [],
+      intent: task.intent ?? null,
+      detectedSymbol: task.detectedSymbol ?? null,
+      taskType: task.taskType ?? "general",
+      usedTools: Array.isArray(task.usedTools) ? task.usedTools : [],
+    }));
+  } catch {
+    return getDefaultTasks();
+  }
+}
+
+function loadPersistedActiveTaskId(tasks: WorkspaceTask[]) {
+  if (typeof window === "undefined") {
+    return tasks[0]?.id ?? "";
+  }
+
+  const persisted = window.localStorage.getItem(ACTIVE_TASK_STORAGE_KEY);
+  if (persisted && (tasks.length === 0 || tasks.some(task => task.id === persisted))) {
+    return persisted;
+  }
+
+  return tasks[0]?.id ?? "";
+}
+
 export default function ComponentsShowcase() {
-  const [tasks, setTasks] = useState<WorkspaceTask[]>([createTask("新建分析任务")]);
-  const [activeTaskId, setActiveTaskId] = useState<string>(() => tasks[0]?.id ?? "");
+  const [tasks, setTasks] = useState<WorkspaceTask[]>(() => loadPersistedTasks());
+  const [activeTaskId, setActiveTaskId] = useState<string>(() => loadPersistedActiveTaskId([]));
   const [menuTaskId, setMenuTaskId] = useState<string | null>(null);
   const [hasHydratedRemote, setHasHydratedRemote] = useState(false);
   const utils = trpc.useUtils();
@@ -112,6 +165,24 @@ export default function ComponentsShowcase() {
   );
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(TASKS_STORAGE_KEY, JSON.stringify(tasks));
+  }, [tasks]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!activeTaskId) return;
+    window.localStorage.setItem(ACTIVE_TASK_STORAGE_KEY, activeTaskId);
+  }, [activeTaskId]);
+
+  useEffect(() => {
+    if (tasks.length === 0) return;
+    if (!tasks.some(task => task.id === activeTaskId)) {
+      setActiveTaskId(tasks[0]?.id ?? "");
+    }
+  }, [tasks, activeTaskId]);
+
+  useEffect(() => {
     if (hasHydratedRemote || !conversationListQuery.data || conversationListQuery.data.length === 0) {
       return;
     }
@@ -129,13 +200,22 @@ export default function ComponentsShowcase() {
       citations: [],
       artifacts: [],
       executionSteps: [],
+      intent: null,
       detectedSymbol: item.detectedSymbol ?? null,
       taskType: item.taskType,
       usedTools: [],
     }));
 
-    setTasks(remoteTasks);
-    setActiveTaskId(remoteTasks[0]?.id ?? "");
+    setTasks(prev => {
+      const localOnlyTasks = prev.filter(task => task.id.startsWith("task-"));
+      return [...remoteTasks, ...localOnlyTasks];
+    });
+    setActiveTaskId(currentId => {
+      if (remoteTasks.some(task => task.id === currentId)) {
+        return currentId;
+      }
+      return remoteTasks[0]?.id ?? currentId;
+    });
     setHasHydratedRemote(true);
   }, [conversationListQuery.data, hasHydratedRemote]);
 
@@ -166,6 +246,7 @@ export default function ComponentsShowcase() {
         createdAt: String(artifact.createdAt ?? ""),
       })),
       executionSteps: detail.executionSteps,
+      intent: (detail.intent as Record<string, unknown> | null) ?? null,
       detectedSymbol: detail.detectedSymbol,
       taskType: detail.taskType,
       usedTools: detail.usedTools,
@@ -233,6 +314,7 @@ export default function ComponentsShowcase() {
       citations: result.citations,
       artifacts: result.artifacts,
       executionSteps: result.executionSteps,
+      intent: (result.intent as Record<string, unknown> | null) ?? null,
       detectedSymbol: result.detectedSymbol,
       taskType: result.taskType,
       usedTools: result.usedTools,
@@ -265,10 +347,10 @@ export default function ComponentsShowcase() {
 
   function handleDelete(taskId: string) {
     const remaining = tasks.filter(item => item.id !== taskId);
-    if (remaining.length === 0) return;
-    setTasks(remaining);
+    const nextTasks = remaining.length > 0 ? remaining : getDefaultTasks();
+    setTasks(nextTasks);
     if (activeTaskId === taskId) {
-      setActiveTaskId(remaining[0].id);
+      setActiveTaskId(nextTasks[0]?.id ?? "");
     }
     setMenuTaskId(null);
   }
@@ -447,6 +529,19 @@ export default function ComponentsShowcase() {
 
               <Card className="rounded-2xl border border-[#dfe7f1] bg-white shadow-[0_8px_20px_rgba(83,102,138,0.06)]">
                 <CardHeader className="pb-3">
+                  <CardTitle className="text-sm font-medium">意图识别</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-2">
+                  {!activeTask.intent ? (
+                    <div className="text-sm text-muted-foreground">发送问题后会展示系统识别到的查询意图。</div>
+                  ) : (
+                    renderIntentSummary(activeTask.intent)
+                  )}
+                </CardContent>
+              </Card>
+
+              <Card className="rounded-2xl border border-[#dfe7f1] bg-white shadow-[0_8px_20px_rgba(83,102,138,0.06)]">
+                <CardHeader className="pb-3">
                   <CardTitle className="flex items-center gap-2 text-sm font-medium">
                     <Workflow className="h-4 w-4 text-[#1558c0]" />
                     执行步骤
@@ -518,4 +613,50 @@ function deriveTaskTitle(currentTitle: string, content: string, symbol?: string 
   }
 
   return content.length > 18 ? `${content.slice(0, 18)}...` : content;
+}
+
+function renderIntentSummary(intent: Record<string, unknown>) {
+  const kind = typeof intent.kind === "string" ? intent.kind : "unknown";
+
+  if (kind === "exchange_listing_filter") {
+    const includeExchanges = Array.isArray(intent.includeExchanges)
+      ? intent.includeExchanges.map(item => String(item)).join(", ")
+      : "无";
+    const excludeExchanges = Array.isArray(intent.excludeExchanges)
+      ? intent.excludeExchanges.map(item => String(item)).join(", ")
+      : "无";
+    const days = typeof intent.days === "number" ? `${intent.days} 天` : "未知";
+    const marketType =
+      intent.marketType === "spot"
+        ? "现货"
+        : intent.marketType === "perps"
+          ? "合约"
+          : "未限定";
+
+    return (
+      <>
+        <IntentRow label="类型" value="交易所上币筛选" />
+        <IntentRow label="包含" value={includeExchanges} />
+        <IntentRow label="排除" value={excludeExchanges} />
+        <IntentRow label="时间" value={days} />
+        <IntentRow label="市场" value={marketType} />
+      </>
+    );
+  }
+
+  return (
+    <>
+      <IntentRow label="类型" value={typeof intent.taskType === "string" ? intent.taskType : "general"} />
+      <IntentRow label="模式" value="通用问答/分析" />
+    </>
+  );
+}
+
+function IntentRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-start justify-between gap-3 rounded-xl border border-[#edf2f7] bg-[#fbfdff] px-3 py-2.5">
+      <div className="text-xs font-medium text-[#667085]">{label}</div>
+      <div className="text-right text-sm text-[oklch(var(--crypto-ink))]">{value}</div>
+    </div>
+  );
 }

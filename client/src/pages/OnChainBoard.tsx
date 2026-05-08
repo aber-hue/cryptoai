@@ -682,6 +682,31 @@ function formatBscScanAddress(address: string) {
   return `https://bscscan.com/address/${address}`;
 }
 
+function formatBscScanTx(txhash: string) {
+  return `https://bscscan.com/tx/${txhash}`;
+}
+
+function formatHashDisplay(txhash: string) {
+  if (txhash.length <= 18) return txhash;
+  return `${txhash.slice(0, 10)}...${txhash.slice(-6)}`;
+}
+
+function formatShanghaiDateTime(value: string | null) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(date);
+}
+
 function buildFlowGraph(symbol: string) {
   const rng = createSeededRandom(symbol.split("").reduce((sum, char) => sum + char.charCodeAt(0), 0) + 97);
   const layerCounts = [1, 5, 30, 100, 200];
@@ -2177,9 +2202,22 @@ const LargeTransferBilateralCanvas = memo(function LargeTransferBilateralCanvas(
 });
 
 export default function OnChainBoard() {
-  const [selectedSymbol, setSelectedSymbol] = useState("BSB");
-  const [tokenQuery, setTokenQuery] = useState("BSB");
-  const [activeView, setActiveView] = useState<"overview" | "fund-flow" | "holders" | "large-transfers">("overview");
+  const initialSearchParams = new URLSearchParams(typeof window !== "undefined" ? window.location.search : "");
+  const initialSymbol = (initialSearchParams.get("symbol") ?? "BSB").trim().toUpperCase() || "BSB";
+  const initialTab = initialSearchParams.get("tab");
+  const initialExpandDate = initialSearchParams.get("expandDate");
+  const initialActiveView =
+    initialTab === "fund-flow" ||
+    initialTab === "holders" ||
+    initialTab === "pool-adds" ||
+    initialTab === "large-transfers" ||
+    initialTab === "cex-flows"
+      ? initialTab
+      : "overview";
+
+  const [selectedSymbol, setSelectedSymbol] = useState(initialSymbol);
+  const [tokenQuery, setTokenQuery] = useState(initialSymbol);
+  const [activeView, setActiveView] = useState<"overview" | "fund-flow" | "holders" | "cex-flows" | "pool-adds" | "large-transfers">(initialActiveView);
   const [isFlowFullscreenOpen, setIsFlowFullscreenOpen] = useState(false);
   const [flowMinAmount, setFlowMinAmount] = useState(0);
   const [collapsedNodeIds, setCollapsedNodeIds] = useState<Set<string>>(new Set());
@@ -2193,6 +2231,9 @@ export default function OnChainBoard() {
   const [visibleTrendKeys, setVisibleTrendKeys] = useState<string[]>(["controlRate", "netFlowRatio"]);
   const [copiedHolderTokenAddress, setCopiedHolderTokenAddress] = useState(false);
   const [copiedLargeTransferAddress, setCopiedLargeTransferAddress] = useState<string | null>(null);
+  const [copiedCexTokenAddress, setCopiedCexTokenAddress] = useState(false);
+  const [copiedPoolAddsTokenAddress, setCopiedPoolAddsTokenAddress] = useState(false);
+  const [expandedCexFlowDates, setExpandedCexFlowDates] = useState<Set<string>>(new Set(initialExpandDate ? [initialExpandDate] : []));
   const [isTokenPickerOpen, setIsTokenPickerOpen] = useState(false);
   const tokenPickerRef = useRef<HTMLDivElement | null>(null);
   const onchainTokensQuery = trpc.onchain.listTokens.useQuery(
@@ -2249,6 +2290,28 @@ export default function OnChainBoard() {
     },
     {
       enabled: activeView === "large-transfers",
+      staleTime: 5 * 60 * 1000,
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: false,
+    }
+  );
+  const cexFlowsQuery = trpc.onchain.getCexFlows.useQuery(
+    {
+      symbol: selectedSymbol,
+    },
+    {
+      enabled: activeView === "cex-flows",
+      staleTime: 5 * 60 * 1000,
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: false,
+    }
+  );
+  const poolAddsQuery = trpc.onchain.getPoolAdds.useQuery(
+    {
+      symbol: selectedSymbol,
+    },
+    {
+      enabled: activeView === "pool-adds",
       staleTime: 5 * 60 * 1000,
       refetchOnWindowFocus: false,
       refetchOnReconnect: false,
@@ -2552,9 +2615,20 @@ export default function OnChainBoard() {
     setLargeTransferScope("all");
     setCopiedLargeTransferAddress(null);
   }, [selectedSymbol]);
+  useEffect(() => {
+    setExpandedCexFlowDates(new Set());
+    setCopiedCexTokenAddress(false);
+    setCopiedPoolAddsTokenAddress(false);
+  }, [selectedSymbol]);
 
   const handleRefresh = () => {
     fundFlowQuery.refetch();
+    if (activeView === "cex-flows") {
+      cexFlowsQuery.refetch();
+    }
+    if (activeView === "pool-adds") {
+      poolAddsQuery.refetch();
+    }
   };
 
   const handleCopyHolderTokenAddress = async () => {
@@ -2591,6 +2665,40 @@ export default function OnChainBoard() {
     } catch {
       setCopiedLargeTransferAddress(null);
     }
+  };
+
+  const handleCopyCexTokenAddress = async () => {
+    if (!cexFlowsQuery.data?.tokenAddress) return;
+    try {
+      await navigator.clipboard.writeText(cexFlowsQuery.data.tokenAddress);
+      setCopiedCexTokenAddress(true);
+      window.setTimeout(() => setCopiedCexTokenAddress(false), 1200);
+    } catch {
+      setCopiedCexTokenAddress(false);
+    }
+  };
+
+  const handleCopyPoolAddsTokenAddress = async () => {
+    if (!poolAddsQuery.data?.tokenAddress) return;
+    try {
+      await navigator.clipboard.writeText(poolAddsQuery.data.tokenAddress);
+      setCopiedPoolAddsTokenAddress(true);
+      window.setTimeout(() => setCopiedPoolAddsTokenAddress(false), 1200);
+    } catch {
+      setCopiedPoolAddsTokenAddress(false);
+    }
+  };
+
+  const toggleExpandedCexDate = (date: string) => {
+    setExpandedCexFlowDates(current => {
+      const next = new Set(current);
+      if (next.has(date)) {
+        next.delete(date);
+      } else {
+        next.add(date);
+      }
+      return next;
+    });
   };
 
   const toggleCollapsedNode = (nodeId: string) => {
@@ -2722,11 +2830,13 @@ export default function OnChainBoard() {
           { key: "overview", label: "总览" },
           { key: "fund-flow", label: "资金流图" },
           { key: "holders", label: "Holder" },
+          { key: "cex-flows", label: "CEX流入流出" },
+          { key: "pool-adds", label: "加池记录" },
           { key: "large-transfers", label: "大额转账" },
         ].map(item => (
           <button
             key={item.key}
-            onClick={() => setActiveView(item.key as "overview" | "fund-flow" | "holders" | "large-transfers")}
+            onClick={() => setActiveView(item.key as "overview" | "fund-flow" | "holders" | "cex-flows" | "pool-adds" | "large-transfers")}
             className={cn(
               "rounded-full px-4 py-2 text-sm font-medium transition",
               activeView === item.key
@@ -3008,6 +3118,330 @@ export default function OnChainBoard() {
                           {item.balanceChange7d != null ? `${item.balanceChange7d >= 0 ? "+" : ""}${compactNumber(item.balanceChange7d)}` : "—"}
                         </TableCell>
                         <TableCell className="text-center">{item.isNew ? "是" : "—"}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+          </div>
+        </div>
+      ) : null}
+
+      {activeView === "cex-flows" ? (
+        <div className="space-y-6">
+          <div className="grid gap-3 md:grid-cols-4">
+            <Card className="rounded-[18px] border border-white/80 bg-white/90 shadow-[0_10px_24px_rgba(71,85,105,0.08)]">
+              <CardContent className="p-3.5">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#64748B]">总流入</div>
+                <div className="mt-1 text-base font-semibold text-[#0F172A]">
+                  {cexFlowsQuery.data ? compactNumber(cexFlowsQuery.data.totalInflow) : "—"}
+                </div>
+                <div className="mt-1 text-xs text-[#64748B]">非交易所地址流入交易所</div>
+              </CardContent>
+            </Card>
+            <Card className="rounded-[18px] border border-white/80 bg-white/90 shadow-[0_10px_24px_rgba(71,85,105,0.08)]">
+              <CardContent className="p-3.5">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#64748B]">总流出</div>
+                <div className="mt-1 text-base font-semibold text-[#0F172A]">
+                  {cexFlowsQuery.data ? compactNumber(cexFlowsQuery.data.totalOutflow) : "—"}
+                </div>
+                <div className="mt-1 text-xs text-[#64748B]">交易所地址流出到非交易所</div>
+              </CardContent>
+            </Card>
+            <Card className="rounded-[18px] border border-white/80 bg-white/90 shadow-[0_10px_24px_rgba(71,85,105,0.08)]">
+              <CardContent className="p-3.5">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#64748B]">净流入</div>
+                <div className={cn("mt-1 text-base font-semibold", (cexFlowsQuery.data?.totalNetflow ?? 0) >= 0 ? "text-[#2563EB]" : "text-[#F59E0B]")}>
+                  {cexFlowsQuery.data ? `${cexFlowsQuery.data.totalNetflow >= 0 ? "+" : ""}${compactNumber(cexFlowsQuery.data.totalNetflow)}` : "—"}
+                </div>
+                <div className="mt-1 text-xs text-[#64748B]">总流入 - 总流出</div>
+              </CardContent>
+            </Card>
+            <Card className="rounded-[18px] border border-white/80 bg-white/90 shadow-[0_10px_24px_rgba(71,85,105,0.08)]">
+              <CardContent className="p-3.5">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#64748B]">覆盖天数</div>
+                <div className="mt-1 text-base font-semibold text-[#0F172A]">
+                  {cexFlowsQuery.data ? cexFlowsQuery.data.dayCount.toLocaleString() : "—"}
+                </div>
+                <div className="mt-1 text-xs text-[#64748B]">按天统计交易所流入流出</div>
+              </CardContent>
+            </Card>
+          </div>
+
+          <div className="rounded-[24px] border border-white/80 bg-white/90 p-4 shadow-[0_14px_36px_rgba(71,85,105,0.08)]">
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <div className="text-lg font-semibold text-[#0F172A]">CEX 流入流出列表</div>
+                <div className="mt-1 text-sm text-[#64748B]">列表先展示每日总流入 / 总流出，点击某一日可展开查看该日各交易所明细。</div>
+              </div>
+              <div className="flex items-center gap-2">
+                {cexFlowsQuery.data?.tokenAddress ? (
+                  <>
+                    <a
+                      href={formatBscScanAddress(cexFlowsQuery.data.tokenAddress)}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="max-w-[240px] truncate rounded-full border border-[#DBEAFE] bg-white px-3 py-2 text-sm font-medium text-[#1D4ED8] hover:text-[#1E40AF] hover:underline"
+                      title={cexFlowsQuery.data.tokenAddress}
+                    >
+                      {formatAddressDisplay(cexFlowsQuery.data.tokenAddress)}
+                    </a>
+                    <button
+                      type="button"
+                      onClick={handleCopyCexTokenAddress}
+                      className="rounded-full border border-[#DBEAFE] bg-white px-3 py-2 text-sm text-[#64748B] transition hover:text-[#1D4ED8]"
+                      title={copiedCexTokenAddress ? "已复制" : "复制地址"}
+                    >
+                      {copiedCexTokenAddress ? "✓" : <Copy className="h-4 w-4" />}
+                    </button>
+                  </>
+                ) : null}
+              </div>
+            </div>
+
+            {cexFlowsQuery.isLoading ? (
+              <div className="flex h-[520px] items-center justify-center rounded-[20px] border border-[#E2E8F0] bg-[#FCFDFF] text-sm text-[#64748B]">
+                正在加载 CEX 流入流出数据...
+              </div>
+            ) : cexFlowsQuery.error ? (
+              <div className="flex h-[520px] items-center justify-center rounded-[20px] border border-[#E2E8F0] bg-[#FCFDFF] text-sm text-[#64748B]">
+                CEX 流入流出数据加载失败
+              </div>
+            ) : !cexFlowsQuery.data || cexFlowsQuery.data.days.length === 0 ? (
+              <div className="flex h-[520px] items-center justify-center rounded-[20px] border border-[#E2E8F0] bg-[#FCFDFF] text-sm text-[#64748B]">
+                当前币种暂无可识别的交易所流入流出数据
+              </div>
+            ) : (
+              <div className="overflow-hidden rounded-[20px] border border-[#E2E8F0] bg-white">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-[64px]">展开</TableHead>
+                      <TableHead>日期</TableHead>
+                      <TableHead className="text-right">总流入</TableHead>
+                      <TableHead className="text-right">总流出</TableHead>
+                      <TableHead className="text-right">净流入</TableHead>
+                      <TableHead className="text-right">交易所数</TableHead>
+                      <TableHead className="text-right">操作</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {cexFlowsQuery.data.days.map(day => {
+                      const expanded = expandedCexFlowDates.has(day.date);
+                      return [
+                        <TableRow key={day.date}>
+                          <TableCell>
+                            <button
+                              type="button"
+                              className="flex h-8 w-8 items-center justify-center rounded-full border border-[#DBEAFE] bg-white text-[#1D4ED8] transition hover:bg-[#EFF6FF]"
+                              onClick={() => toggleExpandedCexDate(day.date)}
+                              title={expanded ? "收起明细" : "展开明细"}
+                            >
+                              <ChevronDown className={cn("h-4 w-4 transition-transform", expanded && "rotate-180")} />
+                            </button>
+                          </TableCell>
+                          <TableCell className="font-medium text-[#0F172A]">{day.date}</TableCell>
+                          <TableCell className="text-right text-[#2563EB]">{compactNumber(day.inflow)}</TableCell>
+                          <TableCell className="text-right text-[#F59E0B]">{compactNumber(day.outflow)}</TableCell>
+                          <TableCell className={cn("text-right font-medium", day.netflow >= 0 ? "text-[#2563EB]" : "text-[#F59E0B]")}>
+                            {day.netflow >= 0 ? "+" : ""}{compactNumber(day.netflow)}
+                          </TableCell>
+                          <TableCell className="text-right">{day.exchangeCount}</TableCell>
+                          <TableCell className="text-right">
+                            <a
+                              href={`/onchain/cex-flow/${selectedSymbol}?date=${encodeURIComponent(day.date)}&direction=all&returnTab=cex-flows&expandDate=${encodeURIComponent(day.date)}`}
+                              className="inline-flex items-center rounded-full border border-[#DBEAFE] bg-white px-3 py-1.5 text-xs font-medium text-[#1D4ED8] transition hover:bg-[#EFF6FF]"
+                            >
+                              看明细
+                            </a>
+                          </TableCell>
+                        </TableRow>,
+                        expanded ? (
+                          <TableRow key={`${day.date}-expanded`} className="bg-[#F8FBFF]">
+                            <TableCell colSpan={7} className="px-4 py-3">
+                              <div className="overflow-hidden rounded-[16px] border border-[#DBEAFE] bg-white">
+                                <Table>
+                                  <TableHeader>
+                                    <TableRow>
+                                      <TableHead>交易所</TableHead>
+                                      <TableHead className="text-right">流入</TableHead>
+                                      <TableHead className="text-right">流出</TableHead>
+                                      <TableHead className="text-right">净流入</TableHead>
+                                      <TableHead className="text-right">流入笔数</TableHead>
+                                      <TableHead className="text-right">流出笔数</TableHead>
+                                    </TableRow>
+                                  </TableHeader>
+                                  <TableBody>
+                                    {day.exchanges.map(exchange => (
+                                      <TableRow key={`${day.date}-${exchange.exchange}`}>
+                                        <TableCell className="font-medium">{exchange.exchange}</TableCell>
+                                        <TableCell className="text-right text-[#2563EB]">{compactNumber(exchange.inflow)}</TableCell>
+                                        <TableCell className="text-right text-[#F59E0B]">{compactNumber(exchange.outflow)}</TableCell>
+                                        <TableCell className={cn("text-right font-medium", exchange.netflow >= 0 ? "text-[#2563EB]" : "text-[#F59E0B]")}>
+                                          {exchange.netflow >= 0 ? "+" : ""}{compactNumber(exchange.netflow)}
+                                        </TableCell>
+                                        <TableCell className="text-right">{exchange.inflowTxCount}</TableCell>
+                                        <TableCell className="text-right">{exchange.outflowTxCount}</TableCell>
+                                      </TableRow>
+                                    ))}
+                                  </TableBody>
+                                </Table>
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        ) : null,
+                      ];
+                    })}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+          </div>
+        </div>
+      ) : null}
+
+      {activeView === "pool-adds" ? (
+        <div className="space-y-6">
+          <div className="grid gap-3 md:grid-cols-4">
+            <Card className="rounded-[18px] border border-white/80 bg-white/90 shadow-[0_10px_24px_rgba(71,85,105,0.08)]">
+              <CardContent className="p-3.5">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#64748B]">加池记录数</div>
+                <div className="mt-1 text-base font-semibold text-[#0F172A]">
+                  {poolAddsQuery.data ? poolAddsQuery.data.total.toLocaleString() : "—"}
+                </div>
+                <div className="mt-1 text-xs text-[#64748B]">仅展示最早 20 笔 `action_type = add_liquidity` 记录</div>
+              </CardContent>
+            </Card>
+            <Card className="rounded-[18px] border border-white/80 bg-white/90 shadow-[0_10px_24px_rgba(71,85,105,0.08)]">
+              <CardContent className="p-3.5">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#64748B]">最早加池时间</div>
+                <div className="mt-1 text-base font-semibold text-[#0F172A]">
+                  {poolAddsQuery.data?.latestBlockTime ? formatShanghaiDateTime(poolAddsQuery.data.latestBlockTime) : "—"}
+                </div>
+              </CardContent>
+            </Card>
+            <Card className="rounded-[18px] border border-white/80 bg-white/90 shadow-[0_10px_24px_rgba(71,85,105,0.08)]">
+              <CardContent className="p-3.5">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#64748B]">Token Address</div>
+                {poolAddsQuery.data?.tokenAddress ? (
+                  <div className="mt-1 flex items-center gap-2">
+                    <a
+                      href={formatBscScanAddress(poolAddsQuery.data.tokenAddress)}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="block truncate text-sm font-semibold text-[#1D4ED8] hover:text-[#1E40AF] hover:underline"
+                      title={poolAddsQuery.data.tokenAddress}
+                    >
+                      {formatAddressDisplay(poolAddsQuery.data.tokenAddress)}
+                    </a>
+                    <button
+                      type="button"
+                      onClick={handleCopyPoolAddsTokenAddress}
+                      className="text-[#64748B] transition hover:text-[#1D4ED8]"
+                      title={copiedPoolAddsTokenAddress ? "已复制" : "复制地址"}
+                    >
+                      {copiedPoolAddsTokenAddress ? "✓" : <Copy className="h-4 w-4" />}
+                    </button>
+                  </div>
+                ) : (
+                  <div className="mt-1 text-sm font-semibold text-[#0F172A]">—</div>
+                )}
+              </CardContent>
+            </Card>
+            <Card className="rounded-[18px] border border-white/80 bg-white/90 shadow-[0_10px_24px_rgba(71,85,105,0.08)]">
+              <CardContent className="p-3.5">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#64748B]">当前展示</div>
+                <div className="mt-1 text-base font-semibold text-[#0F172A]">
+                  {poolAddsQuery.data ? `${poolAddsQuery.data.items.length} / ${poolAddsQuery.data.total}` : "—"}
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+
+          <div className="rounded-[24px] border border-white/80 bg-white/90 p-4 shadow-[0_14px_36px_rgba(71,85,105,0.08)]">
+            <div className="mb-4">
+              <div className="text-lg font-semibold text-[#0F172A]">加池记录</div>
+              <div className="mt-1 text-sm text-[#64748B]">
+                这里只展示 BigQuery `token_dex_action_raw` 中 `action_type = add_liquidity` 的记录。
+                按表说明，`amount_in` 表示本币数量，`amount_out` 表示配对币数量，`pricelow / pricehigh` 表示流动性价格区间。
+              </div>
+            </div>
+
+            {poolAddsQuery.isLoading ? (
+              <div className="flex h-[520px] items-center justify-center rounded-[20px] border border-[#E2E8F0] bg-[#FCFDFF] text-sm text-[#64748B]">
+                正在加载加池记录...
+              </div>
+            ) : poolAddsQuery.error ? (
+              <div className="flex h-[520px] items-center justify-center rounded-[20px] border border-[#E2E8F0] bg-[#FCFDFF] text-sm text-[#64748B]">
+                加池记录加载失败
+              </div>
+            ) : !poolAddsQuery.data || poolAddsQuery.data.items.length === 0 ? (
+              <div className="flex h-[520px] items-center justify-center rounded-[20px] border border-[#E2E8F0] bg-[#FCFDFF] text-sm text-[#64748B]">
+                当前币种暂无可展示的加池记录
+              </div>
+            ) : (
+              <div className="overflow-x-auto rounded-[20px] border border-[#E2E8F0] bg-white">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>时间</TableHead>
+                      <TableHead>加池地址</TableHead>
+                      <TableHead>池子地址</TableHead>
+                      <TableHead className="text-right">本币数量</TableHead>
+                      <TableHead className="text-right">配对币数量</TableHead>
+                      <TableHead className="text-right">价格</TableHead>
+                      <TableHead className="text-right">价格区间</TableHead>
+                      <TableHead className="text-right">近似价值</TableHead>
+                      <TableHead>交易 Hash</TableHead>
+                      <TableHead className="text-right">Chain</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {poolAddsQuery.data.items.map((item, index) => (
+                      <TableRow key={`${item.traderAddress}-${item.pairAddress}-${item.blockTime ?? index}`}>
+                        <TableCell className="whitespace-nowrap">{formatShanghaiDateTime(item.blockTime)}</TableCell>
+                        <TableCell>
+                          <button
+                            type="button"
+                            className="font-medium text-[#1D4ED8] hover:underline"
+                            onClick={() => window.open(formatBscScanAddress(item.traderAddress), "_blank", "noopener,noreferrer")}
+                          >
+                            {formatAddressDisplay(item.traderAddress)}
+                          </button>
+                        </TableCell>
+                        <TableCell>
+                          <button
+                            type="button"
+                            className="font-medium text-[#1D4ED8] hover:underline"
+                            onClick={() => window.open(formatBscScanAddress(item.pairAddress), "_blank", "noopener,noreferrer")}
+                          >
+                            {formatAddressDisplay(item.pairAddress)}
+                          </button>
+                        </TableCell>
+                        <TableCell className="text-right">{item.amountIn != null ? compactNumber(item.amountIn) : "—"}</TableCell>
+                        <TableCell className="text-right">{item.amountOut != null ? compactNumber(item.amountOut) : "—"}</TableCell>
+                        <TableCell className="text-right">{item.price != null ? compactNumber(item.price, 6) : "—"}</TableCell>
+                        <TableCell className="text-right">
+                          {item.priceLow != null || item.priceHigh != null
+                            ? `${item.priceLow != null ? compactNumber(item.priceLow, 6) : "—"} ~ ${item.priceHigh != null ? compactNumber(item.priceHigh, 6) : "—"}`
+                            : "—"}
+                        </TableCell>
+                        <TableCell className="text-right">{item.estimatedUsdValue != null ? `$${compactNumber(item.estimatedUsdValue)}` : "—"}</TableCell>
+                        <TableCell className="whitespace-nowrap">
+                          {item.txhash ? (
+                            <button
+                              type="button"
+                              className="font-medium text-[#1D4ED8] hover:underline"
+                              onClick={() => window.open(formatBscScanTx(item.txhash!), "_blank", "noopener,noreferrer")}
+                            >
+                              {formatHashDisplay(item.txhash)}
+                            </button>
+                          ) : (
+                            "—"
+                          )}
+                        </TableCell>
+                        <TableCell className="text-right">{item.chainId ?? "—"}</TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
