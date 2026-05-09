@@ -3,15 +3,24 @@ import { callDataApi } from "../_core/dataApi";
 import {
   getOnchainFundFlowBySymbol,
   getOnchainHoldersBySymbol,
+  getOnchainLargeTransfersBySymbol,
+  getOnchainCexFlowsBySymbol,
+  getOnchainOverviewBySymbol,
   getRecentListingsByExchanges,
   screenTokensByDailyBullishStreak,
   getTokenDepthTrendBySymbol,
   getTokenDepthViewBySymbol,
+  getTokenFundingViewBySymbol,
+  getTokenKlineBySymbol,
   getTokenListingViewBySymbol,
   getTokenProfileBySymbol,
+  getTokenSocialHeatViewBySymbol,
   getTokenUnlockViewBySymbol,
+  getExchangeHoldersViewBySymbol,
+  listMarketTokens,
   searchAnnouncements,
 } from "../liveData";
+import * as db from "../db";
 import type { ChatToolResult } from "./types";
 
 const timestamp = () => new Date().toISOString();
@@ -444,4 +453,318 @@ function matchesListingMarketType(title: string, marketType: "spot" | "perps" | 
   }
 
   return true;
+}
+
+// ─────────────────────────────────────────────
+// 新增工具：覆盖剩余数据边界
+// ─────────────────────────────────────────────
+
+/** 工具1：K线 / 价格历史 */
+export async function runKlineTool(
+  symbol: string,
+  range: "1m" | "3m" | "6m" | "1y" = "3m"
+): Promise<ChatToolResult | null> {
+  const data = await getTokenKlineBySymbol(symbol, range);
+  if (!data || data.points.length === 0) return null;
+
+  const first = data.points[0];
+  const last = data.points.at(-1);
+  const startPrice = first?.close ?? first?.open ?? null;
+  const endPrice = last?.close ?? null;
+  const changePct =
+    startPrice && endPrice && startPrice > 0
+      ? (((endPrice - startPrice) / startPrice) * 100).toFixed(2)
+      : null;
+
+  const highs = data.points.map(p => p.high ?? 0).filter(Boolean);
+  const lows = data.points.map(p => p.low ?? 0).filter(Boolean);
+  const periodHigh = highs.length > 0 ? Math.max(...highs) : null;
+  const periodLow = lows.length > 0 ? Math.min(...lows) : null;
+
+  return {
+    toolName: "get_token_kline",
+    title: `${symbol.toUpperCase()} K线 (${range})`,
+    source: data.source,
+    summary: [
+      `共 ${data.points.length} 根K线，时间范围 ${first?.time ?? "?"} ~ ${last?.time ?? "?"}`,
+      startPrice != null && endPrice != null
+        ? `区间涨跌 ${changePct}%，起点 ${formatNumber(startPrice)}，终点 ${formatNumber(endPrice)}`
+        : "价格数据不完整",
+      periodHigh != null ? `区间最高 ${formatNumber(periodHigh)}，最低 ${formatNumber(periodLow)}` : "",
+    ]
+      .filter(Boolean)
+      .join("；"),
+    data: {
+      ...data,
+      fetchedAt: timestamp(),
+    },
+  };
+}
+
+/** 工具2：融资轮次 / 投资人 / 团队 */
+export async function runFundingRoundsTool(symbol: string): Promise<ChatToolResult | null> {
+  const data = await getTokenFundingViewBySymbol(symbol);
+  if (!data) return null;
+
+  const visibleRounds = data.rounds.filter(r => !r.isHidden);
+  const topRound = visibleRounds[0] ?? null;
+  const investorNames = visibleRounds
+    .flatMap(r => r.investors)
+    .filter(Boolean)
+    .slice(0, 6);
+
+  return {
+    toolName: "get_funding_rounds",
+    title: `${symbol.toUpperCase()} 融资与团队`,
+    source: "token_funding_rounds + token_team_members",
+    summary: [
+      `累计融资 ${formatNumber(data.summary.totalRaised)}，共 ${visibleRounds.length} 轮，${data.summary.investorCount} 位投资人`,
+      topRound
+        ? `最近一轮：${topRound.roundType ?? topRound.kind ?? "未知类型"} (${topRound.roundDate ?? "日期未知"})，融资 ${formatNumber(topRound.raise)}，估值 ${formatNumber(topRound.valuation)}`
+        : "",
+      investorNames.length > 0 ? `主要投资方：${investorNames.join("、")}` : "",
+      data.teamMembers.length > 0 ? `核心团队 ${data.teamMembers.length} 人` : "",
+    ]
+      .filter(Boolean)
+      .join("；"),
+    data: {
+      ...data,
+      fetchedAt: timestamp(),
+    },
+  };
+}
+
+/** 工具3：Twitter / 社交热度 */
+export async function runSocialHeatTool(symbol: string): Promise<ChatToolResult | null> {
+  const data = await getTokenSocialHeatViewBySymbol(symbol);
+  if (!data) return null;
+
+  const s = data.summary;
+  const topTweet = data.tweets[0] ?? null;
+
+  return {
+    toolName: "get_social_heat",
+    title: `${symbol.toUpperCase()} 社交热度`,
+    source: "token_social_posts (Twitter)",
+    summary: [
+      `7天提及 ${s.mentionCount7d} 次，24h ${s.mentionCount24h} 次，独立作者 ${s.uniqueAuthors7d} 人`,
+      `7天总互动 ${formatNumber(s.totalEngagement7d)}，总浏览 ${formatNumber(s.totalViews7d)}`,
+      topTweet
+        ? `最新热帖：@${topTweet.author.username} (${topTweet.author.followerCount?.toLocaleString() ?? "?"} 粉丝)，赞 ${topTweet.likeCount}，转发 ${topTweet.retweetCount}`
+        : "",
+      s.summaryText ? `概况：${s.summaryText}` : "",
+    ]
+      .filter(Boolean)
+      .join("；"),
+    data: {
+      ...data,
+      fetchedAt: timestamp(),
+    },
+  };
+}
+
+/** 工具4：链上大额转账明细 */
+export async function runLargeTransfersTool(
+  symbol: string,
+  pageSize = 20
+): Promise<ChatToolResult | null> {
+  const data = await getOnchainLargeTransfersBySymbol(symbol, { page: 1, pageSize });
+  if (!data || data.items.length === 0) return null;
+
+  const latest = data.items[0];
+  const totalValue = data.items.reduce((sum, item) => sum + (item.value ?? 0), 0);
+
+  return {
+    toolName: "get_large_transfers",
+    title: `${symbol.toUpperCase()} 大额转账`,
+    source: "bigquery.token_transfer_raw (large)",
+    summary: [
+      `共 ${data.total} 笔大额转账，阈值 ${formatNumber(data.thresholdAmount)} 个代币`,
+      latest
+        ? `最新一笔：${latest.fromLabel || latest.fromAddress.slice(0, 8)} → ${latest.toLabel || latest.toAddress.slice(0, 8)}，金额 ${formatNumber(latest.amount)}，时间 ${latest.blockTime ?? "未知"}`
+        : "",
+      `本页 ${data.items.length} 笔估算总价值 ${formatNumber(totalValue)}`,
+    ]
+      .filter(Boolean)
+      .join("；"),
+    data: {
+      ...data,
+      fetchedAt: timestamp(),
+    },
+  };
+}
+
+/** 工具5：CEX 净流入 / 流出（链上交易所资金流） */
+export async function runCexFlowTool(symbol: string): Promise<ChatToolResult | null> {
+  const data = await getOnchainCexFlowsBySymbol(symbol);
+  if (!data) return null;
+
+  const latestDay = data.days[0] ?? null;
+  const netflowSign = data.totalNetflow >= 0 ? "净流入" : "净流出";
+
+  return {
+    toolName: "get_cex_flow",
+    title: `${symbol.toUpperCase()} 交易所链上资金流`,
+    source: "bigquery.token_transfer_raw (cex-tagged)",
+    summary: [
+      `统计 ${data.dayCount} 天，总流入 ${formatNumber(data.totalInflow)}，总流出 ${formatNumber(data.totalOutflow)}，${netflowSign} ${formatNumber(Math.abs(data.totalNetflow))}`,
+      latestDay
+        ? `最新一天 (${latestDay.date})：流入 ${formatNumber(latestDay.inflow)}，流出 ${formatNumber(latestDay.outflow)}，净流 ${formatSignedNumber(latestDay.netflow)}，涉及 ${latestDay.exchangeCount} 个交易所`
+        : "",
+    ]
+      .filter(Boolean)
+      .join("；"),
+    data: {
+      ...data,
+      fetchedAt: timestamp(),
+    },
+  };
+}
+
+/** 工具6：链上持仓总览（集中度 / 增减变化） */
+export async function runOnchainOverviewTool(symbol: string): Promise<ChatToolResult | null> {
+  const data = await getOnchainOverviewBySymbol(symbol);
+  if (!data) return null;
+
+  const topIncreaser = data.increaseRows[0] ?? null;
+  const topDecreaser = data.decreaseRows[0] ?? null;
+
+  return {
+    toolName: "get_onchain_overview",
+    title: `${symbol.toUpperCase()} 链上持仓总览`,
+    source: "bigquery.token_holder_snapshot (overview)",
+    summary: [
+      `Holder 数 ${formatNumber(data.tokenHolderCount)}，24h 变化 ${formatSignedNumber(data.holderCountChange24h)}`,
+      data.top10Ratio != null
+        ? `Top10 持仓占比 ${data.top10Ratio.toFixed(2)}%，Top50 ${data.top50Ratio?.toFixed(2) ?? "N/A"}%，Top100 ${data.top100Ratio?.toFixed(2) ?? "N/A"}%`
+        : "",
+      topIncreaser ? `增仓最多：${topIncreaser.label || topIncreaser.address.slice(0, 8)}，加仓 ${formatNumber(topIncreaser.changeBalance)}` : "",
+      topDecreaser ? `减仓最多：${topDecreaser.label || topDecreaser.address.slice(0, 8)}，减仓 ${formatNumber(Math.abs(topDecreaser.changeBalance))}` : "",
+    ]
+      .filter(Boolean)
+      .join("；"),
+    data: {
+      ...data,
+      fetchedAt: timestamp(),
+    },
+  };
+}
+
+/** 工具7：市场代币筛选（排行 / 条件筛选） */
+export async function runMarketScreenerTool(options: {
+  query?: string;
+  marketType?: "spot" | "perps";
+  sortBy?: "listedAt" | "marketCap" | "volume24h";
+  sortOrder?: "asc" | "desc";
+  limit?: number;
+}): Promise<ChatToolResult | null> {
+  const data = await listMarketTokens({
+    query: options.query,
+    marketType: options.marketType,
+    sortBy: options.sortBy ?? "volume24h",
+    sortOrder: options.sortOrder ?? "desc",
+    page: 1,
+    pageSize: Math.min(options.limit ?? 20, 50),
+  });
+
+  if (data.items.length === 0) return null;
+
+  const top3 = data.items
+    .slice(0, 3)
+    .map(item => `${item.symbol}(${formatNumber(item.volume24h)}V)`)
+    .join("、");
+
+  const sortLabel: Record<string, string> = {
+    volume24h: "24h成交量",
+    marketCap: "市值",
+    listedAt: "上线时间",
+  };
+
+  return {
+    toolName: "screen_market_tokens",
+    title: "市场代币筛选",
+    source: "token_profiles + exchange_pairs",
+    summary: [
+      `按 ${sortLabel[options.sortBy ?? "volume24h"]} ${options.sortOrder === "asc" ? "升序" : "降序"}，共命中 ${data.total} 个代币`,
+      options.marketType ? `市场类型：${options.marketType}` : "",
+      `前3名：${top3}`,
+    ]
+      .filter(Boolean)
+      .join("；"),
+    data: {
+      items: data.items.map(item => ({
+        symbol: item.symbol,
+        name: item.name,
+        price: item.price,
+        volume24h: item.volume24h,
+        marketCap: item.marketCap,
+        fdv: item.fdv,
+        listedAt: item.listedAt,
+      })),
+      total: data.total,
+      sortBy: options.sortBy ?? "volume24h",
+      sortOrder: options.sortOrder ?? "desc",
+      marketType: options.marketType ?? null,
+      fetchedAt: timestamp(),
+    },
+  };
+}
+
+/** 工具8：当前信号事件列表 */
+export async function runSignalEventsTool(options?: {
+  symbol?: string;
+  category?: string;
+  status?: "new" | "active" | "muted" | "expired";
+  limit?: number;
+}): Promise<ChatToolResult | null> {
+  const events = await db.listSignalEvents({
+    symbol: options?.symbol,
+    category: options?.category,
+    status: options?.status ?? "new",
+    limit: options?.limit ?? 30,
+  });
+
+  if (events.length === 0) return null;
+
+  const bySeverity = { high: 0, medium: 0, low: 0 };
+  for (const e of events) {
+    bySeverity[e.severity] = (bySeverity[e.severity] ?? 0) + 1;
+  }
+
+  const topEvent = events[0];
+  const symbolSet = Array.from(new Set(events.map(e => e.symbol))).slice(0, 5);
+
+  return {
+    toolName: "get_signal_events",
+    title: options?.symbol ? `${options.symbol.toUpperCase()} 信号事件` : "当前信号看板",
+    source: "signal_events",
+    summary: [
+      `共 ${events.length} 条信号，高危 ${bySeverity.high}、中危 ${bySeverity.medium}、低危 ${bySeverity.low}`,
+      topEvent
+        ? `最新：${topEvent.symbol} — ${topEvent.title}（${topEvent.severity}），触发于 ${topEvent.triggeredAt}`
+        : "",
+      symbolSet.length > 1 ? `涉及代币：${symbolSet.join("、")}等` : "",
+    ]
+      .filter(Boolean)
+      .join("；"),
+    data: {
+      events: events.map(e => ({
+        id: e.id,
+        symbol: e.symbol,
+        signalType: e.signalType,
+        title: e.title,
+        summary: e.summary,
+        category: e.category,
+        severity: e.severity,
+        status: e.status,
+        direction: e.direction,
+        window: e.window,
+        triggeredAt: e.triggeredAt,
+        changePct: e.changePct,
+        latestMetricValue: e.latestMetricValue,
+      })),
+      total: events.length,
+      fetchedAt: timestamp(),
+    },
+  };
 }

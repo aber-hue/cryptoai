@@ -30,6 +30,7 @@ export type Message = {
   content: MessageContent | MessageContent[];
   name?: string;
   tool_call_id?: string;
+  tool_calls?: ToolCall[];
 };
 
 export type Tool = {
@@ -160,6 +161,7 @@ const normalizeMessage = (message: Message) => {
       role,
       name,
       content: contentParts[0].text,
+      ...(message.tool_calls && message.tool_calls.length > 0 ? { tool_calls: message.tool_calls } : {}),
     };
   }
 
@@ -167,6 +169,7 @@ const normalizeMessage = (message: Message) => {
     role,
     name,
     content: contentParts,
+    ...(message.tool_calls && message.tool_calls.length > 0 ? { tool_calls: message.tool_calls } : {}),
   };
 };
 
@@ -219,6 +222,14 @@ const resolveOpenAIResponsesUrl = () => {
   if (!configured) return "";
   if (configured.endsWith("/v1/responses")) return configured;
   return `${configured.replace(/\/$/, "")}/v1/responses`;
+};
+
+// Derive chat/completions URL from the same base as the Responses URL
+const resolveOpenAICompletionsUrl = () => {
+  const configured = ENV.openaiApiUrl.trim();
+  if (!configured) return "";
+  const base = configured.replace(/\/v1\/(responses|chat\/completions)$/, "");
+  return `${base}/v1/chat/completions`;
 };
 
 const shouldUseOpenAIResponses = () =>
@@ -278,14 +289,27 @@ const normalizeResponseFormat = ({
 export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
   assertApiKey();
 
-  if (shouldUseOpenAIResponses()) {
+  const hasTools = params.tools && params.tools.length > 0;
+
+  if (shouldUseOpenAIResponses() && !hasTools) {
     return await invokeOpenAIResponses(params);
+  }
+
+  // When tools are needed, always use the chat/completions path (supports function calling).
+  // If OpenAI credentials are available and no Forge key is set, derive the completions URL
+  // from the same host as the Responses URL.
+  if (shouldUseOpenAIResponses() && hasTools && !ENV.forgeApiKey) {
+    return await invokeForgeChatCompletions(params, resolveOpenAICompletionsUrl(), ENV.openaiApiKey);
   }
 
   return await invokeForgeChatCompletions(params);
 }
 
-async function invokeForgeChatCompletions(params: InvokeParams): Promise<InvokeResult> {
+async function invokeForgeChatCompletions(
+  params: InvokeParams,
+  urlOverride?: string,
+  apiKeyOverride?: string
+): Promise<InvokeResult> {
 
   const {
     messages,
@@ -298,8 +322,12 @@ async function invokeForgeChatCompletions(params: InvokeParams): Promise<InvokeR
     response_format,
   } = params;
 
+  // When overriding credentials, use the configured OpenAI model; otherwise default to Gemini.
+  const isOpenAIOverride = Boolean(urlOverride && apiKeyOverride);
+  const model = isOpenAIOverride ? (ENV.openaiModel || "gpt-4o") : "gemini-2.5-flash";
+
   const payload: Record<string, unknown> = {
-    model: "gemini-2.5-flash",
+    model,
     messages: messages.map(normalizeMessage),
   };
 
@@ -315,9 +343,10 @@ async function invokeForgeChatCompletions(params: InvokeParams): Promise<InvokeR
     payload.tool_choice = normalizedToolChoice;
   }
 
-  payload.max_tokens = 32768
-  payload.thinking = {
-    "budget_tokens": 128
+  payload.max_tokens = 32768;
+  // thinking is Gemini-specific; skip when using the OpenAI-compatible override
+  if (!isOpenAIOverride) {
+    payload.thinking = { budget_tokens: 128 };
   }
 
   const normalizedResponseFormat = normalizeResponseFormat({
@@ -331,11 +360,14 @@ async function invokeForgeChatCompletions(params: InvokeParams): Promise<InvokeR
     payload.response_format = normalizedResponseFormat;
   }
 
-  const response = await fetch(resolveApiUrl(), {
+  const targetUrl = urlOverride ?? resolveApiUrl();
+  console.log(`[LLM] → ${targetUrl} model=${model} tools=${tools?.length ?? 0}`);
+
+  const response = await fetch(targetUrl, {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      authorization: `Bearer ${ENV.forgeApiKey}`,
+      authorization: `Bearer ${apiKeyOverride ?? ENV.forgeApiKey}`,
     },
     body: JSON.stringify(payload),
   });
@@ -347,7 +379,10 @@ async function invokeForgeChatCompletions(params: InvokeParams): Promise<InvokeR
     );
   }
 
-  return (await response.json()) as InvokeResult;
+  const result = (await response.json()) as InvokeResult;
+  const choice = result.choices?.[0];
+  console.log(`[LLM] ← finish_reason=${choice?.finish_reason} tool_calls=${choice?.message?.tool_calls?.length ?? 0} content_len=${String(choice?.message?.content ?? "").length}`);
+  return result;
 }
 
 async function invokeOpenAIResponses(params: InvokeParams): Promise<InvokeResult> {
