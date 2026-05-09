@@ -24,6 +24,20 @@ type MarketWatchlistItem = {
   createdAt: string;
 };
 
+export type BinanceAlphaListingItem = {
+  symbol: string;
+  name: string | null;
+  tokenId: number | null;
+  pairName: string | null;
+  listingTime: string | null;
+  price: number | null;
+  volume24h: number | null;
+  marketCap: number | null;
+  fdv: number | null;
+  source: "internal_db" | "binance_api";
+  url: string | null;
+};
+
 let marketWatchlistTableReady: Promise<void> | null = null;
 const require = createRequire(import.meta.url);
 const { HttpsProxyAgent } = require("https-proxy-agent") as {
@@ -1736,6 +1750,192 @@ export async function listMarketTokens(input: MarketListInput) {
     page,
     pageSize,
   };
+}
+
+export async function getBinanceAlphaListings(options?: {
+  limit?: number;
+}): Promise<{ items: BinanceAlphaListingItem[]; total: number; source: "internal_db" | "binance_api" }> {
+  const limit = Math.min(Math.max(options?.limit ?? 10, 1), 50);
+
+  let internalItems: BinanceAlphaListingItem[] = [];
+  try {
+    internalItems = await getBinanceAlphaListingsFromDb(limit);
+  } catch {
+    internalItems = [];
+  }
+
+  if (internalItems.length > 0) {
+    return {
+      items: internalItems,
+      total: internalItems.length,
+      source: "internal_db",
+    };
+  }
+
+  const apiItems = await getBinanceAlphaListingsFromApi(limit);
+  return {
+    items: apiItems,
+    total: apiItems.length,
+    source: "binance_api",
+  };
+}
+
+async function getBinanceAlphaListingsFromDb(limit: number): Promise<BinanceAlphaListingItem[]> {
+  const currentPool = getPool();
+  const [rows] = await currentPool.query<
+    (RowDataPacket & {
+      tokenId: number;
+      symbol: string;
+      name: string | null;
+      pairName: string | null;
+      listingTime: string | null;
+      price: number | null;
+      volume24h: number | null;
+      marketCap: number | null;
+      fdv: number | null;
+      announcementUrl: string | null;
+    })[]
+  >(
+    `
+      SELECT
+        tp.id AS tokenId,
+        tp.symbol AS symbol,
+        tp.name AS name,
+        el.pair_name AS pairName,
+        el.listing_time AS listingTime,
+        COALESCE(p.price, tp.current_price) AS price,
+        COALESCE(p.volume_24h, tp.volume_24h) AS volume24h,
+        tp.market_cap AS marketCap,
+        tp.fdv AS fdv,
+        ea.url AS announcementUrl
+      FROM exchange_listings el
+      JOIN token_profiles tp ON tp.id = el.token_id
+      JOIN exchange_platforms ep ON ep.id = el.exchange_id
+      LEFT JOIN exchange_pairs p
+        ON p.token_id = el.token_id
+       AND p.exchange_id = el.exchange_id
+       AND COALESCE(p.pair_name, '') = COALESCE(el.pair_name, '')
+      LEFT JOIN exchange_announcements ea ON ea.id = el.announcement_id
+      WHERE el.listing_time IS NOT NULL
+        AND (
+          LOWER(ep.slug) IN ('binance-alpha', 'binance_alpha', 'binancealpha')
+          OR LOWER(ep.name) LIKE '%binance%alpha%'
+          OR (LOWER(ep.name) LIKE '%binance%' AND ep.market_type = 'alpha')
+        )
+      ORDER BY el.listing_time DESC, el.id DESC
+      LIMIT ?
+    `,
+    [limit]
+  );
+
+  return rows.map(row => ({
+    symbol: row.symbol,
+    name: row.name,
+    tokenId: row.tokenId,
+    pairName: row.pairName,
+    listingTime: row.listingTime,
+    price: row.price != null ? Number(row.price) : null,
+    volume24h: row.volume24h != null ? Number(row.volume24h) : null,
+    marketCap: row.marketCap != null ? Number(row.marketCap) : null,
+    fdv: row.fdv != null ? Number(row.fdv) : null,
+    source: "internal_db",
+    url: row.announcementUrl,
+  }));
+}
+
+async function getBinanceAlphaListingsFromApi(limit: number): Promise<BinanceAlphaListingItem[]> {
+  try {
+    const response = await axios.get(
+      "https://www.binance.com/bapi/defi/v1/public/wallet-direct/buw/wallet/cex/alpha/all/token/list",
+      {
+        headers: {
+          Accept: "application/json",
+        },
+        timeout: 20_000,
+        httpsAgent: getOutboundHttpsProxyAgent() ?? undefined,
+        proxy: false,
+      }
+    );
+
+    return normalizeBinanceAlphaApiItems(response.data)
+      .sort((left, right) => {
+        const leftTs = left.listingTime ? new Date(left.listingTime).getTime() : 0;
+        const rightTs = right.listingTime ? new Date(right.listingTime).getTime() : 0;
+        return rightTs - leftTs;
+      })
+      .slice(0, limit);
+  } catch {
+    return [];
+  }
+}
+
+function normalizeBinanceAlphaApiItems(payload: unknown): BinanceAlphaListingItem[] {
+  const candidates = collectArrays(payload).sort((left, right) => right.length - left.length)[0] ?? [];
+
+  return candidates
+    .map((item): BinanceAlphaListingItem | null => {
+      if (!item || typeof item !== "object") return null;
+      const record = item as Record<string, unknown>;
+      const symbol = pickFirstString(record, ["symbol", "tokenSymbol", "baseAsset", "asset", "ticker"]);
+      if (!symbol) return null;
+
+      const timestamp =
+        pickFirstNumber(record, ["listingTime", "listedAt", "openTime", "releaseTime", "launchTime", "time"]) ??
+        null;
+      const listingTime = timestamp
+        ? new Date(timestamp < 10_000_000_000 ? timestamp * 1000 : timestamp).toISOString()
+        : pickFirstString(record, ["listingDate", "listedDate", "createdAt"]);
+
+      return {
+        symbol: symbol.toUpperCase(),
+        name: pickFirstString(record, ["name", "tokenName", "projectName"]),
+        tokenId: null,
+        pairName: pickFirstString(record, ["pair", "pairName", "symbolPair"]),
+        listingTime,
+        price: pickFirstNumber(record, ["price", "lastPrice", "currentPrice"]),
+        volume24h: pickFirstNumber(record, ["volume24h", "volume", "quoteVolume"]),
+        marketCap: pickFirstNumber(record, ["marketCap", "marketCapUsd"]),
+        fdv: pickFirstNumber(record, ["fdv", "fullyDilutedValuation"]),
+        source: "binance_api" as const,
+        url: null,
+      };
+    })
+    .filter((item): item is BinanceAlphaListingItem => Boolean(item));
+}
+
+function collectArrays(value: unknown): Array<Record<string, unknown>[]> {
+  if (Array.isArray(value)) {
+    return value.every(item => item && typeof item === "object")
+      ? [value as Record<string, unknown>[]]
+      : [];
+  }
+
+  if (!value || typeof value !== "object") return [];
+
+  const arrays: Array<Record<string, unknown>[]> = [];
+  for (const nested of Object.values(value as Record<string, unknown>)) {
+    arrays.push(...collectArrays(nested));
+  }
+  return arrays;
+}
+
+function pickFirstString(record: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+function pickFirstNumber(record: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string" && value.trim() && Number.isFinite(Number(value))) {
+      return Number(value);
+    }
+  }
+  return null;
 }
 
 export async function getTokenProfileBySymbol(symbol: string): Promise<TokenProfileResult | null> {

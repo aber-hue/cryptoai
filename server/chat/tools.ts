@@ -17,6 +17,7 @@ import {
   getTokenSocialHeatViewBySymbol,
   getTokenUnlockViewBySymbol,
   getExchangeHoldersViewBySymbol,
+  getBinanceAlphaListings,
   listMarketTokens,
   searchAnnouncements,
 } from "../liveData";
@@ -231,6 +232,32 @@ export async function runExchangeListingFilterTool(options: {
   } satisfies ChatToolResult;
 }
 
+export async function runBinanceAlphaListingsTool(options?: {
+  limit?: number;
+}): Promise<ChatToolResult | null> {
+  const data = await getBinanceAlphaListings({
+    limit: options?.limit ?? 10,
+  });
+
+  if (data.items.length === 0) return null;
+
+  const topItems = data.items
+    .slice(0, 5)
+    .map(item => `${item.symbol}${item.listingTime ? `(${formatDate(item.listingTime)})` : ""}`)
+    .join("、");
+
+  return {
+    toolName: "get_binance_alpha_listings",
+    title: "Binance Alpha 最近上线项目",
+    source: data.source === "internal_db" ? "exchange_listings + exchange_platforms" : "binance_alpha_api",
+    summary: `获取到 ${data.items.length} 个 Binance Alpha 上线项目，最新包括：${topItems}`,
+    data: {
+      ...data,
+      fetchedAt: timestamp(),
+    },
+  };
+}
+
 export async function runDepthViewTool(
   symbol: string,
   marketType?: "spot" | "perps"
@@ -391,6 +418,12 @@ function formatSignedNumber(value: number | null | undefined) {
   if (value == null || Number.isNaN(value)) return "N/A";
   const formatted = formatNumber(value);
   return value > 0 ? `+${formatted}` : formatted;
+}
+
+function formatDate(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toISOString().slice(0, 10);
 }
 
 function normalizeSearchItems(data: unknown) {

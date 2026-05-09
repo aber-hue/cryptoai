@@ -17,6 +17,7 @@ import {
   runAnnouncementSearchTool,
   runExchangeRecentListingsTool,
   runExchangeListingFilterTool,
+  runBinanceAlphaListingsTool,
   runDepthViewTool,
   runDepthTrendTool,
   runOnchainHoldersTool,
@@ -143,6 +144,21 @@ const AGENT_TOOLS: Tool[] = [
           },
         },
         required: ["exchangeSlugs"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_binance_alpha_listings",
+      description:
+        "获取 Binance Alpha 最近上线项目列表。用户询问 Binance Alpha、alpha 上线、alpha 新币、最近上线项目时优先使用这个工具。",
+      parameters: {
+        type: "object",
+        properties: {
+          limit: { type: "number", description: "返回条数，默认 10，最大 50" },
+        },
         additionalProperties: false,
       },
     },
@@ -502,6 +518,7 @@ const TOOL_LABELS: Record<string, string> = {
   get_token_listing: "获取交易所上线记录",
   search_announcements: "搜索公告",
   get_exchange_recent_listings: "获取交易所近期上线",
+  get_binance_alpha_listings: "获取 Binance Alpha 上线项目",
   filter_exchange_listings: "筛选交易所上线交集",
   get_depth_view: "获取深度快照",
   get_depth_trend: "获取深度趋势",
@@ -543,6 +560,13 @@ async function executeTool(
           exchangeSlugs: Array.isArray(args.exchangeSlugs) ? (args.exchangeSlugs as string[]) : [],
           days: typeof args.days === "number" ? args.days : undefined,
           marketType: args.marketType === "spot" || args.marketType === "perps" ? args.marketType : undefined,
+        }),
+        isControl: false,
+      };
+    case "get_binance_alpha_listings":
+      return {
+        result: await runBinanceAlphaListingsTool({
+          limit: typeof args.limit === "number" ? args.limit : 10,
         }),
         isControl: false,
       };
@@ -661,6 +685,7 @@ function buildSystemPrompt(signalContext?: ChatSignalContext): string {
     "## 数据使用规则",
     "- 只能引用工具返回的真实数据，严禁编造任何数值、地址、时间、排名等具体信息",
     "- 可以调用多个工具进行多轮数据收集，工具调用之间可以并行",
+    "- 用户询问 Binance Alpha 最近上线、新币、项目列表时，优先调用 get_binance_alpha_listings",
     "- 如果没有任何工具能回答问题，调用 report_no_data 工具说明原因",
     "- 数据收集完毕后，调用 submit_final_answer 工具提交分析结论",
     "",
@@ -871,7 +896,8 @@ export async function runAgentLoop(
 
   // Determine task type and symbol from final answer or tool results
   const detectedSymbol = finalAnswer?.detectedSymbol ?? inferSymbol(messages, allToolResults);
-  const taskType: ChatTaskType = (finalAnswer?.taskType as ChatTaskType | undefined) ?? inferTaskType(messages, options);
+  const inferredTaskType = inferTaskType(messages, options);
+  const taskType = resolveTaskType(finalAnswer?.taskType, inferredTaskType);
 
   // Build fallback if no final answer
   const answer = finalAnswer ?? buildFallbackAnswer(messages, allToolResults, detectedSymbol);
@@ -939,7 +965,26 @@ function inferSymbol(messages: ChatInputMessage[], toolResults: ChatToolResult[]
   }
 
   // Fall back to message parsing
-  const ignore = new Set(["THE", "AND", "FOR", "WITH", "CHAT", "FREE", "LISTING", "DEPTH", "HOLDER", "FLOW"]);
+  const ignore = new Set([
+    "THE",
+    "AND",
+    "FOR",
+    "WITH",
+    "CHAT",
+    "FREE",
+    "LISTING",
+    "DEPTH",
+    "HOLDER",
+    "FLOW",
+    "BINANCE",
+    "ALPHA",
+    "OKX",
+    "BYBIT",
+    "UPBIT",
+    "BITHUMB",
+    "COINBASE",
+    "KRAKEN",
+  ]);
   for (const msg of [...messages].reverse()) {
     const matches = msg.content.toUpperCase().match(/\$?[A-Z][A-Z0-9]{1,9}/g) ?? [];
     for (const raw of matches) {
@@ -967,6 +1012,28 @@ function inferTaskType(
   if (/新闻|公告|news/.test(text)) return "news_research";
   if (/上线|listing|上币/.test(text)) return "listing_research";
   return "general";
+}
+
+function resolveTaskType(rawTaskType: unknown, inferredTaskType: ChatTaskType): ChatTaskType {
+  if (inferredTaskType !== "general") return inferredTaskType;
+
+  const allowed = new Set<ChatTaskType>([
+    "general",
+    "exchange_listing_overview",
+    "token_overview",
+    "liquidity_analysis",
+    "unlock_analysis",
+    "listing_research",
+    "news_research",
+    "onchain_holders",
+    "onchain_fund_flow",
+    "signal_analysis",
+    "full_checkup",
+  ]);
+
+  return typeof rawTaskType === "string" && allowed.has(rawTaskType as ChatTaskType)
+    ? (rawTaskType as ChatTaskType)
+    : inferredTaskType;
 }
 
 function buildFallbackAnswer(
