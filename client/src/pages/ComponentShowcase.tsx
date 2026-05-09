@@ -137,6 +137,7 @@ export default function ComponentsShowcase() {
   const [activeTaskId, setActiveTaskId] = useState<string>(() => loadPersistedActiveTaskId([]));
   const [menuTaskId, setMenuTaskId] = useState<string | null>(null);
   const [hasHydratedRemote, setHasHydratedRemote] = useState(false);
+  const [isStreaming, setIsStreaming] = useState(false);
   const utils = trpc.useUtils();
 
   const conversationListQuery = trpc.chat.listConversations.useQuery();
@@ -149,12 +150,6 @@ export default function ComponentsShowcase() {
     }
   );
 
-  const sendMessageMutation = trpc.chat.sendMessage.useMutation({
-    onError(error) {
-      toast.error(error.message || "发送失败，请稍后重试");
-    },
-  });
-
   const activeTask = useMemo(
     () => tasks.find(task => task.id === activeTaskId) ?? tasks[0] ?? null,
     [tasks, activeTaskId]
@@ -163,6 +158,12 @@ export default function ComponentsShowcase() {
     () => activeTask?.executionSteps.filter(step => step.status !== "pending") ?? [],
     [activeTask]
   );
+
+  const liveStatus = useMemo(() => {
+    if (!isStreaming) return undefined;
+    const running = activeTask?.executionSteps.findLast(s => s.status === "running");
+    return running?.label;
+  }, [isStreaming, activeTask?.executionSteps]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -266,62 +267,150 @@ export default function ComponentsShowcase() {
   }
 
   async function handleSendMessage(content: string) {
-    if (!activeTask) return;
+    if (!activeTask || isStreaming) return;
 
-    const userMessage: ChatMessage = {
-      role: "user",
-      content,
-    };
-
+    const userMessage: ChatMessage = { role: "user", content };
     const baseMessages = [...activeTask.messages, userMessage];
+    const taskId = activeTask.id;
+    const conversationId = activeTask.id.startsWith("task-") ? undefined : activeTask.id;
+
     updateActiveTask(task => ({
       ...task,
       title: deriveTaskTitle(task.title, content),
       messages: baseMessages,
+      executionSteps: [],
     }));
 
-    const result = await sendMessageMutation.mutateAsync({
-      conversationId: activeTask.id.startsWith("task-") ? undefined : activeTask.id,
-      title: deriveTaskTitle(activeTask.title, content),
-      persist: true,
-      messages: baseMessages.map(message => ({
-        role: message.role,
-        content: message.content,
-      })),
-    });
+    setIsStreaming(true);
 
-    updateActiveTask(task => ({
-      ...task,
-      id: result.conversationId ?? task.id,
-      title: deriveTaskTitle(task.title, content, result.detectedSymbol),
-      messages: [
-        ...baseMessages,
-        {
-          role: "assistant",
-          content: [
-            result.message,
-            result.keyFindings.length > 0 ? "" : null,
-            result.keyFindings.length > 0 ? "**关键发现**" : null,
-            ...result.keyFindings.map(item => `- ${item}`),
-            result.suggestedNextActions.length > 0 ? "" : null,
-            result.suggestedNextActions.length > 0 ? "**下一步建议**" : null,
-            ...result.suggestedNextActions.map(item => `- ${item}`),
-          ]
-            .filter(Boolean)
-            .join("\n"),
-        },
-      ],
-      citations: result.citations,
-      artifacts: result.artifacts,
-      executionSteps: result.executionSteps,
-      intent: (result.intent as Record<string, unknown> | null) ?? null,
-      detectedSymbol: result.detectedSymbol,
-      taskType: result.taskType,
-      usedTools: result.usedTools,
-    }));
-    setActiveTaskId(result.conversationId ?? activeTask.id);
+    try {
+      const response = await fetch("/api/chat/stream", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          conversationId,
+          title: deriveTaskTitle(activeTask.title, content),
+          persist: true,
+          messages: baseMessages.map(m => ({ role: m.role, content: m.content })),
+        }),
+      });
 
-    void conversationListQuery.refetch();
+      if (!response.ok || !response.body) {
+        throw new Error(`Stream request failed: ${response.status}`);
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      const liveSteps: WorkspaceTask["executionSteps"] = [];
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          const json = line.slice(6).trim();
+          if (!json) continue;
+
+          let event: Record<string, unknown>;
+          try {
+            event = JSON.parse(json) as Record<string, unknown>;
+          } catch {
+            continue;
+          }
+
+          if (event.type === "step") {
+            const step = event.step as WorkspaceTask["executionSteps"][number];
+            const idx = liveSteps.findIndex(s => s.id === step.id);
+            if (idx >= 0) {
+              liveSteps[idx] = step;
+            } else {
+              liveSteps.push(step);
+            }
+            updateTaskById(taskId, task => ({ ...task, executionSteps: [...liveSteps] }));
+          } else if (event.type === "tool_call") {
+            const toolStep: WorkspaceTask["executionSteps"][number] = {
+              id: `tool-${String(event.name)}-${Date.now()}`,
+              label: String(event.label ?? event.name),
+              status: "running",
+            };
+            liveSteps.push(toolStep);
+            updateTaskById(taskId, task => ({ ...task, executionSteps: [...liveSteps] }));
+          } else if (event.type === "tool_result") {
+            const name = String(event.name);
+            const idx = [...liveSteps].reverse().findIndex(s => s.id.startsWith(`tool-${name}`));
+            const realIdx = idx >= 0 ? liveSteps.length - 1 - idx : -1;
+            if (realIdx >= 0) {
+              liveSteps[realIdx] = {
+                ...liveSteps[realIdx],
+                status: event.ok ? "completed" : "failed",
+                detail: String(event.summary ?? ""),
+              };
+            }
+            updateTaskById(taskId, task => ({ ...task, executionSteps: [...liveSteps] }));
+          } else if (event.type === "answer") {
+            const payload = event.payload as {
+              message: string;
+              keyFindings: string[];
+              suggestedNextActions: string[];
+              detectedSymbol?: string | null;
+              taskType?: string;
+              citations?: WorkspaceTask["citations"];
+              artifacts?: WorkspaceTask["artifacts"];
+              executionSteps?: WorkspaceTask["executionSteps"];
+              usedTools?: string[];
+              usedFallback?: boolean;
+              intent?: Record<string, unknown> | null;
+            };
+
+            const fallbackBadge = payload.usedFallback
+              ? "> ⚠ 本次回答未引用工具数据，请谨慎参考。\n\n"
+              : "";
+
+            const assistantContent = [
+              fallbackBadge + payload.message,
+              payload.keyFindings?.length > 0 ? "" : null,
+              payload.keyFindings?.length > 0 ? "**关键发现**" : null,
+              ...(payload.keyFindings ?? []).map(item => `- ${item}`),
+              payload.suggestedNextActions?.length > 0 ? "" : null,
+              payload.suggestedNextActions?.length > 0 ? "**下一步建议**" : null,
+              ...(payload.suggestedNextActions ?? []).map(item => `- ${item}`),
+            ]
+              .filter(Boolean)
+              .join("\n");
+
+            updateTaskById(taskId, task => ({
+              ...task,
+              title: deriveTaskTitle(task.title, content, payload.detectedSymbol ?? null),
+              messages: [...baseMessages, { role: "assistant", content: assistantContent }],
+              citations: payload.citations ?? [],
+              artifacts: payload.artifacts ?? [],
+              executionSteps: payload.executionSteps ?? liveSteps,
+              intent: (payload.intent as Record<string, unknown> | null) ?? null,
+              detectedSymbol: payload.detectedSymbol ?? null,
+              taskType: payload.taskType ?? "general",
+              usedTools: payload.usedTools ?? [],
+            }));
+          } else if (event.type === "conversation_saved") {
+            const newConversationId = String(event.conversationId);
+            updateTaskById(taskId, task => ({ ...task, id: newConversationId }));
+            setActiveTaskId(newConversationId);
+            void conversationListQuery.refetch();
+          } else if (event.type === "error") {
+            toast.error(String(event.message ?? "分析过程出错"));
+          }
+        }
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "发送失败，请稍后重试");
+    } finally {
+      setIsStreaming(false);
+    }
   }
 
   function handleCreateTask() {
@@ -376,17 +465,17 @@ export default function ComponentsShowcase() {
   }
 
   return (
-    <div className="min-h-[calc(100vh-132px)] rounded-[30px] border border-white/80 bg-white/92 shadow-[0_18px_44px_rgba(83,102,138,0.08)]">
-      <div className="grid min-h-[calc(100vh-132px)] xl:grid-cols-[260px_minmax(0,1fr)_320px]">
-        <aside className="border-r border-[#e8eef6] bg-[#f8fbff]">
-          <div className="p-4">
+    <div className="mx-auto h-[calc(100vh-132px)] max-w-[1600px] overflow-hidden rounded-[30px] border border-[#dfe7f1] bg-white shadow-[0_18px_44px_rgba(83,102,138,0.08)]">
+      <div className="grid h-full grid-cols-1 lg:grid-cols-[240px_minmax(0,1fr)_300px]">
+        <aside className="flex h-full flex-col overflow-hidden border-r border-[#e8eef6] bg-[#f8fbff]">
+          <div className="shrink-0 p-4">
             <Button className="h-12 w-full rounded-xl bg-[#1558c0] hover:bg-[#124ca6]" onClick={handleCreateTask}>
               <Plus className="mr-2 h-4 w-4" />
               新建任务
             </Button>
           </div>
 
-          <div className="space-y-1 px-2 pb-4">
+          <div className="min-h-0 flex-1 overflow-y-auto space-y-1 px-2 pb-4">
             {tasks.map(task => (
               <div
                 key={task.id}
@@ -431,7 +520,7 @@ export default function ComponentsShowcase() {
           </div>
         </aside>
 
-        <main className="flex min-h-[calc(100vh-132px)] flex-col">
+        <main className="flex h-full min-h-0 flex-col overflow-hidden">
           <div className="flex h-16 items-center justify-between border-b border-[#e8eef6] px-5">
             <div className="flex items-center gap-2 text-sm font-medium text-[oklch(var(--crypto-ink))]">
               <Bot className="h-4 w-4 text-[#1558c0]" />
@@ -457,22 +546,22 @@ export default function ComponentsShowcase() {
             </div>
           </div>
 
-          <div className="flex-1 overflow-hidden p-5">
+          <div className="min-h-0 flex-1 overflow-hidden px-4 pb-4 pt-3">
             <AIChatBox
               messages={activeTask.messages}
               onSendMessage={handleSendMessage}
-              isLoading={sendMessageMutation.isPending}
-              height="100%"
+              isLoading={isStreaming}
+              liveStatus={liveStatus}
               placeholder="直接问：分析 BTC 的解锁压力 / 看 ETH 深度变化 / 看 SOL 链上 holder"
               emptyStateMessage="开始一轮基于内部数据源的分析"
               suggestedPrompts={workspace.suggestedPrompts}
-              className="h-full rounded-[24px] border-[#dfe7f1] bg-white"
+              className="rounded-[24px] border-[#dfe7f1] bg-white"
             />
           </div>
         </main>
 
-        <aside className="border-l border-[#e8eef6] bg-[#fcfdff]">
-          <ScrollArea className="h-[calc(100vh-132px)]">
+        <aside className="flex h-full min-h-0 flex-col overflow-hidden border-l border-[#e8eef6] bg-white">
+          <ScrollArea className="h-full">
             <div className="space-y-4 p-4">
               <Card className="rounded-2xl border border-[#dfe7f1] bg-white shadow-[0_8px_20px_rgba(83,102,138,0.06)]">
                 <CardHeader className="pb-3">

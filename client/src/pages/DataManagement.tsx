@@ -12,7 +12,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { trpc } from "@/lib/trpc";
-import { parseUtcDateLike } from "@/lib/time";
+import { parseUtcDateLike, SHANGHAI_TIME_ZONE } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { useLocation } from "wouter";
 import {
@@ -80,12 +80,18 @@ function formatDateTime(value: string | null) {
   if (!value) return "—";
   const date = parseUtcDateLike(value);
   if (!date) return value;
-  const year = date.getFullYear();
-  const month = `${date.getMonth() + 1}`.padStart(2, "0");
-  const day = `${date.getDate()}`.padStart(2, "0");
-  const hours = `${date.getHours()}`.padStart(2, "0");
-  const minutes = `${date.getMinutes()}`.padStart(2, "0");
-  return `${year}/${month}/${day} ${hours}:${minutes}`;
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: SHANGHAI_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(date);
+
+  const get = (type: Intl.DateTimeFormatPartTypes) => parts.find(part => part.type === type)?.value ?? "";
+  return `${get("year")}/${get("month")}/${get("day")} ${get("hour")}:${get("minute")}`;
 }
 
 function formatCompactAmount(value: number | null, digits = 2) {
@@ -127,6 +133,17 @@ function normalizeExchangeName(value: string) {
 
 function getExchangeDisplayName(value: string) {
   return value.replace(/\s+(Spot|Perps|Tradfi)$/i, "").trim();
+}
+
+function getExchangeMarketBadge(rawType: string | null | undefined) {
+  const normalized = (rawType ?? "").trim().toLowerCase();
+  if (normalized === "perps") return "perps";
+  if (normalized === "spot") return "spot";
+  if (normalized === "alpha") return "alpha";
+  if (normalized === "boost") return "boost";
+  if (normalized === "xlaunch") return "xlaunch";
+  if (normalized === "tradfi") return "tradfi";
+  return normalized || "spot";
 }
 
 function AssetLogo({
@@ -242,6 +259,7 @@ function ExchangeSummaryList({
         <div
           key={`${exchange.name}-${exchange.rawType ?? "market"}`}
           className="flex min-w-0 items-center gap-1.5 rounded-lg bg-[oklch(var(--crypto-panel-soft))] px-2 py-1.5"
+          title={exchange.displayName}
         >
           <AssetLogo
             src={exchange.logoUrl}
@@ -249,8 +267,8 @@ function ExchangeSummaryList({
             fallback={exchange.displayName.slice(0, 1).toUpperCase()}
             className="h-4 w-4 shrink-0"
           />
-          <span className="truncate text-[12px] text-[oklch(var(--crypto-ink))]">
-            {exchange.displayName}
+          <span className="truncate text-[11px] font-medium uppercase tracking-[0.08em] text-[oklch(var(--crypto-ink))]">
+            {getExchangeMarketBadge(exchange.rawType)}
           </span>
         </div>
       ))}

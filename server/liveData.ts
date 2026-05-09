@@ -1,5 +1,7 @@
 import { BigQuery } from "@google-cloud/bigquery";
+import axios from "axios";
 import { createPool, type Pool, type PoolOptions, type RowDataPacket } from "mysql2/promise";
+import { createRequire } from "module";
 import path from "path";
 import { ENV } from "./_core/env";
 import { getFeaturePool } from "./featureDb";
@@ -23,6 +25,25 @@ type MarketWatchlistItem = {
 };
 
 let marketWatchlistTableReady: Promise<void> | null = null;
+const require = createRequire(import.meta.url);
+const { HttpsProxyAgent } = require("https-proxy-agent") as {
+  HttpsProxyAgent: new (proxyUrl: string) => any;
+};
+let outboundHttpsProxyAgent: any | null | undefined;
+
+function getOutboundHttpsProxyAgent() {
+  if (outboundHttpsProxyAgent !== undefined) return outboundHttpsProxyAgent;
+
+  const proxyUrl =
+    process.env.HTTPS_PROXY ||
+    process.env.https_proxy ||
+    process.env.HTTP_PROXY ||
+    process.env.http_proxy ||
+    null;
+
+  outboundHttpsProxyAgent = proxyUrl ? new HttpsProxyAgent(proxyUrl) : null;
+  return outboundHttpsProxyAgent;
+}
 
 async function ensureMarketWatchlistTable() {
   if (!marketWatchlistTableReady) {
@@ -1083,33 +1104,29 @@ async function fetchCoinMarketCapKline(identifier: string, range: TokenKlineRang
   url.searchParams.set("count", `${count}`);
   url.searchParams.set("convert", "USD");
 
-  const response = await fetch(url, {
-    headers: {
-      Accept: "application/json",
-      "X-CMC_PRO_API_KEY": ENV.coinMarketCapApiKey,
-    },
-    signal: AbortSignal.timeout(20_000),
-  });
-
-  const bodyText = await response.text();
-  let payload: any = null;
-
   try {
-    payload = bodyText ? JSON.parse(bodyText) : null;
-  } catch {
-    payload = null;
-  }
+    const response = await axios.get(url.toString(), {
+      headers: {
+        Accept: "application/json",
+        "X-CMC_PRO_API_KEY": ENV.coinMarketCapApiKey,
+      },
+      timeout: 20_000,
+      httpsAgent: getOutboundHttpsProxyAgent() ?? undefined,
+      proxy: false,
+    });
 
-  if (!response.ok) {
-    const errorMessage =
-      payload?.status?.error_message ||
-      payload?.status?.errorMessage ||
-      bodyText ||
-      `HTTP ${response.status}`;
+    return normalizeCoinMarketCapOhlcvResponse(response.data);
+  } catch (error) {
+    const errorMessage = axios.isAxiosError(error)
+      ? error.response?.data?.status?.error_message ||
+        error.response?.data?.status?.errorMessage ||
+        error.response?.data?.error ||
+        error.message
+      : error instanceof Error
+        ? error.message
+        : "Unknown request failure";
     throw new Error(`CMC price request failed: ${errorMessage}`);
   }
-
-  return normalizeCoinMarketCapOhlcvResponse(payload);
 }
 
 function normalizeCoinGeckoMarketChartResponse(payload: any) {
@@ -1185,32 +1202,27 @@ async function fetchCoinGeckoKline(coinId: string, range: TokenKlineRange) {
     url.searchParams.set("interval", "daily");
   }
 
-  const response = await fetch(url, {
-    headers: {
-      Accept: "application/json",
-    },
-    signal: AbortSignal.timeout(20_000),
-  });
-
-  const bodyText = await response.text();
-  let payload: any = null;
-
   try {
-    payload = bodyText ? JSON.parse(bodyText) : null;
-  } catch {
-    payload = null;
-  }
+    const response = await axios.get(url.toString(), {
+      headers: {
+        Accept: "application/json",
+      },
+      timeout: 20_000,
+      httpsAgent: getOutboundHttpsProxyAgent() ?? undefined,
+      proxy: false,
+    });
 
-  if (!response.ok) {
-    const errorMessage =
-      payload?.status?.error_message ||
-      payload?.error ||
-      bodyText ||
-      `HTTP ${response.status}`;
+    return normalizeCoinGeckoMarketChartResponse(response.data);
+  } catch (error) {
+    const errorMessage = axios.isAxiosError(error)
+      ? error.response?.data?.status?.error_message ||
+        error.response?.data?.error ||
+        error.message
+      : error instanceof Error
+        ? error.message
+        : "Unknown request failure";
     throw new Error(`CoinGecko price request failed: ${errorMessage}`);
   }
-
-  return normalizeCoinGeckoMarketChartResponse(payload);
 }
 
 function formatAddressTagLabel(value: string | null | undefined) {
