@@ -1,6 +1,5 @@
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { Loader2, Send, User, Sparkles } from "lucide-react";
 import { useState, useEffect, useRef } from "react";
@@ -152,9 +151,10 @@ export function AIChatBox({
 
   // Scroll to bottom helper function with smooth animation
   const scrollToBottom = () => {
-    const viewport = scrollAreaRef.current?.querySelector(
+    const radixViewport = scrollAreaRef.current?.querySelector(
       '[data-radix-scroll-area-viewport]'
-    ) as HTMLDivElement;
+    ) as HTMLDivElement | null;
+    const viewport = radixViewport ?? scrollAreaRef.current;
 
     if (viewport) {
       requestAnimationFrame(() => {
@@ -210,12 +210,12 @@ export function AIChatBox({
     <div
       ref={containerRef}
       className={cn(
-        "flex h-full flex-col bg-card text-card-foreground rounded-lg border shadow-sm",
+        "flex h-full min-w-0 flex-col overflow-hidden rounded-lg border bg-card text-card-foreground shadow-sm",
         className
       )}
     >
       {/* Messages Area — min-h-0 prevents flex children from overflowing the container */}
-      <div ref={scrollAreaRef} className="min-h-0 flex-1 overflow-hidden">
+      <div className="min-h-0 flex-1 overflow-hidden">
         {displayMessages.length === 0 ? (
           <div className="flex h-full flex-col p-4">
             <div className="flex flex-1 flex-col items-center justify-center gap-6 text-muted-foreground">
@@ -241,8 +241,8 @@ export function AIChatBox({
             </div>
           </div>
         ) : (
-          <ScrollArea className="h-full">
-            <div className="flex flex-col space-y-4 p-4">
+          <div ref={scrollAreaRef} className="h-full min-w-0 overflow-y-auto overflow-x-hidden">
+            <div className="flex w-full min-w-0 max-w-full flex-col space-y-4 p-4">
               {displayMessages.map((message, index) => {
                 // Apply min-height to last message only if NOT loading (when loading, the loading indicator gets it)
                 const isLastMessage = index === displayMessages.length - 1;
@@ -253,7 +253,7 @@ export function AIChatBox({
                   <div
                     key={index}
                     className={cn(
-                      "flex gap-3",
+                      "flex w-full min-w-0 max-w-full gap-3",
                       message.role === "user"
                         ? "justify-end items-start"
                         : "justify-start items-start"
@@ -272,18 +272,20 @@ export function AIChatBox({
 
                     <div
                       className={cn(
-                        "max-w-[80%] rounded-lg px-4 py-2.5",
+                        "min-w-0 rounded-lg px-4 py-2.5",
                         message.role === "user"
-                          ? "bg-primary text-primary-foreground"
-                          : "bg-muted text-foreground"
+                          ? "max-w-[80%] overflow-hidden bg-primary text-primary-foreground"
+                          : "w-full max-w-[920px] overflow-hidden bg-muted text-foreground"
                       )}
                     >
                       {message.role === "assistant" ? (
-                        <div className="prose prose-sm dark:prose-invert max-w-none">
-                          <Streamdown>{message.content}</Streamdown>
+                        <div className="w-full min-w-0 max-w-full overflow-hidden">
+                          <div className="ai-chat-markdown prose prose-sm w-full min-w-0 max-w-full overflow-hidden break-words [overflow-wrap:anywhere] dark:prose-invert [&_blockquote]:max-w-[78ch] [&_h1]:break-words [&_h2]:break-words [&_h3]:break-words [&_li]:max-w-[78ch] [&_p]:max-w-[78ch] [&_pre]:max-w-full [&_pre]:overflow-x-auto [&_table]:block [&_table]:max-w-full [&_table]:overflow-x-auto [&_td]:whitespace-nowrap [&_th]:whitespace-nowrap">
+                            <Streamdown>{message.content}</Streamdown>
+                          </div>
                         </div>
                       ) : (
-                        <p className="whitespace-pre-wrap text-sm">
+                        <p className="whitespace-pre-wrap break-words text-sm">
                           {message.content}
                         </p>
                       )}
@@ -299,11 +301,11 @@ export function AIChatBox({
               })}
 
               {isLoading && (
-                <div className="flex items-start gap-3">
+                <div className="flex min-w-0 items-start gap-3">
                   <div className="size-8 shrink-0 mt-1 rounded-full bg-primary/10 flex items-center justify-center">
                     <Sparkles className="size-4 animate-pulse text-primary" />
                   </div>
-                  <div className="rounded-lg bg-muted px-4 py-3">
+                  <div className="min-w-0 rounded-lg bg-muted px-4 py-3">
                     {liveStatus ? (
                       <div className="flex items-center gap-2 text-sm text-muted-foreground">
                         <Loader2 className="size-3 animate-spin" />
@@ -320,7 +322,7 @@ export function AIChatBox({
                 </div>
               )}
             </div>
-          </ScrollArea>
+          </div>
         )}
       </div>
 

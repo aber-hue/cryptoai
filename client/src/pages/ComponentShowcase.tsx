@@ -485,9 +485,9 @@ export default function ComponentsShowcase() {
   }
 
   return (
-    <div className="mx-auto h-[calc(100vh-132px)] max-w-[1600px] overflow-hidden rounded-[30px] border border-[#dfe7f1] bg-white shadow-[0_18px_44px_rgba(83,102,138,0.08)]">
-      <div className="grid h-full grid-cols-1 lg:grid-cols-[240px_minmax(0,1fr)_300px]">
-        <aside className="flex h-full flex-col overflow-hidden border-r border-[#e8eef6] bg-[#f8fbff]">
+    <div className="mx-auto h-[calc(100vh-132px)] w-full max-w-[1600px] overflow-hidden rounded-[30px] border border-[#dfe7f1] bg-white shadow-[0_18px_44px_rgba(83,102,138,0.08)]">
+      <div className="grid h-full min-w-0 grid-cols-1 lg:grid-cols-[240px_minmax(0,1fr)_minmax(280px,320px)]">
+        <aside className="flex h-full min-w-0 flex-col overflow-hidden border-r border-[#e8eef6] bg-[#f8fbff]">
           <div className="shrink-0 p-4">
             <Button className="h-12 w-full rounded-xl bg-[#1558c0] hover:bg-[#124ca6]" onClick={handleCreateTask}>
               <Plus className="mr-2 h-4 w-4" />
@@ -540,15 +540,15 @@ export default function ComponentsShowcase() {
           </div>
         </aside>
 
-        <main className="flex h-full min-h-0 flex-col overflow-hidden">
-          <div className="flex h-16 items-center justify-between border-b border-[#e8eef6] px-5">
-            <div className="flex items-center gap-2 text-sm font-medium text-[oklch(var(--crypto-ink))]">
-              <Bot className="h-4 w-4 text-[#1558c0]" />
+        <main className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
+          <div className="flex h-16 min-w-0 items-center justify-between gap-3 border-b border-[#e8eef6] px-5">
+            <div className="flex min-w-0 items-center gap-2 text-sm font-medium text-[oklch(var(--crypto-ink))]">
+              <Bot className="h-4 w-4 shrink-0 text-[#1558c0]" />
               Free Chat
-              <span className="text-[#98a2b3]">· {activeTask.title}</span>
+              <span className="min-w-0 truncate text-[#98a2b3]">· {activeTask.title}</span>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex shrink-0 items-center gap-2">
               <Badge variant="outline" className="border-[#d6e3f4] bg-[#f7fbff] text-[#1558c0]">
                 {activeTask.taskType}
               </Badge>
@@ -566,7 +566,7 @@ export default function ComponentsShowcase() {
             </div>
           </div>
 
-          <div className="min-h-0 flex-1 overflow-hidden px-4 pb-4 pt-3">
+          <div className="min-h-0 min-w-0 max-w-full flex-1 overflow-hidden px-4 pb-4 pt-3">
             <AIChatBox
               messages={activeTask.messages}
               onSendMessage={handleSendMessage}
@@ -575,30 +575,30 @@ export default function ComponentsShowcase() {
               placeholder="直接问：分析 BTC 的解锁压力 / 看 ETH 深度变化 / 看 SOL 链上 holder"
               emptyStateMessage="开始一轮基于内部数据源的分析"
               suggestedPrompts={workspace.suggestedPrompts}
-              className="rounded-[24px] border-[#dfe7f1] bg-white"
+              className="min-w-0 rounded-[24px] border-[#dfe7f1] bg-white"
             />
           </div>
         </main>
 
-        <aside className="flex h-full min-h-0 flex-col overflow-hidden border-l border-[#e8eef6] bg-white">
-          <ScrollArea className="h-full">
-            <div className="space-y-4 p-4">
-              <Card className="rounded-2xl border border-[#dfe7f1] bg-white shadow-[0_8px_20px_rgba(83,102,138,0.06)]">
+        <aside className="free-chat-side-panel flex h-full min-h-0 min-w-0 max-w-full flex-col overflow-hidden border-l border-[#e8eef6] bg-white">
+          <ScrollArea className="h-full min-w-0 max-w-full overflow-hidden">
+            <div className="min-w-0 max-w-full space-y-4 p-4">
+              <Card className="min-w-0 max-w-full overflow-hidden rounded-2xl border border-[#dfe7f1] bg-white shadow-[0_8px_20px_rgba(83,102,138,0.06)]">
                 <CardHeader className="pb-3">
-                  <CardTitle className="flex items-center gap-2 text-sm font-medium">
+                  <CardTitle className="flex min-w-0 items-center gap-2 text-sm font-medium">
                     <FileText className="h-4 w-4 text-[#1558c0]" />
                     输出文件
                   </CardTitle>
                 </CardHeader>
-                <CardContent className="space-y-3">
+                <CardContent className="min-w-0 space-y-3">
                   {activeTask.artifacts.length === 0 ? (
-                    <div className="text-sm text-muted-foreground">当前回答还没有生成文件型产物。</div>
+                    <div className="break-words text-sm text-muted-foreground">当前回答还没有生成文件型产物。</div>
                   ) : (
                     activeTask.artifacts.map(file => (
-                      <div key={file.id} className="rounded-xl border border-[#edf2f7] bg-[#fbfdff] px-3 py-3">
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="text-sm font-medium text-[oklch(var(--crypto-ink))]">{file.name}</div>
-                          <div className="flex items-center gap-2">
+                      <div key={file.id} className="min-w-0 max-w-full overflow-hidden rounded-xl border border-[#edf2f7] bg-[#fbfdff] px-3 py-3">
+                        <div className="flex min-w-0 max-w-full items-start justify-between gap-2">
+                          <div className="min-w-0 flex-1 break-all text-sm font-medium leading-5 text-[oklch(var(--crypto-ink))]">{file.name}</div>
+                          <div className="flex shrink-0 items-center gap-1">
                             <Badge variant="secondary" className="bg-[#eef4ff] text-[#1558c0]">
                               {file.type}
                             </Badge>
@@ -610,75 +610,75 @@ export default function ComponentsShowcase() {
                             </button>
                           </div>
                         </div>
-                        <div className="mt-2 text-sm leading-6 text-muted-foreground">{file.summary}</div>
+                        <div className="mt-2 break-words text-sm leading-6 text-muted-foreground">{file.summary}</div>
                       </div>
                     ))
                   )}
                 </CardContent>
               </Card>
 
-              <Card className="rounded-2xl border border-[#dfe7f1] bg-white shadow-[0_8px_20px_rgba(83,102,138,0.06)]">
+              <Card className="min-w-0 max-w-full overflow-hidden rounded-2xl border border-[#dfe7f1] bg-white shadow-[0_8px_20px_rgba(83,102,138,0.06)]">
                 <CardHeader className="pb-3">
                   <CardTitle className="text-sm font-medium">数据引用</CardTitle>
                 </CardHeader>
-                <CardContent className="space-y-3">
+                <CardContent className="min-w-0 space-y-3">
                   {activeTask.citations.length === 0 ? (
-                    <div className="text-sm text-muted-foreground">当前还没有引用数据块。</div>
+                    <div className="break-words text-sm text-muted-foreground">当前还没有引用数据块。</div>
                   ) : (
                     activeTask.citations.map(citation => (
-                      <div key={citation.id} className="rounded-xl border border-[#edf2f7] bg-[#fbfdff] px-3 py-3">
-                        <div className="text-sm font-medium text-[oklch(var(--crypto-ink))]">{citation.title}</div>
-                        <div className="mt-1 text-xs text-[#667085]">{citation.source}</div>
-                        <div className="mt-2 text-sm leading-6 text-muted-foreground">{citation.summary}</div>
+                      <div key={citation.id} className="min-w-0 max-w-full overflow-hidden rounded-xl border border-[#edf2f7] bg-[#fbfdff] px-3 py-3">
+                        <div className="break-words text-sm font-medium leading-5 text-[oklch(var(--crypto-ink))]">{citation.title}</div>
+                        <div className="mt-1 break-all text-xs leading-5 text-[#667085]">{citation.source}</div>
+                        <div className="mt-2 break-words text-sm leading-6 text-muted-foreground">{citation.summary}</div>
                       </div>
                     ))
                   )}
                 </CardContent>
               </Card>
 
-              <Card className="rounded-2xl border border-[#dfe7f1] bg-white shadow-[0_8px_20px_rgba(83,102,138,0.06)]">
+              <Card className="min-w-0 max-w-full overflow-hidden rounded-2xl border border-[#dfe7f1] bg-white shadow-[0_8px_20px_rgba(83,102,138,0.06)]">
                 <CardHeader className="pb-3">
                   <CardTitle className="text-sm font-medium">意图识别</CardTitle>
                 </CardHeader>
-                <CardContent className="space-y-2">
+                <CardContent className="min-w-0 space-y-2">
                   {!activeTask.intent ? (
-                    <div className="text-sm text-muted-foreground">发送问题后会展示系统识别到的查询意图。</div>
+                    <div className="break-words text-sm text-muted-foreground">发送问题后会展示系统识别到的查询意图。</div>
                   ) : (
                     renderIntentSummary(activeTask.intent)
                   )}
                 </CardContent>
               </Card>
 
-              <Card className="rounded-2xl border border-[#dfe7f1] bg-white shadow-[0_8px_20px_rgba(83,102,138,0.06)]">
+              <Card className="min-w-0 max-w-full overflow-hidden rounded-2xl border border-[#dfe7f1] bg-white shadow-[0_8px_20px_rgba(83,102,138,0.06)]">
                 <CardHeader className="pb-3">
-                  <CardTitle className="flex items-center gap-2 text-sm font-medium">
+                  <CardTitle className="flex min-w-0 items-center gap-2 text-sm font-medium">
                     <Workflow className="h-4 w-4 text-[#1558c0]" />
                     研究计划
                   </CardTitle>
                 </CardHeader>
-                <CardContent className="space-y-3">
+                <CardContent className="min-w-0 space-y-3">
                   {!activeTask.researchPlan ? (
-                    <div className="text-sm text-muted-foreground">发送问题后会展示模型的研究计划。</div>
+                    <div className="break-words text-sm text-muted-foreground">发送问题后会展示模型的研究计划。</div>
                   ) : (
                     <>
-                      <div className="rounded-xl border border-[#edf2f7] bg-[#fbfdff] px-3 py-2.5 text-sm leading-6 text-muted-foreground">
+                      <div className="min-w-0 max-w-full overflow-hidden break-words rounded-xl border border-[#edf2f7] bg-[#fbfdff] px-3 py-2.5 text-sm leading-6 text-muted-foreground">
                         {activeTask.researchPlan.rationale}
                       </div>
                       <div className="space-y-2">
                         {activeTask.researchPlan.subQuestions.map((item, index) => (
-                          <div key={`${item}-${index}`} className="rounded-xl border border-[#edf2f7] bg-white px-3 py-2 text-sm text-[oklch(var(--crypto-ink))]">
+                          <div key={`${item}-${index}`} className="min-w-0 max-w-full overflow-hidden break-words rounded-xl border border-[#edf2f7] bg-white px-3 py-2 text-sm leading-6 text-[oklch(var(--crypto-ink))]">
                             {index + 1}. {item}
                           </div>
                         ))}
                       </div>
-                      <div className="flex flex-wrap gap-2">
+                      <div className="flex min-w-0 max-w-full flex-wrap gap-2">
                         {activeTask.researchPlan.plannedTools.length === 0 ? (
                           <Badge variant="outline" className="border-[#dfe7f1] bg-[#fbfdff] text-[#667085]">
                             无需工具
                           </Badge>
                         ) : (
                           activeTask.researchPlan.plannedTools.map(tool => (
-                            <Badge key={tool.name} variant="outline" className="border-[#d6e3f4] bg-[#f7fbff] text-[#1558c0]" title={tool.rationale}>
+                            <Badge key={tool.name} variant="outline" className="max-w-full break-all border-[#d6e3f4] bg-[#f7fbff] text-[#1558c0]" title={tool.rationale}>
                               {tool.name}
                             </Badge>
                           ))
@@ -689,25 +689,25 @@ export default function ComponentsShowcase() {
                 </CardContent>
               </Card>
 
-              <Card className="rounded-2xl border border-[#dfe7f1] bg-white shadow-[0_8px_20px_rgba(83,102,138,0.06)]">
+              <Card className="min-w-0 max-w-full overflow-hidden rounded-2xl border border-[#dfe7f1] bg-white shadow-[0_8px_20px_rgba(83,102,138,0.06)]">
                 <CardHeader className="pb-3">
-                  <CardTitle className="flex items-center gap-2 text-sm font-medium">
+                  <CardTitle className="flex min-w-0 items-center gap-2 text-sm font-medium">
                     <Workflow className="h-4 w-4 text-[#1558c0]" />
                     执行步骤
                   </CardTitle>
                 </CardHeader>
-                <CardContent className="space-y-2">
+                <CardContent className="min-w-0 space-y-2">
                   {visibleExecutionSteps.length === 0 ? (
-                    <div className="text-sm text-muted-foreground">发送问题后会展示编排步骤。</div>
+                    <div className="break-words text-sm text-muted-foreground">发送问题后会展示编排步骤。</div>
                   ) : (
                     visibleExecutionSteps.map(step => (
-                      <div key={step.id} className="rounded-xl border border-[#edf2f7] bg-[#fbfdff] px-3 py-2.5">
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="text-sm font-medium leading-5 text-[oklch(var(--crypto-ink))]">{step.label}</div>
+                      <div key={step.id} className="min-w-0 max-w-full overflow-hidden rounded-xl border border-[#edf2f7] bg-[#fbfdff] px-3 py-2.5">
+                        <div className="flex min-w-0 items-start justify-between gap-2">
+                          <div className="min-w-0 flex-1 break-words text-sm font-medium leading-5 text-[oklch(var(--crypto-ink))]">{step.label}</div>
                           <Badge
                             variant="outline"
                             className={cn(
-                              "capitalize",
+                              "shrink-0 capitalize",
                               step.status === "completed" && "border-[#ccebd7] bg-[#ecfdf3] text-[#047857]",
                               step.status === "running" && "border-[#d6e3f4] bg-[#eef5ff] text-[#1558c0]",
                               step.status === "failed" && "border-[#ffd8d5] bg-[#fff3f2] text-[#b42318]"
@@ -717,7 +717,7 @@ export default function ComponentsShowcase() {
                           </Badge>
                         </div>
                         {step.detail ? (
-                          <div className="mt-1 text-xs leading-5 text-muted-foreground line-clamp-2">{step.detail}</div>
+                          <div className="mt-1 break-words text-xs leading-5 text-muted-foreground line-clamp-2">{step.detail}</div>
                         ) : null}
                       </div>
                     ))
@@ -725,19 +725,19 @@ export default function ComponentsShowcase() {
                 </CardContent>
               </Card>
 
-              <Card className="rounded-2xl border border-[#dfe7f1] bg-white shadow-[0_8px_20px_rgba(83,102,138,0.06)]">
+              <Card className="min-w-0 max-w-full overflow-hidden rounded-2xl border border-[#dfe7f1] bg-white shadow-[0_8px_20px_rgba(83,102,138,0.06)]">
                 <CardHeader className="pb-3">
-                  <CardTitle className="flex items-center gap-2 text-sm font-medium">
+                  <CardTitle className="flex min-w-0 items-center gap-2 text-sm font-medium">
                     <Sparkles className="h-4 w-4 text-[#1558c0]" />
                     已用工具
                   </CardTitle>
                 </CardHeader>
-                <CardContent className="flex flex-wrap gap-2">
+                <CardContent className="flex min-w-0 max-w-full flex-wrap gap-2">
                   {activeTask.usedTools.length === 0 ? (
-                    <div className="text-sm text-muted-foreground">等待首次执行。</div>
+                    <div className="break-words text-sm text-muted-foreground">等待首次执行。</div>
                   ) : (
                     activeTask.usedTools.map(tool => (
-                      <Badge key={tool} variant="outline" className="border-[#d6e3f4] bg-[#f7fbff] text-[#1558c0]">
+                      <Badge key={tool} variant="outline" className="max-w-full break-all border-[#d6e3f4] bg-[#f7fbff] text-[#1558c0]">
                         {tool}
                       </Badge>
                     ))

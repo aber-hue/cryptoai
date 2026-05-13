@@ -15,6 +15,7 @@ import CexFlowDetail from "./pages/CexFlowDetail";
 import DataManagement from "./pages/DataManagement";
 import ComponentShowcase from "./pages/ComponentShowcase";
 import Navbar from "./components/Navbar";
+import Workbench from "./pages/Workbench";
 
 // Pages that need full viewport width (no container max-width constraint)
 const FULL_WIDTH_ROUTES = ["/chat"];
@@ -26,7 +27,7 @@ function Router() {
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,rgba(183,211,255,0.45),transparent_30%),radial-gradient(circle_at_top_right,rgba(182,241,224,0.28),transparent_24%),linear-gradient(180deg,#f4f7fb_0%,#eef3f8_100%)]">
       <Navbar />
-      <div className={isFullWidth ? "px-4 lg:px-6" : "container"}>
+      <div className={isFullWidth ? "overflow-x-hidden px-4 lg:px-6" : "container"}>
         <main className="min-w-0 py-6 lg:py-8">
           <Switch>
             <Route path={"/"} component={DataManagement} />
@@ -40,6 +41,7 @@ function Router() {
             <Route path={"/analysis/:strategyId"} component={StrategyTemplateDetail} />
             <Route path={"/onchain"} component={OnChainBoard} />
             <Route path={"/onchain/cex-flow/:symbol"} component={CexFlowDetail} />
+            <Route path={"/workbench"} component={Workbench} />
             <Route path={"/chat"} component={ComponentShowcase} />
             <Route path={"/404"} component={NotFound} />
             <Route component={NotFound} />

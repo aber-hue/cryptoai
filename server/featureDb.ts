@@ -1,8 +1,8 @@
-import { createPool, type Pool, type PoolOptions } from "mysql2/promise";
+import { createPool, type PoolOptions } from "mysql2/promise";
 import { drizzle } from "drizzle-orm/mysql2";
 
-let featurePool: Pool | null = null;
-let featureDb: ReturnType<typeof drizzle> | null = null;
+let featurePool: ReturnType<typeof createPool> | null = null;
+let featureDb: any = null;
 
 function buildFeaturePoolOptions() {
   const databaseUrl = process.env.FEATURE_DATABASE_URL;
@@ -33,7 +33,7 @@ export function getFeaturePool() {
 
 export function getFeatureDb() {
   if (!featureDb) {
-    featureDb = drizzle(process.env.FEATURE_DATABASE_URL!);
+    featureDb = drizzle(getFeaturePool());
   }
   return featureDb;
 }

@@ -341,3 +341,106 @@ export const signalEventActions = mysqlTable(
 
 export type SignalEventAction = typeof signalEventActions.$inferSelect;
 export type InsertSignalEventAction = typeof signalEventActions.$inferInsert;
+
+/**
+ * 地址标签分析 run 表
+ */
+export const labelAnalysisRuns = mysqlTable(
+  "labelAnalysisRuns",
+  {
+    runId: varchar("runId", { length: 64 }).primaryKey(),
+    tokenId: bigint("tokenId", { mode: "number" }).notNull(),
+    chain: varchar("chain", { length: 64 }).notNull(),
+    symbol: varchar("symbol", { length: 32 }).notNull(),
+    triggeredBy: varchar("triggeredBy", { length: 64 }).notNull(),
+    status: mysqlEnum("status", ["running", "success", "failed"]).notNull(),
+    proposalCount: int("proposalCount").default(0).notNull(),
+    approvedCount: int("approvedCount").default(0).notNull(),
+    rejectedCount: int("rejectedCount").default(0).notNull(),
+    configJson: text("configJson").notNull(),
+    sourceSummaryJson: text("sourceSummaryJson"),
+    errorMessage: text("errorMessage"),
+    startedAt: timestamp("startedAt").notNull(),
+    finishedAt: timestamp("finishedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    tokenStartedIdx: index("idx_label_runs_token_started").on(table.tokenId, table.startedAt),
+    statusStartedIdx: index("idx_label_runs_status_started").on(table.status, table.startedAt),
+    symbolStartedIdx: index("idx_label_runs_symbol_started").on(table.symbol, table.startedAt),
+  })
+);
+
+export type LabelAnalysisRun = typeof labelAnalysisRuns.$inferSelect;
+export type InsertLabelAnalysisRun = typeof labelAnalysisRuns.$inferInsert;
+
+/**
+ * 地址标签 proposal 表
+ */
+export const addressLabelProposals = mysqlTable(
+  "addressLabelProposals",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    runId: varchar("runId", { length: 64 }).notNull(),
+    tokenId: bigint("tokenId", { mode: "number" }).notNull(),
+    chain: varchar("chain", { length: 64 }).notNull(),
+    address: varchar("address", { length: 128 }).notNull(),
+    proposedLabel: varchar("proposedLabel", { length: 64 }).notNull(),
+    proposedSubtype: varchar("proposedSubtype", { length: 64 }),
+    proposedTagsJson: text("proposedTagsJson"),
+    confidence: decimal("confidence", { precision: 6, scale: 4 }).notNull(),
+    detector: varchar("detector", { length: 64 }).notNull(),
+    stage: mysqlEnum("stage", ["bootstrap", "downstream", "behavior", "sink", "cluster"]).notNull(),
+    reasonSummary: text("reasonSummary").notNull(),
+    evidenceJson: text("evidenceJson").notNull(),
+    reviewStatus: mysqlEnum("reviewStatus", ["pending", "approved", "rejected"]).default("pending").notNull(),
+    reviewer: varchar("reviewer", { length: 64 }),
+    reviewedAt: timestamp("reviewedAt"),
+    reviewSubtype: varchar("reviewSubtype", { length: 64 }),
+    reviewTagsJson: text("reviewTagsJson"),
+    reviewNote: text("reviewNote"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    runReviewIdx: index("idx_label_proposals_run_review").on(table.runId, table.reviewStatus),
+    tokenChainAddressIdx: index("idx_label_proposals_token_chain_address").on(table.tokenId, table.chain, table.address),
+    labelIdx: index("idx_label_proposals_label").on(table.proposedLabel),
+  })
+);
+
+export type AddressLabelProposal = typeof addressLabelProposals.$inferSelect;
+export type InsertAddressLabelProposal = typeof addressLabelProposals.$inferInsert;
+
+/**
+ * 地址标签生产表
+ */
+export const addressLabels = mysqlTable(
+  "addressLabels",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    tokenId: bigint("tokenId", { mode: "number" }).notNull(),
+    chain: varchar("chain", { length: 64 }).notNull(),
+    address: varchar("address", { length: 128 }).notNull(),
+    label: varchar("label", { length: 64 }).notNull(),
+    subtype: varchar("subtype", { length: 64 }),
+    tagsJson: text("tagsJson"),
+    confidence: decimal("confidence", { precision: 6, scale: 4 }).notNull(),
+    sourceProposalId: varchar("sourceProposalId", { length: 64 }).notNull(),
+    approvedBy: varchar("approvedBy", { length: 64 }).notNull(),
+    approvedAt: timestamp("approvedAt").notNull(),
+    supersededBy: varchar("supersededBy", { length: 64 }),
+    isActive: boolean("isActive").default(true).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    tokenChainActiveIdx: index("idx_address_labels_token_chain_active").on(table.tokenId, table.chain, table.isActive),
+    tokenLabelActiveIdx: index("idx_address_labels_token_label_active").on(table.tokenId, table.label, table.isActive),
+    addressIdx: index("idx_address_labels_chain_address").on(table.chain, table.address),
+  })
+);
+
+export type AddressLabel = typeof addressLabels.$inferSelect;
+export type InsertAddressLabel = typeof addressLabels.$inferInsert;

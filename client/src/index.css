@@ -201,6 +201,57 @@
   .panel-surface {
     @apply rounded-[28px] border border-white/70 bg-white/70 shadow-[0_18px_55px_rgba(90,112,153,0.12)] backdrop-blur-xl;
   }
+
+  .ai-chat-markdown,
+  .ai-chat-markdown * {
+    min-width: 0 !important;
+    white-space: normal !important;
+    overflow-wrap: anywhere !important;
+    word-break: break-word;
+  }
+
+  .ai-chat-markdown p,
+  .ai-chat-markdown li,
+  .ai-chat-markdown blockquote {
+    max-width: 78ch;
+  }
+
+  .ai-chat-markdown pre,
+  .ai-chat-markdown pre * {
+    white-space: pre !important;
+  }
+
+  .ai-chat-markdown pre,
+  .ai-chat-markdown table {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+
+  .ai-chat-markdown table {
+    display: block;
+  }
+
+  .ai-chat-markdown th,
+  .ai-chat-markdown td {
+    white-space: nowrap !important;
+  }
+
+  .free-chat-side-panel,
+  .free-chat-side-panel *,
+  .free-chat-side-panel [data-radix-scroll-area-viewport] > div {
+    max-width: 100%;
+    min-width: 0;
+  }
+
+  .free-chat-side-panel {
+    overflow-x: hidden;
+  }
+
+  .free-chat-side-panel p,
+  .free-chat-side-panel div,
+  .free-chat-side-panel span {
+    overflow-wrap: anywhere;
+  }
 }
 
 @layer components {

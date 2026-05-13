@@ -1,5 +1,6 @@
 import { eq, desc, and, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
+import { createPool } from "mysql2/promise";
 import { nanoid } from "nanoid";
 import { getFeatureDb } from "./featureDb";
 import { 
@@ -34,16 +35,26 @@ import {
 } from "../drizzle/schema";
 import { ENV } from './_core/env';
 
-let _db: ReturnType<typeof drizzle> | null = null;
+let _db: any = null;
+let _pool: ReturnType<typeof createPool> | null = null;
 
 async function getSignalDb() {
   return getFeatureDb();
 }
 
+function getMainPool() {
+  if (_pool) return _pool;
+  if (!process.env.DATABASE_URL) {
+    throw new Error("DATABASE_URL is not configured");
+  }
+  _pool = createPool(process.env.DATABASE_URL);
+  return _pool;
+}
+
 export async function getDb() {
   if (!_db && process.env.DATABASE_URL) {
     try {
-      _db = drizzle(process.env.DATABASE_URL);
+      _db = drizzle(getMainPool());
     } catch (error) {
       console.warn("[Database] Failed to connect:", error);
       _db = null;

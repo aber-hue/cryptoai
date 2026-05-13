@@ -14,4 +14,7 @@ export const ENV = {
   webSearchApiId: process.env.BUILT_IN_WEB_SEARCH_API_ID ?? "",
   newsSearchApiId: process.env.BUILT_IN_NEWS_SEARCH_API_ID ?? "",
   coinMarketCapApiKey: process.env.CMC_API_KEY ?? "",
+  freeChatAgentApiUrl: process.env.FREE_CHAT_AGENT_API_URL ?? "",
+  freeChatAgentApiKey: process.env.FREE_CHAT_AGENT_API_KEY ?? "",
+  freeChatAgentModel: process.env.FREE_CHAT_AGENT_MODEL ?? "cryptoaiiask",
 };

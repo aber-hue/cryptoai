@@ -35,9 +35,92 @@ import {
   searchAnnouncements,
   toggleMarketWatchlist,
 } from "./liveData";
+import {
+  getActiveLabels,
+  getLabelRun,
+  getReviewQueue,
+  listLabelDefinitions,
+  listLabelRuns,
+  reviewLabelProposal,
+  startLabelAnalysis,
+} from "./labelWorkbench";
 
 export const appRouter = router({
   system: systemRouter,
+  labels: router({
+    getLabelDictionary: publicProcedure.query(() => {
+      return listLabelDefinitions();
+    }),
+    listRuns: publicProcedure.query(() => {
+      return listLabelRuns();
+    }),
+    getRun: publicProcedure
+      .input(z.object({ runId: z.string().trim().min(1) }))
+      .query(async ({ input }) => {
+        const run = await getLabelRun(input.runId);
+        if (!run) {
+          throw new Error("Run not found");
+        }
+        return run;
+      }),
+    getReviewQueue: publicProcedure
+      .input(
+        z.object({
+          runId: z.string().trim().min(1),
+          status: z.enum(["pending", "approved", "rejected"]).default("pending"),
+          keyword: z.string().trim().optional(),
+        })
+      )
+      .query(async ({ input }) => {
+        const queue = await getReviewQueue(input.runId, input.status, input.keyword);
+        if (!queue) {
+          throw new Error("Run not found");
+        }
+        return queue;
+      }),
+    getActiveLabels: publicProcedure
+      .input(
+        z.object({
+          tokenId: z.number().int(),
+          chain: z.string().trim().optional(),
+        })
+      )
+      .query(async ({ input }) => {
+        return {
+          items: await getActiveLabels(input),
+        };
+      }),
+    startAnalysis: publicProcedure
+      .input(
+        z.object({
+          symbol: z.string().trim().min(1),
+          chain: z.string().trim().min(1),
+          preWindowDays: z.number().int().min(1).max(60),
+          claimWindowDays: z.number().int().min(1).max(60),
+          tolerancePct: z.number().min(0).max(5),
+        })
+      )
+      .mutation(async ({ input, ctx }) => {
+        return await startLabelAnalysis({
+          ...input,
+          triggeredBy: ctx.user?.openId ?? "current-user",
+        });
+      }),
+    reviewProposal: publicProcedure
+      .input(
+        z.object({
+          proposalId: z.string().trim().min(1),
+          action: z.enum(["approve", "reject"]),
+          reviewNote: z.string().trim().optional(),
+        })
+      )
+      .mutation(async ({ input }) => {
+        if (input.action === "reject" && !input.reviewNote) {
+          throw new Error("Review note is required when rejecting a proposal");
+        }
+        return await reviewLabelProposal(input);
+      }),
+  }),
   signal: router({
     listTemplates: publicProcedure
       .input(
@@ -472,10 +555,11 @@ export const appRouter = router({
       .input(
         z.object({
           limit: z.number().int().min(5).max(100).optional(),
+          chainId: z.number().int().optional(),
         }).optional()
       )
       .query(async ({ input }) => {
-        return await listAvailableOnchainTokens(input?.limit ?? 20);
+        return await listAvailableOnchainTokens(input?.limit ?? 20, input?.chainId);
       }),
     listPools: publicProcedure
       .input(
@@ -492,15 +576,22 @@ export const appRouter = router({
       .input(
         z.object({
           symbol: z.string().trim().min(1),
+          tokenId: z.number().int().optional(),
+          chainId: z.number().int().optional(),
         })
       )
       .query(async ({ input }) => {
-        return await getOnchainOverviewBySymbol(input.symbol);
+        return await getOnchainOverviewBySymbol(input.symbol, {
+          tokenId: input.tokenId,
+          chainId: input.chainId,
+        });
       }),
     getFundFlow: publicProcedure
       .input(
         z.object({
           symbol: z.string().trim().min(1),
+          tokenId: z.number().int().optional(),
+          chainId: z.number().int().optional(),
           date: z.string().trim().optional(),
           depth: z.number().int().min(1).max(4).optional(),
           limitPerLayer: z.number().int().min(5).max(120).optional(),
@@ -508,6 +599,8 @@ export const appRouter = router({
       )
       .query(async ({ input }) => {
         return await getOnchainFundFlowBySymbol(input.symbol, {
+          tokenId: input.tokenId,
+          chainId: input.chainId,
           date: input.date,
           depth: input.depth,
           limitPerLayer: input.limitPerLayer,
@@ -517,6 +610,8 @@ export const appRouter = router({
       .input(
         z.object({
           symbol: z.string().trim().min(1),
+          tokenId: z.number().int().optional(),
+          chainId: z.number().int().optional(),
           date: z.string().trim().optional(),
           page: z.number().int().min(1).optional(),
           pageSize: z.number().int().min(10).max(100).optional(),
@@ -524,6 +619,8 @@ export const appRouter = router({
       )
       .query(async ({ input }) => {
         return await getOnchainHoldersBySymbol(input.symbol, {
+          tokenId: input.tokenId,
+          chainId: input.chainId,
           date: input.date,
           page: input.page,
           pageSize: input.pageSize,
@@ -533,6 +630,8 @@ export const appRouter = router({
       .input(
         z.object({
           symbol: z.string().trim().min(1),
+          tokenId: z.number().int().optional(),
+          chainId: z.number().int().optional(),
           page: z.number().int().min(1).optional(),
           pageSize: z.number().int().min(10).max(500).optional(),
           search: z.string().trim().optional(),
@@ -541,6 +640,8 @@ export const appRouter = router({
       )
       .query(async ({ input }) => {
         return await getOnchainLargeTransfersBySymbol(input.symbol, {
+          tokenId: input.tokenId,
+          chainId: input.chainId,
           page: input.page,
           pageSize: input.pageSize,
           search: input.search,
@@ -551,19 +652,29 @@ export const appRouter = router({
       .input(
         z.object({
           symbol: z.string().trim().min(1),
+          tokenId: z.number().int().optional(),
+          chainId: z.number().int().optional(),
         })
       )
       .query(async ({ input }) => {
-        return await getOnchainCexFlowsBySymbol(input.symbol);
+        return await getOnchainCexFlowsBySymbol(input.symbol, {
+          tokenId: input.tokenId,
+          chainId: input.chainId,
+        });
       }),
     getPoolAdds: publicProcedure
       .input(
         z.object({
           symbol: z.string().trim().min(1),
+          tokenId: z.number().int().optional(),
+          chainId: z.number().int().optional(),
         })
       )
       .query(async ({ input }) => {
-        return await getOnchainPoolAddsBySymbol(input.symbol);
+        return await getOnchainPoolAddsBySymbol(input.symbol, {
+          tokenId: input.tokenId,
+          chainId: input.chainId,
+        });
       }),
     getPoolAddsByPool: publicProcedure
       .input(

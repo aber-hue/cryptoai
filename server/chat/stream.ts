@@ -1,6 +1,7 @@
 import type { Application, Request, Response } from "express";
 import { sdk } from "../_core/sdk";
 import { runAgentLoop, type AgentEvent } from "./agentLoop";
+import { isExternalFreeChatAgentConfigured, runExternalFreeChatAgent } from "./externalAgent";
 import { planResearch } from "./planner";
 import type { ChatAnswerPayload, ChatInputMessage, ChatSignalContext, ResearchPlan } from "./types";
 import * as db from "../db";
@@ -69,16 +70,24 @@ export function registerChatStreamRoute(app: Application) {
     };
 
     try {
-      const plan = await planResearch(messages, { signal: controller.signal });
-      if (plan) {
-        emit({ type: "plan", plan });
-      }
+      let plan: ResearchPlan | null = null;
+      const payload = isExternalFreeChatAgentConfigured()
+        ? await runExternalFreeChatAgent(messages, {
+            signal: controller.signal,
+            emit: emit as (event: AgentEvent) => void,
+          })
+        : await (async () => {
+            plan = await planResearch(messages, { signal: controller.signal });
+            if (plan) {
+              emit({ type: "plan", plan });
+            }
 
-      const payload = await runAgentLoop(
-        messages,
-        { workspace, signalContext, signal: controller.signal, plan },
-        emit as (event: AgentEvent) => void
-      );
+            return await runAgentLoop(
+              messages,
+              { workspace, signalContext, signal: controller.signal, plan },
+              emit as (event: AgentEvent) => void
+            );
+          })();
 
       // Skip persistence if client disconnected mid-stream
       if (closed) {

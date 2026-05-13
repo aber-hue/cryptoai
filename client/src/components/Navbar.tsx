@@ -6,6 +6,7 @@ import {
   BrainCircuit,
   CandlestickChart,
   Coins,
+  ClipboardList,
   Radar,
 } from "lucide-react";
 import { useLocation } from "wouter";
@@ -14,6 +15,7 @@ import { cn } from "@/lib/utils";
 export default function Navbar() {
   const [location] = useLocation();
   const workspaces = [
+    { href: "/workbench", label: "工作台", icon: ClipboardList },
     { href: "/market", label: "Market Board", icon: CandlestickChart },
     { href: "/onchain", label: "On-chain Board", icon: Activity },
     { href: "/signals", label: "Signal Board", icon: Radar },

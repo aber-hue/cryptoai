@@ -228,9 +228,15 @@ type OnchainTokenOption = {
   symbol: string;
   name: string;
   tokenId: number;
+  chainId: number | null;
   transferCount: number;
   holderCount: number;
   dexActionCount?: number;
+};
+
+type OnchainChainOption = {
+  id: number;
+  label: string;
 };
 
 
@@ -241,17 +247,23 @@ const FALL_GREEN = "#10B981";
 const DEEP_BLUE = "#1E40AF";
 const SLATE = "#64748B";
 
+const ONCHAIN_CHAIN_OPTIONS: OnchainChainOption[] = [
+  { id: 56, label: "BSC" },
+  { id: 1, label: "Ethereum" },
+  { id: 8453, label: "Base" },
+];
+
 const fallbackOnchainTokenOptions: OnchainTokenOption[] = [
-  { symbol: "GENIUS", name: "Genius", tokenId: 1522, transferCount: 65341, holderCount: 4181, dexActionCount: 0 },
-  { symbol: "ST", name: "Sentio", tokenId: 1248, transferCount: 63339, holderCount: 548, dexActionCount: 0 },
-  { symbol: "BSB", name: "Block Street", tokenId: 787, transferCount: 36087, holderCount: 1459, dexActionCount: 0 },
-  { symbol: "ARIA", name: "AriaAI", tokenId: 1467, transferCount: 23041, holderCount: 41278, dexActionCount: 0 },
-  { symbol: "UP", name: "Unitas Labs", tokenId: 1178, transferCount: 11495, holderCount: 807, dexActionCount: 0 },
-  { symbol: "EDGE", name: "edgeX", tokenId: 794, transferCount: 0, holderCount: 0, dexActionCount: 1 },
-  { symbol: "PRL", name: "Perle", tokenId: 1244, transferCount: 0, holderCount: 0, dexActionCount: 1 },
-  { symbol: "R2", name: "R2 Protocol", tokenId: 1295, transferCount: 0, holderCount: 0, dexActionCount: 1 },
-  { symbol: "BASED", name: "Based", tokenId: 1297, transferCount: 0, holderCount: 0, dexActionCount: 1 },
-  { symbol: "OPG", name: "OpenGradient", tokenId: 1584, transferCount: 0, holderCount: 0, dexActionCount: 1 },
+  { symbol: "GENIUS", name: "Genius", tokenId: 1522, chainId: 56, transferCount: 65341, holderCount: 4181, dexActionCount: 0 },
+  { symbol: "ST", name: "Sentio", tokenId: 1248, chainId: 56, transferCount: 63339, holderCount: 548, dexActionCount: 0 },
+  { symbol: "BSB", name: "Block Street", tokenId: 787, chainId: 56, transferCount: 36087, holderCount: 1459, dexActionCount: 0 },
+  { symbol: "ARIA", name: "AriaAI", tokenId: 1467, chainId: 56, transferCount: 23041, holderCount: 41278, dexActionCount: 0 },
+  { symbol: "UP", name: "Unitas Labs", tokenId: 1178, chainId: 56, transferCount: 11495, holderCount: 807, dexActionCount: 0 },
+  { symbol: "EDGE", name: "edgeX", tokenId: 794, chainId: 56, transferCount: 0, holderCount: 0, dexActionCount: 1 },
+  { symbol: "PRL", name: "Perle", tokenId: 1244, chainId: 56, transferCount: 0, holderCount: 0, dexActionCount: 1 },
+  { symbol: "R2", name: "R2 Protocol", tokenId: 1295, chainId: 56, transferCount: 0, holderCount: 0, dexActionCount: 1 },
+  { symbol: "BASED", name: "Based", tokenId: 1297, chainId: 56, transferCount: 0, holderCount: 0, dexActionCount: 1 },
+  { symbol: "OPG", name: "OpenGradient", tokenId: 1584, chainId: 56, transferCount: 0, holderCount: 0, dexActionCount: 1 },
 ];
 
 function buildLargeTransferGraph(
@@ -678,17 +690,32 @@ function formatAddressDisplay(address: string) {
   return `${address.slice(0, 8)}...${address.slice(-6)}`;
 }
 
-function formatBscScanAddress(address: string) {
-  return `https://bscscan.com/address/${address}`;
+function getChainExplorerBase(chainId = 56) {
+  if (chainId === 1) return "https://etherscan.io";
+  if (chainId === 8453) return "https://basescan.org";
+  return "https://bscscan.com";
 }
 
-function formatBscScanTx(txhash: string) {
-  return `https://bscscan.com/tx/${txhash}`;
+function formatBscScanAddress(address: string, chainId = 56) {
+  return `${getChainExplorerBase(chainId)}/address/${address}`;
+}
+
+function formatBscScanTx(txhash: string, chainId = 56) {
+  return `${getChainExplorerBase(chainId)}/tx/${txhash}`;
+}
+
+function formatBscScanSearch(keyword: string, chainId = 56) {
+  return `${getChainExplorerBase(chainId)}/search?f=0&q=${encodeURIComponent(keyword)}`;
 }
 
 function formatHashDisplay(txhash: string) {
   if (txhash.length <= 18) return txhash;
   return `${txhash.slice(0, 10)}...${txhash.slice(-6)}`;
+}
+
+function formatPoolIdDisplay(poolId: string) {
+  if (poolId.length <= 14) return poolId;
+  return `${poolId.slice(0, 6)}...${poolId.slice(-6)}`;
 }
 
 function formatShanghaiDateTime(value: string | null) {
@@ -1220,12 +1247,14 @@ const FundFlowCanvas = memo(function FundFlowCanvas({
   collapsedNodeIds,
   onToggleCollapse,
   viewportHeight = 980,
+  explorerChainId = 56,
 }: {
   graph: FlowGraph;
   minAmount: number;
   collapsedNodeIds: Set<string>;
   onToggleCollapse: (nodeId: string) => void;
   viewportHeight?: number;
+  explorerChainId?: number;
 }) {
   const [copiedNodeId, setCopiedNodeId] = useState<string | null>(null);
 
@@ -1438,7 +1467,7 @@ const FundFlowCanvas = memo(function FundFlowCanvas({
                       style={{ cursor: "pointer" }}
                       onClick={event => {
                         event.stopPropagation();
-                        window.open(formatBscScanAddress(node.address), "_blank", "noopener,noreferrer");
+                        window.open(formatBscScanAddress(node.address, explorerChainId), "_blank", "noopener,noreferrer");
                       }}
                     >
                       {formattedAddress}
@@ -1500,9 +1529,11 @@ const FundFlowCanvas = memo(function FundFlowCanvas({
 const LargeTransferGraphCanvas = memo(function LargeTransferGraphCanvas({
   graph,
   defaultView = "focus",
+  explorerChainId = 56,
 }: {
   graph: LargeTransferGraph;
   defaultView?: "focus" | "all";
+  explorerChainId?: number;
 }) {
   const {
     nodes,
@@ -1989,7 +2020,7 @@ const LargeTransferGraphCanvas = memo(function LargeTransferGraphCanvas({
                       style={{ cursor: "pointer" }}
                       onClick={event => {
                         event.stopPropagation();
-                        window.open(formatBscScanAddress(node.address), "_blank", "noopener,noreferrer");
+                        window.open(formatBscScanAddress(node.address, explorerChainId), "_blank", "noopener,noreferrer");
                       }}
                     >
                       {formatAddressDisplay(node.address)}
@@ -2012,9 +2043,11 @@ const LargeTransferGraphCanvas = memo(function LargeTransferGraphCanvas({
 const LargeTransferBilateralCanvas = memo(function LargeTransferBilateralCanvas({
   graph,
   scope,
+  explorerChainId = 56,
 }: {
   graph: LargeTransferBilateralGraph;
   scope: "dex" | "cex";
+  explorerChainId?: number;
 }) {
   const { nodesByColumn, nodePositions, canvasWidth, canvasHeight, columnX } = useMemo(() => {
     const columns = [0, 1, 2, 3, 4].map(column =>
@@ -2184,7 +2217,7 @@ const LargeTransferBilateralCanvas = memo(function LargeTransferBilateralCanvas(
                   style={{ cursor: "pointer" }}
                   onClick={event => {
                     event.stopPropagation();
-                    window.open(formatBscScanAddress(node.address), "_blank", "noopener,noreferrer");
+                    window.open(formatBscScanAddress(node.address, explorerChainId), "_blank", "noopener,noreferrer");
                   }}
                 >
                   {formatAddressDisplay(node.address)}
@@ -2217,6 +2250,8 @@ export default function OnChainBoard() {
   const initialTrack = initialActiveView === "pool-adds" ? "pool-discovery" : "token-analysis";
 
   const [selectedSymbol, setSelectedSymbol] = useState(initialSymbol);
+  const [selectedTokenId, setSelectedTokenId] = useState<number | null>(null);
+  const [selectedChainId, setSelectedChainId] = useState<number>(56);
   const [tokenQuery, setTokenQuery] = useState("");
   const [activeTrack, setActiveTrack] = useState<"token-analysis" | "pool-discovery">(initialTrack);
   const [activeView, setActiveView] = useState<"overview" | "fund-flow" | "holders" | "cex-flows" | "pool-adds" | "large-transfers">(initialActiveView);
@@ -2250,7 +2285,7 @@ export default function OnChainBoard() {
     { key: "large-transfers", label: "大额转账" },
   ] as const;
   const onchainTokensQuery = trpc.onchain.listTokens.useQuery(
-    { limit: 60 },
+    { limit: 60, chainId: selectedChainId },
     {
       staleTime: 5 * 60 * 1000,
       refetchOnWindowFocus: false,
@@ -2269,6 +2304,8 @@ export default function OnChainBoard() {
   const overviewQuery = trpc.onchain.getOverview.useQuery(
     {
       symbol: selectedSymbol,
+      tokenId: selectedTokenId ?? undefined,
+      chainId: selectedChainId,
     },
     {
       staleTime: 5 * 60 * 1000,
@@ -2279,6 +2316,8 @@ export default function OnChainBoard() {
   const fundFlowQuery = trpc.onchain.getFundFlow.useQuery(
     {
       symbol: selectedSymbol,
+      tokenId: selectedTokenId ?? undefined,
+      chainId: selectedChainId,
       depth: 4,
       limitPerLayer: 36,
     },
@@ -2292,6 +2331,8 @@ export default function OnChainBoard() {
   const holdersQuery = trpc.onchain.getHolders.useQuery(
     {
       symbol: selectedSymbol,
+      tokenId: selectedTokenId ?? undefined,
+      chainId: selectedChainId,
       page: holderPage,
       pageSize: 20,
     },
@@ -2305,6 +2346,8 @@ export default function OnChainBoard() {
   const largeTransfersQuery = trpc.onchain.getLargeTransfers.useQuery(
     {
       symbol: selectedSymbol,
+      tokenId: selectedTokenId ?? undefined,
+      chainId: selectedChainId,
       page: 1,
       pageSize: 500,
       search: largeTransferSearch || undefined,
@@ -2320,6 +2363,8 @@ export default function OnChainBoard() {
   const cexFlowsQuery = trpc.onchain.getCexFlows.useQuery(
     {
       symbol: selectedSymbol,
+      tokenId: selectedTokenId ?? undefined,
+      chainId: selectedChainId,
     },
     {
       enabled: activeView === "cex-flows",
@@ -2331,6 +2376,8 @@ export default function OnChainBoard() {
   const poolAddsQuery = trpc.onchain.getPoolAdds.useQuery(
     {
       symbol: selectedSymbol,
+      tokenId: selectedTokenId ?? undefined,
+      chainId: selectedChainId,
     },
     {
       enabled: activeTrack === "token-analysis" && activeView === "pool-adds" && selectedSymbol.trim().length > 0,
@@ -2391,13 +2438,15 @@ export default function OnChainBoard() {
         symbol: item.symbol,
         name: item.name,
         tokenId: item.tokenId,
+        chainId: item.chainId ?? selectedChainId,
         transferCount: item.transferCount,
         holderCount: item.holderCount,
+        dexActionCount: item.dexActionCount,
       }));
     }
 
-    return fallbackOnchainTokenOptions;
-  }, [onchainTokensQuery.data?.items]);
+    return fallbackOnchainTokenOptions.filter(item => item.chainId === selectedChainId);
+  }, [onchainTokensQuery.data?.items, selectedChainId]);
 
   useEffect(() => {
     if (typeof document === "undefined") return undefined;
@@ -2437,16 +2486,28 @@ export default function OnChainBoard() {
 
   useEffect(() => {
     if (flowTokenOptions.length === 0) return;
-    const hasSelected = flowTokenOptions.some(token => token.symbol === selectedSymbol);
+    const hasSelected = flowTokenOptions.some(
+      token =>
+        token.symbol === selectedSymbol &&
+        (selectedTokenId == null || token.tokenId === selectedTokenId) &&
+        token.chainId === selectedChainId
+    );
     if (!hasSelected) {
       setSelectedSymbol(flowTokenOptions[0].symbol);
+      setSelectedTokenId(flowTokenOptions[0].tokenId);
     }
-  }, [flowTokenOptions, selectedSymbol]);
+  }, [flowTokenOptions, selectedChainId, selectedSymbol, selectedTokenId]);
 
-  const selectedTokenMeta = flowTokenOptions.find(item => item.symbol === selectedSymbol) ?? flowTokenOptions[0];
+  const selectedTokenMeta =
+    flowTokenOptions.find(
+      item =>
+        item.symbol === selectedSymbol &&
+        item.chainId === selectedChainId &&
+        (selectedTokenId == null || item.tokenId === selectedTokenId)
+    ) ?? flowTokenOptions[0];
   const isTokenDetailOpen = activeTrack === "token-analysis" && selectedTokenDetail !== null;
   const isPoolDetailOpen = activeTrack === "pool-discovery" && selectedPoolRegistryId !== null;
-  const recommendedFlowSymbols = flowTokenOptions.slice(0, 3).map(token => token.symbol);
+  const recommendedFlowTokens = flowTokenOptions.slice(0, 3);
   const dashboard =
     tokenDashboards.find(item => item.symbol === selectedSymbol) ??
     tokenDashboards.find(item => item.symbol === selectedTokenMeta?.symbol) ??
@@ -2486,7 +2547,7 @@ export default function OnChainBoard() {
           changeBalance: row.changeBalance,
           currentBalance: row.currentBalance ?? undefined,
           firstSeen: row.firstSeen ?? "—",
-          href: formatBscScanAddress(row.address),
+          href: formatBscScanAddress(row.address, selectedChainId),
         }))
       : snapshot.increaseRows;
   const overviewDecreaseRows =
@@ -2496,7 +2557,7 @@ export default function OnChainBoard() {
           label: row.label,
           changeBalance: row.changeBalance,
           currentBalance: row.currentBalance ?? undefined,
-          href: formatBscScanAddress(row.address),
+          href: formatBscScanAddress(row.address, selectedChainId),
         }))
       : snapshot.decreaseRows;
 
@@ -2567,7 +2628,8 @@ export default function OnChainBoard() {
     if (!normalizedTokenQuery) return true;
     const exactSelected =
       token.symbol.toLowerCase() === selectedSymbol.toLowerCase() &&
-      normalizedTokenQuery === selectedSymbol.toLowerCase();
+      normalizedTokenQuery === selectedSymbol.toLowerCase() &&
+      token.chainId === selectedChainId;
     if (exactSelected) return true;
     return token.symbol.toLowerCase().includes(normalizedTokenQuery) || token.name.toLowerCase().includes(normalizedTokenQuery);
   });
@@ -2699,8 +2761,9 @@ export default function OnChainBoard() {
       const match = tokenMatches[0];
       if (match) {
         setSelectedSymbol(match.symbol);
+        setSelectedTokenId(match.tokenId);
         setTokenQuery(match.symbol);
-        setSelectedTokenDetail(match.symbol);
+        setSelectedTokenDetail(`${match.chainId ?? selectedChainId}:${match.tokenId}`);
         setActiveView("overview");
         setIsTokenPickerOpen(false);
       }
@@ -2722,12 +2785,24 @@ export default function OnChainBoard() {
     }
   };
 
-  const handleSelectToken = (symbol: string) => {
-    setSelectedSymbol(symbol);
-    setTokenQuery(symbol);
+  const handleSelectChain = (chainId: number) => {
+    setSelectedChainId(chainId);
+    setSelectedTokenId(null);
+    setSelectedTokenDetail(null);
+    setSelectedSymbol("");
+    setTokenQuery("");
     setIsTokenPickerOpen(false);
     setActiveTrack("token-analysis");
-    setSelectedTokenDetail(symbol);
+    setActiveView("overview");
+  };
+
+  const handleSelectToken = (token: OnchainTokenOption) => {
+    setSelectedSymbol(token.symbol);
+    setSelectedTokenId(token.tokenId);
+    setTokenQuery(token.symbol);
+    setIsTokenPickerOpen(false);
+    setActiveTrack("token-analysis");
+    setSelectedTokenDetail(`${token.chainId ?? selectedChainId}:${token.tokenId}`);
     setSelectedPoolRegistryId(null);
     setActiveView("overview");
   };
@@ -2834,6 +2909,7 @@ export default function OnChainBoard() {
         </div>
       </div>
 
+      {!((activeTrack === "token-analysis" && isTokenDetailOpen) || (activeTrack === "pool-discovery" && isPoolDetailOpen)) ? (
       <section className="rounded-[28px] border border-white/80 bg-[linear-gradient(135deg,rgba(255,255,255,0.92),rgba(239,246,255,0.88))] p-5 shadow-[0_16px_40px_rgba(30,64,175,0.08)]">
         <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
           <div>
@@ -2841,7 +2917,7 @@ export default function OnChainBoard() {
           </div>
 
           {!isTokenDetailOpen && !isPoolDetailOpen ? (
-          <div className="grid gap-3 md:grid-cols-[minmax(0,420px)_auto_auto] xl:items-center">
+          <div className={cn("grid gap-3 xl:items-center", activeTrack === "token-analysis" ? "md:grid-cols-[minmax(0,420px)_220px_auto_auto]" : "md:grid-cols-[minmax(0,420px)_auto_auto]")}>
             <div ref={tokenPickerRef} className="relative min-w-[280px]">
               <label className="flex items-center gap-3 rounded-[18px] border border-[#DBEAFE] bg-white px-4 py-3 text-sm shadow-[0_6px_18px_rgba(148,163,184,0.08)]">
                 <Search className="h-4 w-4 text-[#64748B]" />
@@ -2888,17 +2964,23 @@ export default function OnChainBoard() {
                     {visibleTokenOptions.length > 0 ? (
                       visibleTokenOptions.slice(0, 20).map(token => (
                         <button
-                          key={token.symbol}
+                          key={`${token.chainId ?? "na"}-${token.tokenId}`}
                           type="button"
-                          onClick={() => handleSelectToken(token.symbol)}
+                          onClick={() => handleSelectToken(token)}
                           className={cn(
                             "flex w-full items-center justify-between px-4 py-2.5 text-left transition hover:bg-[#F8FBFF]",
-                            token.symbol === selectedSymbol && "bg-[#EFF6FF]"
+                            token.symbol === selectedSymbol &&
+                              token.tokenId === selectedTokenMeta?.tokenId &&
+                              token.chainId === selectedChainId &&
+                              "bg-[#EFF6FF]"
                           )}
                         >
                           <div className="min-w-0">
                             <div className="font-medium text-[#0F172A]">{token.symbol}</div>
-                            <div className="truncate text-xs text-[#64748B]">{token.name}</div>
+                            <div className="truncate text-xs text-[#64748B]">
+                              {token.name}
+                              {token.chainId != null ? ` · ${ONCHAIN_CHAIN_OPTIONS.find(option => option.id === token.chainId)?.label ?? token.chainId}` : ""}
+                            </div>
                           </div>
                           <div className="ml-4 shrink-0 text-right text-[11px] text-[#94A3B8]">
                             <div>{token.transferCount.toLocaleString()} transfers</div>
@@ -2913,6 +2995,26 @@ export default function OnChainBoard() {
                 </div>
               ) : null}
             </div>
+
+            {activeTrack === "token-analysis" ? (
+              <div className="flex h-[50px] items-center gap-2 rounded-[18px] border border-[#DBEAFE] bg-white px-2 shadow-[0_6px_18px_rgba(148,163,184,0.08)]">
+                {ONCHAIN_CHAIN_OPTIONS.map(option => (
+                  <button
+                    key={option.id}
+                    type="button"
+                    onClick={() => handleSelectChain(option.id)}
+                    className={cn(
+                      "rounded-full px-3 py-2 text-sm font-medium transition",
+                      selectedChainId === option.id
+                        ? "bg-[#1E40AF] text-white shadow-[0_8px_18px_rgba(30,64,175,0.20)]"
+                        : "text-[#475569] hover:bg-[#EFF6FF]"
+                    )}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            ) : null}
 
             <Button className="h-[50px] rounded-[18px] bg-[#1E40AF] px-5 hover:bg-[#1D4ED8]" onClick={handleTokenSearch}>
               <Search className="mr-2 h-4 w-4" />
@@ -2931,11 +3033,13 @@ export default function OnChainBoard() {
         <div className="mt-4 flex flex-wrap items-center gap-3 text-sm text-[#64748B]">
           {tokenMatches.slice(0, 3).map(token => (
             <button
-              key={token.symbol}
-              onClick={() => handleSelectToken(token.symbol)}
+              key={`${token.chainId ?? "na"}-${token.tokenId}`}
+              onClick={() => handleSelectToken(token)}
               className={cn(
                 "rounded-full px-3 py-1.5 transition",
-                token.symbol === selectedSymbol ? "bg-[#DBEAFE] text-[#1D4ED8]" : "bg-white text-[#475569]"
+                token.symbol === selectedSymbol && token.tokenId === selectedTokenMeta?.tokenId && token.chainId === selectedChainId
+                  ? "bg-[#DBEAFE] text-[#1D4ED8]"
+                  : "bg-white text-[#475569]"
               )}
             >
               {token.symbol} · {token.name}
@@ -2944,6 +3048,7 @@ export default function OnChainBoard() {
         </div>
         ) : null}
       </section>
+      ) : null}
 
       <div className="space-y-3 px-1">
         {((activeTrack === "token-analysis" && isTokenDetailOpen) || (activeTrack === "pool-discovery" && isPoolDetailOpen)) ? (
@@ -3011,25 +3116,27 @@ export default function OnChainBoard() {
                   <TableHead>名称</TableHead>
                   <TableHead className="text-right">Transfer</TableHead>
                   <TableHead className="text-right">Holder</TableHead>
-                  <TableHead className="w-[120px] text-right">操作</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {filteredTokenList.map(token => (
-                  <TableRow key={token.symbol}>
+                  <TableRow
+                    key={`${token.chainId ?? "na"}-${token.tokenId}`}
+                    role="button"
+                    tabIndex={0}
+                    className="cursor-pointer transition hover:bg-[#F8FAFC] focus-visible:bg-[#EFF6FF] focus-visible:outline-none"
+                    onClick={() => handleSelectToken(token)}
+                    onKeyDown={event => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        handleSelectToken(token);
+                      }
+                    }}
+                  >
                     <TableCell className="font-semibold text-[#0F172A]">{token.symbol}</TableCell>
                     <TableCell className="text-[#475569]">{token.name}</TableCell>
                     <TableCell className="text-right">{token.transferCount.toLocaleString()}</TableCell>
                     <TableCell className="text-right">{token.holderCount.toLocaleString()}</TableCell>
-                    <TableCell className="text-right">
-                      <Button
-                        variant={token.symbol === selectedSymbol ? "default" : "secondary"}
-                        className="h-8 rounded-full px-3"
-                        onClick={() => handleSelectToken(token.symbol)}
-                      >
-                        查看
-                      </Button>
-                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>
@@ -3056,24 +3163,22 @@ export default function OnChainBoard() {
                 <TableRow className="bg-[#F8FAFC]">
                   <TableHead>核心本币</TableHead>
                   <TableHead>配对币</TableHead>
-                  <TableHead>池子地址</TableHead>
                   <TableHead>加时间锁时间</TableHead>
                   <TableHead>建池时间</TableHead>
                   <TableHead>开盘时间</TableHead>
                   <TableHead>首次加池</TableHead>
                   <TableHead className="text-right">首次价格</TableHead>
                   <TableHead>DEX</TableHead>
-                  <TableHead className="w-[120px] text-right">操作</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {onchainPoolsQuery.isLoading ? (
                   <TableRow>
-                    <TableCell colSpan={10} className="py-8 text-center text-sm text-[#64748B]">池子列表加载中...</TableCell>
+                    <TableCell colSpan={8} className="py-8 text-center text-sm text-[#64748B]">池子列表加载中...</TableCell>
                   </TableRow>
                 ) : onchainPoolsQuery.error ? (
                   <TableRow>
-                    <TableCell colSpan={10} className="py-8 text-center text-sm text-[#DC2626]">
+                    <TableCell colSpan={8} className="py-8 text-center text-sm text-[#DC2626]">
                       池子列表加载失败
                       {onchainPoolsQuery.error.message ? `：${onchainPoolsQuery.error.message}` : ""}
                     </TableCell>
@@ -3085,42 +3190,49 @@ export default function OnChainBoard() {
                       (pool.token0Symbol && pool.token0Symbol.trim()) ||
                       selectedSymbol;
                     return (
-                      <TableRow key={`${pool.poolRegistryId}-${pool.poolAddress ?? pool.poolId ?? "pool"}`}>
+                      <TableRow
+                        key={`${pool.poolRegistryId}-${pool.poolAddress ?? pool.poolId ?? "pool"}`}
+                        role="button"
+                        tabIndex={0}
+                        className="cursor-pointer transition hover:bg-[#F8FAFC] focus-visible:bg-[#EFF6FF] focus-visible:outline-none"
+                        onClick={() => {
+                          setSelectedPoolRegistryId(pool.poolRegistryId);
+                          setSelectedPoolId(pool.poolId);
+                          setSelectedSymbol(nextSymbol.toUpperCase());
+                          setTokenQuery(nextSymbol.toUpperCase());
+                          setActiveTrack("pool-discovery");
+                          setActiveView("pool-adds");
+                        }}
+                        onKeyDown={event => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            setSelectedPoolRegistryId(pool.poolRegistryId);
+                            setSelectedPoolId(pool.poolId);
+                            setSelectedSymbol(nextSymbol.toUpperCase());
+                            setTokenQuery(nextSymbol.toUpperCase());
+                            setActiveTrack("pool-discovery");
+                            setActiveView("pool-adds");
+                          }
+                        }}
+                      >
                         <TableCell className="font-semibold text-[#0F172A]">{pool.coreTokenSymbol ?? pool.token0Symbol ?? "—"}</TableCell>
                         <TableCell className="text-[#475569]">{pool.quoteTokenSymbol ?? pool.token1Symbol ?? "—"}</TableCell>
-                        <TableCell className="font-mono text-xs text-[#1D4ED8]">{pool.poolAddress ? formatAddressDisplay(pool.poolAddress) : "—"}</TableCell>
                         <TableCell>{pool.poolLockTime ? formatShanghaiDateTime(pool.poolLockTime) : "—"}</TableCell>
                         <TableCell>{pool.poolCreatedTime ? formatShanghaiDateTime(pool.poolCreatedTime) : "—"}</TableCell>
                         <TableCell>{pool.startedTime ? formatShanghaiDateTime(pool.startedTime) : "—"}</TableCell>
                         <TableCell>{pool.firstAddLiquidityTime ? formatShanghaiDateTime(pool.firstAddLiquidityTime) : "—"}</TableCell>
                         <TableCell className="text-right">{pool.firstAddPrice != null ? compactNumber(pool.firstAddPrice, 6) : "—"}</TableCell>
                         <TableCell>{pool.dexName ?? "Pancake"}</TableCell>
-                        <TableCell className="text-right">
-                          <Button
-                            variant="secondary"
-                            className="h-8 rounded-full px-3"
-                            onClick={() => {
-                              setSelectedPoolRegistryId(pool.poolRegistryId);
-                              setSelectedPoolId(pool.poolId);
-                              setSelectedSymbol(nextSymbol.toUpperCase());
-                              setTokenQuery(nextSymbol.toUpperCase());
-                              setActiveTrack("pool-discovery");
-                              setActiveView("pool-adds");
-                            }}
-                          >
-                            查看
-                          </Button>
-                        </TableCell>
                       </TableRow>
                     );
                   })
                 ) : normalizedTokenQuery ? (
                   <TableRow>
-                    <TableCell colSpan={10} className="py-8 text-center text-sm text-[#64748B]">当前搜索条件下没有匹配的池子</TableCell>
+                    <TableCell colSpan={8} className="py-8 text-center text-sm text-[#64748B]">当前搜索条件下没有匹配的池子</TableCell>
                   </TableRow>
                 ) : (
                   <TableRow>
-                    <TableCell colSpan={10} className="py-8 text-center text-sm text-[#64748B]">当前暂无池子发现数据。</TableCell>
+                    <TableCell colSpan={8} className="py-8 text-center text-sm text-[#64748B]">当前暂无池子发现数据。</TableCell>
                   </TableRow>
                 )}
               </TableBody>
@@ -3214,17 +3326,14 @@ export default function OnChainBoard() {
                   当前没有成功取回 {selectedSymbol} 的资金流结果。你可以点右上角刷新重试，或者先切到推荐币种继续查看。
                 </div>
                 <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
-                  {recommendedFlowSymbols.map(symbol => (
+                  {recommendedFlowTokens.map(token => (
                     <button
-                      key={symbol}
+                      key={`${token.chainId ?? "na"}-${token.tokenId}`}
                       type="button"
-                      onClick={() => {
-                        setSelectedSymbol(symbol);
-                        setTokenQuery(symbol);
-                      }}
+                      onClick={() => handleSelectToken(token)}
                       className="rounded-full border border-[#BFDBFE] bg-[#EFF6FF] px-4 py-2 text-sm font-medium text-[#1D4ED8]"
                     >
-                      查看 {symbol}
+                      查看 {token.symbol}
                     </button>
                   ))}
                 </div>
@@ -3236,17 +3345,14 @@ export default function OnChainBoard() {
                   这通常意味着当前币种还没有映射到可用的链上合约地址，或者数据源暂时没有返回结果。
                 </div>
                 <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
-                  {recommendedFlowSymbols.map(symbol => (
+                  {recommendedFlowTokens.map(token => (
                     <button
-                      key={symbol}
+                      key={`${token.chainId ?? "na"}-${token.tokenId}`}
                       type="button"
-                      onClick={() => {
-                        setSelectedSymbol(symbol);
-                        setTokenQuery(symbol);
-                      }}
+                      onClick={() => handleSelectToken(token)}
                       className="rounded-full border border-[#BFDBFE] bg-[#EFF6FF] px-4 py-2 text-sm font-medium text-[#1D4ED8]"
                     >
-                      试试 {symbol}
+                      试试 {token.symbol}
                     </button>
                   ))}
                 </div>
@@ -3258,22 +3364,19 @@ export default function OnChainBoard() {
                   当前币种已经取回结果，但在所选日期和当前阈值下还没有可画出的分发路径。你可以先保持金额筛选为 0，或者切到推荐币种查看真实样例。
                 </div>
                 <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
-                  {recommendedFlowSymbols.map(symbol => (
+                  {recommendedFlowTokens.map(token => (
                     <button
-                      key={symbol}
+                      key={`${token.chainId ?? "na"}-${token.tokenId}`}
                       type="button"
-                      onClick={() => {
-                        setSelectedSymbol(symbol);
-                        setTokenQuery(symbol);
-                      }}
+                      onClick={() => handleSelectToken(token)}
                       className="rounded-full border border-[#BFDBFE] bg-[#EFF6FF] px-4 py-2 text-sm font-medium text-[#1D4ED8]"
                     >
-                      查看 {symbol}
+                      查看 {token.symbol}
                     </button>
                   ))}
                 </div>
                 <div className="mt-3 text-xs text-[#94A3B8]">
-                  推荐样例：{recommendedFlowSymbols.join(" / ")}
+                  推荐样例：{recommendedFlowTokens.map(token => token.symbol).join(" / ")}
                 </div>
               </div>
             ) : !isFlowFullscreenOpen ? (
@@ -3282,6 +3385,7 @@ export default function OnChainBoard() {
                 minAmount={flowMinAmount}
                 collapsedNodeIds={collapsedNodeIds}
                 onToggleCollapse={toggleCollapsedNode}
+                explorerChainId={selectedChainId}
               />
             ) : (
               <div className="flex h-[720px] items-center justify-center rounded-[24px] border border-[#E2E8F0] bg-[#FCFDFF] text-sm text-[#64748B]">
@@ -3314,7 +3418,7 @@ export default function OnChainBoard() {
                 {holdersQuery.data?.tokenAddress ? (
                   <div className="mt-1 flex items-center gap-2">
                     <a
-                      href={formatBscScanAddress(holdersQuery.data.tokenAddress)}
+                      href={formatBscScanAddress(holdersQuery.data.tokenAddress, selectedChainId)}
                       target="_blank"
                       rel="noreferrer"
                       className="min-w-0 truncate text-sm font-semibold text-[#1D4ED8] hover:text-[#1E40AF] hover:underline"
@@ -3415,7 +3519,7 @@ export default function OnChainBoard() {
                           <button
                             type="button"
                             className="font-mono text-sm text-[#1D4ED8] underline"
-                            onClick={() => window.open(formatBscScanAddress(item.address), "_blank", "noopener,noreferrer")}
+                            onClick={() => window.open(formatBscScanAddress(item.address, selectedChainId), "_blank", "noopener,noreferrer")}
                           >
                             {formatAddressDisplay(item.address)}
                           </button>
@@ -3491,7 +3595,7 @@ export default function OnChainBoard() {
                 {cexFlowsQuery.data?.tokenAddress ? (
                   <>
                     <a
-                      href={formatBscScanAddress(cexFlowsQuery.data.tokenAddress)}
+                      href={formatBscScanAddress(cexFlowsQuery.data.tokenAddress, selectedChainId)}
                       target="_blank"
                       rel="noreferrer"
                       className="max-w-[240px] truncate rounded-full border border-[#DBEAFE] bg-white px-3 py-2 text-sm font-medium text-[#1D4ED8] hover:text-[#1E40AF] hover:underline"
@@ -3634,6 +3738,16 @@ export default function OnChainBoard() {
               visiblePoolAddItems[0]?.startedTime ??
               activePoolAddsData?.earliestStartedTime ??
               null;
+            const activePoolAddsByPoolData = activeTrack === "pool-discovery" ? poolAddsByPoolQuery.data : null;
+            const detailPoolAddress =
+              activePoolAddsByPoolData?.poolAddress ??
+              visiblePoolAddItems.find(item => item.poolAddress)?.poolAddress ??
+              (activeTrack === "pool-discovery" ? selectedPool?.poolAddress ?? null : null) ??
+              null;
+            const detailPoolSize =
+              activeTrack === "pool-discovery"
+                ? visiblePoolAddItems.reduce((sum, item) => sum + (item.value ?? 0), 0)
+                : null;
             return (
               <>
           {activeTrack === "pool-discovery" && selectedPool ? (
@@ -3653,7 +3767,29 @@ export default function OnChainBoard() {
               <Card className="rounded-[18px] border border-white/80 bg-white/90 shadow-[0_10px_24px_rgba(71,85,105,0.08)]">
                 <CardContent className="p-3.5">
                   <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#64748B]">池子地址</div>
-                  <div className="mt-1 text-sm font-semibold text-[#0F172A]">{selectedPool.poolAddress ? formatAddressDisplay(selectedPool.poolAddress) : "—"}</div>
+                  {detailPoolAddress ? (
+                    <div className="mt-1 flex items-center gap-2">
+                      <a
+                        href={formatBscScanAddress(detailPoolAddress)}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="block truncate text-sm font-semibold text-[#1D4ED8] hover:text-[#1E40AF] hover:underline"
+                        title={detailPoolAddress}
+                      >
+                        {formatAddressDisplay(detailPoolAddress)}
+                      </a>
+                      <button
+                        type="button"
+                        onClick={() => navigator.clipboard.writeText(detailPoolAddress)}
+                        className="text-[#64748B] transition hover:text-[#1D4ED8]"
+                        title="复制地址"
+                      >
+                        <Copy className="h-4 w-4" />
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="mt-1 text-sm font-semibold text-[#0F172A]">—</div>
+                  )}
                 </CardContent>
               </Card>
               <Card className="rounded-[18px] border border-white/80 bg-white/90 shadow-[0_10px_24px_rgba(71,85,105,0.08)]">
@@ -3683,7 +3819,7 @@ export default function OnChainBoard() {
               <Card className="rounded-[18px] border border-white/80 bg-white/90 shadow-[0_10px_24px_rgba(71,85,105,0.08)]">
                 <CardContent className="p-3.5">
                   <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#64748B]">池子大小</div>
-                  <div className="mt-1 text-base font-semibold text-[#0F172A]">{selectedPool.firstAddValue != null ? compactCurrency(selectedPool.firstAddValue) : "—"}</div>
+                  <div className="mt-1 text-base font-semibold text-[#0F172A]">{detailPoolSize != null ? compactCurrency(detailPoolSize) : "—"}</div>
                 </CardContent>
               </Card>
               <Card className="rounded-[18px] border border-white/80 bg-white/90 shadow-[0_10px_24px_rgba(71,85,105,0.08)]">
@@ -3694,6 +3830,7 @@ export default function OnChainBoard() {
               </Card>
             </div>
           ) : null}
+          {activeTrack === "token-analysis" ? (
           <div className="grid gap-3 md:grid-cols-4">
             <Card className="rounded-[18px] border border-white/80 bg-white/90 shadow-[0_10px_24px_rgba(71,85,105,0.08)]">
               <CardContent className="p-3.5">
@@ -3723,20 +3860,16 @@ export default function OnChainBoard() {
             <Card className="rounded-[18px] border border-white/80 bg-white/90 shadow-[0_10px_24px_rgba(71,85,105,0.08)]">
               <CardContent className="p-3.5">
                 <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#64748B]">Token Address</div>
-                {(activeTrack === "pool-discovery" ? selectedPool?.coreTokenAddress : poolAddsQuery.data?.tokenAddress) ? (
+                {poolAddsQuery.data?.tokenAddress ? (
                   <div className="mt-1 flex items-center gap-2">
                     <a
-                      href={formatBscScanAddress(
-                        activeTrack === "pool-discovery" ? selectedPool?.coreTokenAddress ?? "" : poolAddsQuery.data?.tokenAddress ?? ""
-                      )}
+                      href={formatBscScanAddress(poolAddsQuery.data?.tokenAddress ?? "", selectedChainId)}
                       target="_blank"
                       rel="noreferrer"
                       className="block truncate text-sm font-semibold text-[#1D4ED8] hover:text-[#1E40AF] hover:underline"
-                      title={activeTrack === "pool-discovery" ? selectedPool?.coreTokenAddress ?? "" : poolAddsQuery.data?.tokenAddress ?? ""}
+                      title={poolAddsQuery.data?.tokenAddress ?? ""}
                     >
-                      {formatAddressDisplay(
-                        activeTrack === "pool-discovery" ? selectedPool?.coreTokenAddress ?? "" : poolAddsQuery.data?.tokenAddress ?? ""
-                      )}
+                      {formatAddressDisplay(poolAddsQuery.data?.tokenAddress ?? "")}
                     </a>
                     <button
                       type="button"
@@ -3761,6 +3894,7 @@ export default function OnChainBoard() {
               </CardContent>
             </Card>
           </div>
+          ) : null}
 
           <div className="rounded-[24px] border border-white/80 bg-white/90 p-4 shadow-[0_14px_36px_rgba(71,85,105,0.08)]">
             <div className="mb-4">
@@ -3792,19 +3926,13 @@ export default function OnChainBoard() {
                       <TableHead>时间</TableHead>
                       <TableHead>开盘时间</TableHead>
                       <TableHead>加池地址</TableHead>
-                      <TableHead>池子地址</TableHead>
                       <TableHead>Pool ID</TableHead>
-                      <TableHead>交易对</TableHead>
-                      <TableHead>配对币地址</TableHead>
                       <TableHead>配对币 Symbol</TableHead>
                       <TableHead className="text-right">本币数量</TableHead>
                       <TableHead className="text-right">配对币数量</TableHead>
                       <TableHead className="text-right">价格</TableHead>
                       <TableHead className="text-right">近似价值</TableHead>
-                      <TableHead>事件名</TableHead>
-                      <TableHead className="text-right">Pool Registry ID</TableHead>
                       <TableHead>交易 Hash</TableHead>
-                      <TableHead className="text-right">Chain</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -3818,34 +3946,19 @@ export default function OnChainBoard() {
                           <button
                             type="button"
                             className="font-medium text-[#1D4ED8] hover:underline"
-                            onClick={() => window.open(formatBscScanAddress(item.traderAddress), "_blank", "noopener,noreferrer")}
+                            onClick={() => window.open(formatBscScanAddress(item.traderAddress, selectedChainId), "_blank", "noopener,noreferrer")}
                           >
                             {formatAddressDisplay(item.traderAddress)}
                           </button>
                         </TableCell>
                         <TableCell>
-                          {item.poolAddress ? (
+                          {item.poolId ? (
                             <button
                               type="button"
                               className="font-medium text-[#1D4ED8] hover:underline"
-                              onClick={() => window.open(formatBscScanAddress(item.poolAddress!), "_blank", "noopener,noreferrer")}
+                              onClick={() => window.open(formatBscScanSearch(item.poolId!, selectedChainId), "_blank", "noopener,noreferrer")}
                             >
-                              {formatAddressDisplay(item.poolAddress)}
-                            </button>
-                          ) : (
-                            "—"
-                          )}
-                        </TableCell>
-                        <TableCell>{item.poolId ?? "—"}</TableCell>
-                        <TableCell>{item.token0Symbol || item.token1Symbol ? `${item.token0Symbol ?? "?"} / ${item.token1Symbol ?? "?"}` : "—"}</TableCell>
-                        <TableCell>
-                          {item.quoteTokenAddress ? (
-                            <button
-                              type="button"
-                              className="font-medium text-[#1D4ED8] hover:underline"
-                              onClick={() => window.open(formatBscScanAddress(item.quoteTokenAddress!), "_blank", "noopener,noreferrer")}
-                            >
-                              {formatAddressDisplay(item.quoteTokenAddress)}
+                              {formatPoolIdDisplay(item.poolId)}
                             </button>
                           ) : (
                             "—"
@@ -3856,14 +3969,12 @@ export default function OnChainBoard() {
                         <TableCell className="text-right">{item.quoteTokenAmount != null ? compactNumber(item.quoteTokenAmount) : "—"}</TableCell>
                         <TableCell className="text-right">{item.price != null ? compactNumber(item.price, 6) : "—"}</TableCell>
                         <TableCell className="text-right">{item.value != null ? `$${compactNumber(item.value)}` : "—"}</TableCell>
-                        <TableCell>{item.eventName || "—"}</TableCell>
-                        <TableCell className="text-right">{item.poolRegistryId != null ? item.poolRegistryId : "—"}</TableCell>
                         <TableCell className="whitespace-nowrap">
                           {item.txhash ? (
                             <button
                               type="button"
                               className="font-medium text-[#1D4ED8] hover:underline"
-                              onClick={() => window.open(formatBscScanTx(item.txhash!), "_blank", "noopener,noreferrer")}
+                              onClick={() => window.open(formatBscScanTx(item.txhash!, selectedChainId), "_blank", "noopener,noreferrer")}
                             >
                               {formatHashDisplay(item.txhash)}
                             </button>
@@ -3871,7 +3982,6 @@ export default function OnChainBoard() {
                             "—"
                           )}
                         </TableCell>
-                        <TableCell className="text-right">{item.chainId ?? "—"}</TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
@@ -3908,7 +4018,7 @@ export default function OnChainBoard() {
                 <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#64748B]">Token Address</div>
                 {largeTransfersQuery.data?.tokenAddress ? (
                   <a
-                    href={formatBscScanAddress(largeTransfersQuery.data.tokenAddress)}
+                    href={formatBscScanAddress(largeTransfersQuery.data.tokenAddress, selectedChainId)}
                     target="_blank"
                     rel="noreferrer"
                     className="mt-1 block truncate text-sm font-semibold text-[#1D4ED8] hover:text-[#1E40AF] hover:underline"
@@ -4039,6 +4149,7 @@ export default function OnChainBoard() {
                   collapsedNodeIds={collapsedNodeIds}
                   onToggleCollapse={toggleCollapsedNode}
                   viewportHeight={900}
+                  explorerChainId={selectedChainId}
                 />
               ) : (
                 <div className="flex h-[560px] items-center justify-center rounded-[20px] border border-[#E2E8F0] bg-[#FCFDFF] text-sm text-[#64748B]">
@@ -4049,11 +4160,13 @@ export default function OnChainBoard() {
               <LargeTransferBilateralCanvas
                 graph={largeTransferBilateralGraph}
                 scope={largeTransferScope}
+                explorerChainId={selectedChainId}
               />
             ) : largeTransferMode === "graph" && largeTransferGraph ? (
               <LargeTransferGraphCanvas
                 graph={largeTransferGraph}
                 defaultView={largeTransferScope === "initial" ? "focus" : "all"}
+                explorerChainId={selectedChainId}
               />
             ) : (
               <div className="overflow-hidden rounded-[20px] border border-[#E2E8F0] bg-white">
@@ -4079,7 +4192,7 @@ export default function OnChainBoard() {
                             <button
                               type="button"
                               className="font-mono text-sm text-[#1D4ED8] underline"
-                              onClick={() => window.open(formatBscScanAddress(item.fromAddress), "_blank", "noopener,noreferrer")}
+                              onClick={() => window.open(formatBscScanAddress(item.fromAddress, selectedChainId), "_blank", "noopener,noreferrer")}
                             >
                               {formatAddressDisplay(item.fromAddress)}
                             </button>
@@ -4099,7 +4212,7 @@ export default function OnChainBoard() {
                             <button
                               type="button"
                               className="font-mono text-sm text-[#1D4ED8] underline"
-                              onClick={() => window.open(formatBscScanAddress(item.toAddress), "_blank", "noopener,noreferrer")}
+                              onClick={() => window.open(formatBscScanAddress(item.toAddress, selectedChainId), "_blank", "noopener,noreferrer")}
                             >
                               {formatAddressDisplay(item.toAddress)}
                             </button>
@@ -4164,6 +4277,7 @@ export default function OnChainBoard() {
                 collapsedNodeIds={collapsedNodeIds}
                 onToggleCollapse={toggleCollapsedNode}
                 viewportHeight={typeof window !== "undefined" ? Math.max(640, window.innerHeight - 170) : 760}
+                explorerChainId={selectedChainId}
               />
             </div>
           </div>

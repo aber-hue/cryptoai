@@ -682,6 +682,7 @@ type ListingAnnouncementSearchResult = {
 type AvailableOnchainTokenResult = {
   items: Array<{
     tokenId: number;
+    chainId: number | null;
     symbol: string;
     name: string;
     tokenAddressId: number | null;
@@ -812,6 +813,12 @@ const fallbackOnchainTokens: Record<
     tokenId: 1584,
     addresses: ["0x5feccd17c393caf1001d18164236a37e731fcb9d"],
   },
+};
+
+const ONCHAIN_CHAIN_NAME_HINTS: Record<number, string[]> = {
+  1: ["eth", "ethereum"],
+  56: ["bnb", "bsc", "binance"],
+  8453: ["base"],
 };
 
 type ProfileRow = RowDataPacket & {
@@ -1992,6 +1999,14 @@ function pickFirstNumber(record: Record<string, unknown>, keys: string[]) {
 }
 
 export async function getTokenProfileBySymbol(symbol: string): Promise<TokenProfileResult | null> {
+  return await getTokenProfileByLookup("UPPER(tp.symbol) = UPPER(?)", [symbol]);
+}
+
+async function getTokenProfileByTokenId(tokenId: number): Promise<TokenProfileResult | null> {
+  return await getTokenProfileByLookup("tp.id = ?", [tokenId]);
+}
+
+async function getTokenProfileByLookup(whereClause: string, params: unknown[]): Promise<TokenProfileResult | null> {
   const currentPool = getPool();
   const optionalColumns = await getTokenProfilesOptionalColumns();
   const hasAthColumns =
@@ -2034,12 +2049,12 @@ export async function getTokenProfileBySymbol(symbol: string): Promise<TokenProf
       }
       tp.coin_tags AS coinTagsRaw
     FROM token_profiles tp
-    WHERE UPPER(tp.symbol) = UPPER(?)
+    WHERE ${whereClause}
     ORDER BY tp.id DESC
     LIMIT 1
   `;
 
-  const [profileRows] = await currentPool.query<ProfileRow[]>(profileSql, [symbol]);
+  const [profileRows] = await currentPool.query<ProfileRow[]>(profileSql, params);
   const profile = profileRows[0];
 
   if (!profile) return null;
@@ -2127,35 +2142,134 @@ export async function getTokenProfileBySymbol(symbol: string): Promise<TokenProf
   };
 }
 
-export async function getOnchainOverviewBySymbol(symbol: string): Promise<OnchainOverviewResult | null> {
-  const bigQuery = getBigQueryClient();
-  const dataset = process.env.BIGQUERY_DATASET;
-  const normalizedSymbol = symbol.trim().toUpperCase();
-  const fallbackToken = fallbackOnchainTokens[normalizedSymbol] ?? null;
+function matchesOnchainChainName(chainName: string, chainId?: number | null) {
+  if (!chainId) return true;
+  const keywords = ONCHAIN_CHAIN_NAME_HINTS[chainId] ?? [];
+  if (keywords.length === 0) return true;
+  const normalized = chainName.trim().toLowerCase();
+  return keywords.some(keyword => normalized.includes(keyword));
+}
 
+function filterAddressesByChain<T extends { chainName: string }>(addresses: T[], chainId?: number | null) {
+  if (!chainId) return addresses;
+  const filtered = addresses.filter(item => matchesOnchainChainName(item.chainName, chainId));
+  return filtered.length > 0 ? filtered : addresses;
+}
+
+async function resolveOnchainTokenContext(params: {
+  symbol: string;
+  tokenId?: number | null;
+  chainId?: number | null;
+}) {
+  const currentPool = getPool();
+  const normalizedSymbol = params.symbol.trim().toUpperCase();
+  const fallbackToken = fallbackOnchainTokens[normalizedSymbol] ?? null;
   let profile: TokenProfileResult | null = null;
+
   try {
-    profile = await getTokenProfileBySymbol(symbol);
+    profile =
+      params.tokenId != null && Number.isFinite(params.tokenId)
+        ? await getTokenProfileByTokenId(params.tokenId)
+        : await getTokenProfileBySymbol(params.symbol);
   } catch {
     profile = null;
   }
 
-  if (!profile) {
+  if (!profile && !fallbackToken) return null;
+
+  let tokenAddressRows: Array<{
+    tokenAddressId: number | null;
+    address: string;
+    chainName: string;
+  }> = [];
+
+  if (profile) {
+    try {
+      const [rows] = await currentPool.query<
+        (RowDataPacket & {
+          tokenAddressId: number;
+          address: string;
+          chainName: string | null;
+        })[]
+      >(
+        `
+          SELECT
+            ta.id AS tokenAddressId,
+            ta.address AS address,
+            ta.chain_name AS chainName
+          FROM token_address ta
+          WHERE ta.token_id = ?
+          ORDER BY ta.id DESC
+        `,
+        [profile.tokenId]
+      );
+
+      tokenAddressRows = rows.map(row => ({
+        tokenAddressId: row.tokenAddressId,
+        address: String(row.address).toLowerCase(),
+        chainName: String(row.chainName ?? "").trim(),
+      }));
+    } catch {
+      tokenAddressRows = [];
+    }
+  }
+
+  if (tokenAddressRows.length === 0 && profile) {
+    tokenAddressRows = profile.addresses.map(item => ({
+      tokenAddressId: null,
+      address: item.address.toLowerCase(),
+      chainName: item.chainName,
+    }));
+  }
+
+  const filteredProfileRows = filterAddressesByChain(tokenAddressRows, params.chainId);
+  const fallbackRows =
+    fallbackToken && (!params.chainId || params.chainId === 56)
+      ? fallbackToken.addresses.map(address => ({
+          tokenAddressId: null,
+          address: address.toLowerCase(),
+          chainName: "BSC",
+        }))
+      : [];
+
+  const candidateRows = filteredProfileRows.length > 0 ? filteredProfileRows : fallbackRows;
+  const dedupedTokenAddresses = Array.from(
+    new Map(candidateRows.map(row => [row.address, row])).values()
+  );
+
+  return {
+    profile,
+    fallbackToken,
+    resolvedTokenId: profile?.tokenId ?? params.tokenId ?? fallbackToken?.tokenId ?? 0,
+    dedupedTokenAddresses,
+  };
+}
+
+export async function getOnchainOverviewBySymbol(
+  symbol: string,
+  options?: {
+    tokenId?: number | null;
+    chainId?: number | null;
+  }
+): Promise<OnchainOverviewResult | null> {
+  const bigQuery = getBigQueryClient();
+  const dataset = process.env.BIGQUERY_DATASET;
+  const context = await resolveOnchainTokenContext({
+    symbol,
+    tokenId: options?.tokenId,
+    chainId: options?.chainId,
+  });
+
+  if (!context?.profile) {
     return null;
   }
 
-  const preferredAddress =
-    profile.addresses.find(item => {
-      const chain = item.chainName.toLowerCase();
-      return chain.includes("bnb") || chain.includes("bsc") || chain.includes("binance");
-    })?.address ??
-    profile.addresses[0]?.address ??
-    fallbackToken?.addresses[0] ??
-    null;
+  const { profile, resolvedTokenId, dedupedTokenAddresses } = context;
+  const preferredAddress = dedupedTokenAddresses[0]?.address ?? null;
 
   if (!dataset || !preferredAddress) {
     return {
-      tokenId: profile.tokenId,
+      tokenId: resolvedTokenId,
       symbol: profile.symbol,
       name: profile.name,
       logoUrl: profile.logoUrl,
@@ -2188,6 +2302,7 @@ export async function getOnchainOverviewBySymbol(symbol: string): Promise<Onchai
         COUNT(*) AS holderCount
       FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.token_holder_snapshot\`
       WHERE LOWER(token_address) = @tokenAddress
+      ${options?.chainId ? "AND CAST(chain_id AS INT64) = @chainId" : ""}
       GROUP BY snapshotDate
       ORDER BY snapshotDate DESC
       LIMIT 30
@@ -2197,6 +2312,7 @@ export async function getOnchainOverviewBySymbol(symbol: string): Promise<Onchai
       query: holderCountsQuery,
       params: {
         tokenAddress: preferredAddress.toLowerCase(),
+        ...(options?.chainId ? { chainId: options.chainId } : {}),
       },
       useLegacySql: false,
     });
@@ -2226,6 +2342,7 @@ export async function getOnchainOverviewBySymbol(symbol: string): Promise<Onchai
         SUM(IF(balance_rank <= 100, SAFE_CAST(balance AS NUMERIC), 0)) AS top100Balance
       FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.token_holder_snapshot\`
       WHERE LOWER(token_address) = @tokenAddress
+        ${options?.chainId ? "AND CAST(chain_id AS INT64) = @chainId" : ""}
         AND snapshot_date = DATE(@snapshotDate)
     `;
     const [topBalanceRows] = await bigQuery.query({
@@ -2233,6 +2350,7 @@ export async function getOnchainOverviewBySymbol(symbol: string): Promise<Onchai
       params: {
         tokenAddress: preferredAddress.toLowerCase(),
         snapshotDate: holderHistory.at(-1)?.snapshotDate ?? String((holderCountRows[0] as { snapshotDate?: string } | undefined)?.snapshotDate ?? ""),
+        ...(options?.chainId ? { chainId: options.chainId } : {}),
       },
       useLegacySql: false,
     });
@@ -2252,6 +2370,7 @@ export async function getOnchainOverviewBySymbol(symbol: string): Promise<Onchai
         is_new AS isNew
       FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.token_holder_snapshot\`
       WHERE LOWER(token_address) = @tokenAddress
+        ${options?.chainId ? "AND CAST(chain_id AS INT64) = @chainId" : ""}
         AND snapshot_date = DATE(@snapshotDate)
       ORDER BY SAFE_CAST(balance AS NUMERIC) DESC
       LIMIT 200
@@ -2261,6 +2380,7 @@ export async function getOnchainOverviewBySymbol(symbol: string): Promise<Onchai
       params: {
         tokenAddress: preferredAddress.toLowerCase(),
         snapshotDate: latestSnapshotDate,
+        ...(options?.chainId ? { chainId: options.chainId } : {}),
       },
       useLegacySql: false,
     });
@@ -2347,7 +2467,7 @@ export async function getOnchainOverviewBySymbol(symbol: string): Promise<Onchai
       .slice(0, 10);
 
     return {
-      tokenId: profile.tokenId,
+      tokenId: resolvedTokenId,
       symbol: profile.symbol,
       name: profile.name,
       logoUrl: profile.logoUrl,
@@ -2373,7 +2493,7 @@ export async function getOnchainOverviewBySymbol(symbol: string): Promise<Onchai
     };
   } catch {
     return {
-      tokenId: profile.tokenId,
+      tokenId: resolvedTokenId,
       symbol: profile.symbol,
       name: profile.name,
       logoUrl: profile.logoUrl,
@@ -3977,68 +4097,27 @@ export async function getTokenSocialHeatViewBySymbol(symbol: string): Promise<To
 export async function getOnchainFundFlowBySymbol(
   symbol: string,
   options?: {
+    tokenId?: number | null;
+    chainId?: number | null;
     date?: string;
     depth?: number;
     limitPerLayer?: number;
   }
 ): Promise<OnchainFundFlowResult | null> {
-  const currentPool = getPool();
   const bigQuery = getBigQueryClient();
   const dataset = process.env.BIGQUERY_DATASET;
-  const normalizedSymbol = symbol.trim().toUpperCase();
-  const fallbackToken = fallbackOnchainTokens[normalizedSymbol] ?? null;
-  let profile: TokenProfileResult | null = null;
+  const context = await resolveOnchainTokenContext({
+    symbol,
+    tokenId: options?.tokenId,
+    chainId: options?.chainId,
+  });
 
-  try {
-    profile = await getTokenProfileBySymbol(symbol);
-  } catch {
-    profile = null;
-  }
-
-  if (!dataset || (!profile && !fallbackToken)) return null;
+  if (!dataset || !context) return null;
 
   const depth = Math.min(Math.max(options?.depth ?? 3, 1), 4);
   const limitPerLayer = Math.min(Math.max(options?.limitPerLayer ?? 36, 5), 120);
   const date = options?.date?.trim();
-  const resolvedTokenId = profile?.tokenId ?? fallbackToken?.tokenId ?? 0;
-  let tokenAddressRows: Array<{ tokenAddressId: number | null; address: string }> = [];
-
-  if (profile) {
-    try {
-      const [rows] = await currentPool.query<
-        (RowDataPacket & {
-          tokenAddressId: number;
-          address: string;
-        })[]
-      >(
-        `
-          SELECT
-            ta.id AS tokenAddressId,
-            ta.address AS address
-          FROM token_address ta
-          WHERE ta.token_id = ?
-          ORDER BY ta.id DESC
-        `,
-        [profile.tokenId]
-      );
-
-      tokenAddressRows = rows.map(row => ({
-        tokenAddressId: row.tokenAddressId,
-        address: String(row.address).toLowerCase(),
-      }));
-    } catch {
-      tokenAddressRows = [];
-    }
-  }
-
-  if (tokenAddressRows.length === 0 && fallbackToken) {
-    tokenAddressRows = fallbackToken.addresses.map(address => ({
-      tokenAddressId: null,
-      address: address.toLowerCase(),
-    }));
-  }
-
-  const dedupedTokenAddresses = Array.from(new Map(tokenAddressRows.map(row => [row.address, row])).values());
+  const { resolvedTokenId, dedupedTokenAddresses } = context;
 
   if (dedupedTokenAddresses.length === 0) {
     return {
@@ -4057,6 +4136,7 @@ export async function getOnchainFundFlowBySymbol(
       COUNT(*) AS flowCount
     FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.token_transfer_raw\`
     WHERE LOWER(token_address) IN UNNEST(@addresses)
+    ${options?.chainId ? "AND CAST(chain_id AS INT64) = @chainId" : ""}
     ${date ? "AND DATE(block_time) <= @selectedDate" : ""}
     GROUP BY tokenAddress
     ORDER BY flowCount DESC
@@ -4065,6 +4145,7 @@ export async function getOnchainFundFlowBySymbol(
     query: countsQuery,
     params: {
       addresses: dedupedTokenAddresses.map(row => row.address),
+      ...(options?.chainId ? { chainId: options.chainId } : {}),
       ...(date ? { selectedDate: date } : {}),
     },
     useLegacySql: false,
@@ -4101,6 +4182,7 @@ export async function getOnchainFundFlowBySymbol(
       txhash
     FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.token_transfer_raw\`
     WHERE LOWER(token_address) = @tokenAddress
+    ${options?.chainId ? "AND CAST(chain_id AS INT64) = @chainId" : ""}
     ${date ? "AND DATE(block_time) <= @selectedDate" : ""}
     ORDER BY block_time ASC, id ASC
     LIMIT 5000
@@ -4109,6 +4191,7 @@ export async function getOnchainFundFlowBySymbol(
     query: transferQuery,
     params: {
       tokenAddress: chosenAddress.address,
+      ...(options?.chainId ? { chainId: options.chainId } : {}),
       ...(date ? { selectedDate: date } : {}),
     },
     useLegacySql: false,
@@ -4175,6 +4258,7 @@ export async function getOnchainFundFlowBySymbol(
         ) AS rowNum
       FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.token_holder_snapshot\`
       WHERE LOWER(token_address) = @tokenAddress
+      ${options?.chainId ? "AND CAST(chain_id AS INT64) = @chainId" : ""}
       ${date ? "AND snapshot_date <= DATE(@selectedDate)" : ""}
       AND LOWER(holder_address) IN UNNEST(@addresses)
     )
@@ -4186,6 +4270,7 @@ export async function getOnchainFundFlowBySymbol(
         params: {
           tokenAddress: chosenAddress.address,
           addresses: uniqueAddresses,
+          ...(options?.chainId ? { chainId: options.chainId } : {}),
           ...(date ? { selectedDate: date } : {}),
         },
         useLegacySql: false,
@@ -4385,69 +4470,28 @@ export async function getOnchainFundFlowBySymbol(
 export async function getOnchainHoldersBySymbol(
   symbol: string,
   options?: {
+    tokenId?: number | null;
+    chainId?: number | null;
     date?: string;
     page?: number;
     pageSize?: number;
   }
 ): Promise<OnchainHolderListResult | null> {
-  const currentPool = getPool();
   const bigQuery = getBigQueryClient();
   const dataset = process.env.BIGQUERY_DATASET;
-  const normalizedSymbol = symbol.trim().toUpperCase();
-  const fallbackToken = fallbackOnchainTokens[normalizedSymbol] ?? null;
-  let profile: TokenProfileResult | null = null;
+  const context = await resolveOnchainTokenContext({
+    symbol,
+    tokenId: options?.tokenId,
+    chainId: options?.chainId,
+  });
 
-  try {
-    profile = await getTokenProfileBySymbol(symbol);
-  } catch {
-    profile = null;
-  }
-
-  if (!dataset || (!profile && !fallbackToken)) return null;
+  if (!dataset || !context) return null;
 
   const page = Math.max(options?.page ?? 1, 1);
   const pageSize = Math.min(Math.max(options?.pageSize ?? 20, 10), 500);
   const offset = (page - 1) * pageSize;
   const date = options?.date?.trim();
-  const resolvedTokenId = profile?.tokenId ?? fallbackToken?.tokenId ?? 0;
-  let tokenAddressRows: Array<{ tokenAddressId: number | null; address: string }> = [];
-
-  if (profile) {
-    try {
-      const [rows] = await currentPool.query<
-        (RowDataPacket & {
-          tokenAddressId: number;
-          address: string;
-        })[]
-      >(
-        `
-          SELECT
-            ta.id AS tokenAddressId,
-            ta.address AS address
-          FROM token_address ta
-          WHERE ta.token_id = ?
-          ORDER BY ta.id DESC
-        `,
-        [profile.tokenId]
-      );
-
-      tokenAddressRows = rows.map(row => ({
-        tokenAddressId: row.tokenAddressId,
-        address: String(row.address).toLowerCase(),
-      }));
-    } catch {
-      tokenAddressRows = [];
-    }
-  }
-
-  if (tokenAddressRows.length === 0 && fallbackToken) {
-    tokenAddressRows = fallbackToken.addresses.map(address => ({
-      tokenAddressId: null,
-      address: address.toLowerCase(),
-    }));
-  }
-
-  const dedupedTokenAddresses = Array.from(new Map(tokenAddressRows.map(row => [row.address, row])).values());
+  const { resolvedTokenId, dedupedTokenAddresses } = context;
   if (dedupedTokenAddresses.length === 0) {
     return {
       tokenId: resolvedTokenId,
@@ -4467,6 +4511,7 @@ export async function getOnchainHoldersBySymbol(
       COUNT(*) AS holderCount
     FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.token_holder_snapshot\`
     WHERE LOWER(token_address) IN UNNEST(@addresses)
+    ${options?.chainId ? "AND CAST(chain_id AS INT64) = @chainId" : ""}
     ${date ? "AND snapshot_date <= DATE(@selectedDate)" : ""}
     GROUP BY tokenAddress
     ORDER BY holderCount DESC
@@ -4475,6 +4520,7 @@ export async function getOnchainHoldersBySymbol(
     query: countsQuery,
     params: {
       addresses: dedupedTokenAddresses.map(row => row.address),
+      ...(options?.chainId ? { chainId: options.chainId } : {}),
       ...(date ? { selectedDate: date } : {}),
     },
     useLegacySql: false,
@@ -4492,12 +4538,14 @@ export async function getOnchainHoldersBySymbol(
       MAX(snapshot_date) AS snapshotDate
     FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.token_holder_snapshot\`
     WHERE LOWER(token_address) = @tokenAddress
+    ${options?.chainId ? "AND CAST(chain_id AS INT64) = @chainId" : ""}
     ${date ? "AND snapshot_date <= DATE(@selectedDate)" : ""}
   `;
   const [snapshotRows] = await bigQuery.query({
     query: snapshotQuery,
     params: {
       tokenAddress: chosenAddress.address,
+      ...(options?.chainId ? { chainId: options.chainId } : {}),
       ...(date ? { selectedDate: date } : {}),
     },
     useLegacySql: false,
@@ -4525,6 +4573,7 @@ export async function getOnchainHoldersBySymbol(
     SELECT COUNT(*) AS total
     FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.token_holder_snapshot\`
     WHERE LOWER(token_address) = @tokenAddress
+      ${options?.chainId ? "AND CAST(chain_id AS INT64) = @chainId" : ""}
       AND snapshot_date = DATE(@snapshotDate)
   `;
   const [totalRows] = await bigQuery.query({
@@ -4532,6 +4581,7 @@ export async function getOnchainHoldersBySymbol(
     params: {
       tokenAddress: chosenAddress.address,
       snapshotDate,
+      ...(options?.chainId ? { chainId: options.chainId } : {}),
     },
     useLegacySql: false,
   });
@@ -4547,6 +4597,7 @@ export async function getOnchainHoldersBySymbol(
       is_new AS isNew
     FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.token_holder_snapshot\`
     WHERE LOWER(token_address) = @tokenAddress
+      ${options?.chainId ? "AND CAST(chain_id AS INT64) = @chainId" : ""}
       AND snapshot_date = DATE(@snapshotDate)
     ORDER BY balance_rank ASC, SAFE_CAST(balance AS NUMERIC) DESC
     LIMIT @limit
@@ -4554,12 +4605,13 @@ export async function getOnchainHoldersBySymbol(
   `;
   const [holderRows] = await bigQuery.query({
     query: holdersQuery,
-    params: {
-      tokenAddress: chosenAddress.address,
-      snapshotDate,
-      limit: pageSize,
-      offset,
-    },
+      params: {
+        tokenAddress: chosenAddress.address,
+        snapshotDate,
+        ...(options?.chainId ? { chainId: options.chainId } : {}),
+        limit: pageSize,
+        offset,
+      },
     useLegacySql: false,
   });
 
@@ -4639,73 +4691,32 @@ export async function getOnchainHoldersBySymbol(
 export async function getOnchainLargeTransfersBySymbol(
   symbol: string,
   options?: {
+    tokenId?: number | null;
+    chainId?: number | null;
     page?: number;
     pageSize?: number;
     search?: string;
     sortOrder?: "asc" | "desc";
   }
 ): Promise<OnchainLargeTransferListResult | null> {
-  const currentPool = getPool();
   const bigQuery = getBigQueryClient();
   const dataset = process.env.BIGQUERY_DATASET;
-  const normalizedSymbol = symbol.trim().toUpperCase();
-  const fallbackToken = fallbackOnchainTokens[normalizedSymbol] ?? null;
-  let profile: TokenProfileResult | null = null;
+  const context = await resolveOnchainTokenContext({
+    symbol,
+    tokenId: options?.tokenId,
+    chainId: options?.chainId,
+  });
 
-  try {
-    profile = await getTokenProfileBySymbol(symbol);
-  } catch {
-    profile = null;
-  }
-
-  if (!dataset || (!profile && !fallbackToken)) return null;
+  if (!dataset || !context) return null;
 
   const page = Math.max(options?.page ?? 1, 1);
   const pageSize = Math.min(Math.max(options?.pageSize ?? 20, 10), 500);
   const offset = (page - 1) * pageSize;
   const sortOrder: "asc" | "desc" = options?.sortOrder === "asc" ? "asc" : "desc";
   const normalizedSearch = options?.search?.trim().toLowerCase() ?? "";
-  const resolvedTokenId = profile?.tokenId ?? fallbackToken?.tokenId ?? 0;
+  const { profile, resolvedTokenId, dedupedTokenAddresses } = context;
   const totalSupply = profile?.totalSupply ?? null;
   const thresholdAmount = totalSupply && totalSupply > 0 ? totalSupply * 0.0001 : null;
-  let tokenAddressRows: Array<{ tokenAddressId: number | null; address: string }> = [];
-
-  if (profile) {
-    try {
-      const [rows] = await currentPool.query<
-        (RowDataPacket & {
-          tokenAddressId: number;
-          address: string;
-        })[]
-      >(
-        `
-          SELECT
-            ta.id AS tokenAddressId,
-            ta.address AS address
-          FROM token_address ta
-          WHERE ta.token_id = ?
-          ORDER BY ta.id DESC
-        `,
-        [profile.tokenId]
-      );
-
-      tokenAddressRows = rows.map(row => ({
-        tokenAddressId: row.tokenAddressId,
-        address: String(row.address).toLowerCase(),
-      }));
-    } catch {
-      tokenAddressRows = [];
-    }
-  }
-
-  if (tokenAddressRows.length === 0 && fallbackToken) {
-    tokenAddressRows = fallbackToken.addresses.map(address => ({
-      tokenAddressId: null,
-      address: address.toLowerCase(),
-    }));
-  }
-
-  const dedupedTokenAddresses = Array.from(new Map(tokenAddressRows.map(row => [row.address, row])).values());
   if (dedupedTokenAddresses.length === 0) {
     return {
       tokenId: resolvedTokenId,
@@ -4728,12 +4739,16 @@ export async function getOnchainLargeTransfersBySymbol(
       COUNT(*) AS transferCount
     FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.token_transfer_raw\`
     WHERE LOWER(token_address) IN UNNEST(@addresses)
+    ${options?.chainId ? "AND CAST(chain_id AS INT64) = @chainId" : ""}
     GROUP BY tokenAddress
     ORDER BY transferCount DESC
   `;
   const [countRows] = await bigQuery.query({
     query: countsQuery,
-    params: { addresses: dedupedTokenAddresses.map(row => row.address) },
+    params: {
+      addresses: dedupedTokenAddresses.map(row => row.address),
+      ...(options?.chainId ? { chainId: options.chainId } : {}),
+    },
     useLegacySql: false,
   });
 
@@ -4755,6 +4770,7 @@ export async function getOnchainLargeTransfersBySymbol(
   const thresholdClause = thresholdAmount != null ? "AND SAFE_CAST(amount AS NUMERIC) >= @thresholdAmount" : "";
   const baseWhere = `
     WHERE LOWER(token_address) = @tokenAddress
+    ${options?.chainId ? "AND CAST(chain_id AS INT64) = @chainId" : ""}
     ${thresholdClause}
     ${searchClause}
   `;
@@ -4913,61 +4929,24 @@ export async function getOnchainLargeTransfersBySymbol(
   };
 }
 
-export async function getOnchainCexFlowsBySymbol(symbol: string): Promise<OnchainCexFlowResult | null> {
-  const currentPool = getPool();
+export async function getOnchainCexFlowsBySymbol(
+  symbol: string,
+  options?: {
+    tokenId?: number | null;
+    chainId?: number | null;
+  }
+): Promise<OnchainCexFlowResult | null> {
   const bigQuery = getBigQueryClient();
   const dataset = process.env.BIGQUERY_DATASET;
-  const normalizedSymbol = symbol.trim().toUpperCase();
-  const fallbackToken = fallbackOnchainTokens[normalizedSymbol] ?? null;
-  let profile: TokenProfileResult | null = null;
+  const context = await resolveOnchainTokenContext({
+    symbol,
+    tokenId: options?.tokenId,
+    chainId: options?.chainId,
+  });
 
-  try {
-    profile = await getTokenProfileBySymbol(symbol);
-  } catch {
-    profile = null;
-  }
+  if (!dataset || !context) return null;
 
-  if (!dataset || (!profile && !fallbackToken)) return null;
-
-  const resolvedTokenId = profile?.tokenId ?? fallbackToken?.tokenId ?? 0;
-  let tokenAddressRows: Array<{ tokenAddressId: number | null; address: string }> = [];
-
-  if (profile) {
-    try {
-      const [rows] = await currentPool.query<
-        (RowDataPacket & {
-          tokenAddressId: number;
-          address: string;
-        })[]
-      >(
-        `
-          SELECT
-            ta.id AS tokenAddressId,
-            ta.address AS address
-          FROM token_address ta
-          WHERE ta.token_id = ?
-          ORDER BY ta.id DESC
-        `,
-        [profile.tokenId]
-      );
-
-      tokenAddressRows = rows.map(row => ({
-        tokenAddressId: row.tokenAddressId,
-        address: String(row.address).toLowerCase(),
-      }));
-    } catch {
-      tokenAddressRows = [];
-    }
-  }
-
-  if (tokenAddressRows.length === 0 && fallbackToken) {
-    tokenAddressRows = fallbackToken.addresses.map(address => ({
-      tokenAddressId: null,
-      address: address.toLowerCase(),
-    }));
-  }
-
-  const dedupedTokenAddresses = Array.from(new Map(tokenAddressRows.map(row => [row.address, row])).values());
+  const { resolvedTokenId, dedupedTokenAddresses } = context;
   if (dedupedTokenAddresses.length === 0) {
     return {
       tokenId: resolvedTokenId,
@@ -4987,12 +4966,16 @@ export async function getOnchainCexFlowsBySymbol(symbol: string): Promise<Onchai
       COUNT(*) AS transferCount
     FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.token_transfer_raw\`
     WHERE LOWER(token_address) IN UNNEST(@addresses)
+    ${options?.chainId ? "AND CAST(chain_id AS INT64) = @chainId" : ""}
     GROUP BY tokenAddress
     ORDER BY transferCount DESC
   `;
   const [countRows] = await bigQuery.query({
     query: countsQuery,
-    params: { addresses: dedupedTokenAddresses.map(row => row.address) },
+    params: {
+      addresses: dedupedTokenAddresses.map(row => row.address),
+      ...(options?.chainId ? { chainId: options.chainId } : {}),
+    },
     useLegacySql: false,
   });
 
@@ -5074,6 +5057,7 @@ export async function getOnchainCexFlowsBySymbol(symbol: string): Promise<Onchai
         SAFE_CAST(amount AS NUMERIC) AS amount
       FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.token_transfer_raw\`
       WHERE LOWER(token_address) = @tokenAddress
+        ${options?.chainId ? "AND CAST(chain_id AS INT64) = @chainId" : ""}
         AND (
           LOWER(from_address) IN UNNEST(@exchangeAddresses)
           OR LOWER(to_address) IN UNNEST(@exchangeAddresses)
@@ -5096,6 +5080,7 @@ export async function getOnchainCexFlowsBySymbol(symbol: string): Promise<Onchai
     params: {
       tokenAddress: chosenAddress.address,
       exchangeAddresses,
+      ...(options?.chainId ? { chainId: options.chainId } : {}),
     },
     useLegacySql: false,
   });
@@ -5426,7 +5411,7 @@ export async function getOnchainCexFlowTransferDetailsBySymbol(
   };
 }
 
-export async function listAvailableOnchainTokens(limit = 20): Promise<AvailableOnchainTokenResult> {
+export async function listAvailableOnchainTokens(limit = 20, chainId?: number | null): Promise<AvailableOnchainTokenResult> {
   const currentPool = getPool();
   const bigQuery = getBigQueryClient();
   const dataset = process.env.BIGQUERY_DATASET;
@@ -5438,45 +5423,49 @@ export async function listAvailableOnchainTokens(limit = 20): Promise<AvailableO
   const cappedLimit = Math.min(Math.max(limit, 5), 100);
   const activityQuery = `
     WITH transfer_counts AS (
-      SELECT token_id AS tokenId, COUNT(*) AS transferCount
+      SELECT CAST(chain_id AS INT64) AS chainId, token_id AS tokenId, COUNT(*) AS transferCount
       FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.token_transfer_raw\`
-      GROUP BY tokenId
+      ${chainId ? "WHERE CAST(chain_id AS INT64) = @chainId" : ""}
+      GROUP BY chainId, tokenId
     ),
     holder_counts AS (
-      SELECT token_id AS tokenId, COUNT(*) AS holderCount
+      SELECT CAST(chain_id AS INT64) AS chainId, token_id AS tokenId, COUNT(*) AS holderCount
       FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.token_holder_snapshot\`
-      GROUP BY tokenId
+      ${chainId ? "WHERE CAST(chain_id AS INT64) = @chainId" : ""}
+      GROUP BY chainId, tokenId
     ),
     dex_counts AS (
-      SELECT token_id AS tokenId, COUNT(*) AS dexActionCount
-      FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.token_dex_action_raw\`
-      GROUP BY tokenId
+      SELECT CAST(chain_id AS INT64) AS chainId, token_id AS tokenId, COUNT(*) AS dexActionCount
+      FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.token_dex_pool_action_raw\`
+      ${chainId ? "WHERE CAST(chain_id AS INT64) = @chainId" : ""}
+      GROUP BY chainId, tokenId
     ),
     activity_ids AS (
-      SELECT tokenId FROM transfer_counts
+      SELECT chainId, tokenId FROM transfer_counts
       UNION DISTINCT
-      SELECT tokenId FROM holder_counts
+      SELECT chainId, tokenId FROM holder_counts
       UNION DISTINCT
-      SELECT tokenId FROM dex_counts
+      SELECT chainId, tokenId FROM dex_counts
     )
     SELECT
+      ids.chainId AS chainId,
       ids.tokenId AS tokenId,
       COALESCE(t.transferCount, 0) AS transferCount,
       COALESCE(h.holderCount, 0) AS holderCount,
       COALESCE(d.dexActionCount, 0) AS dexActionCount
     FROM activity_ids ids
     LEFT JOIN transfer_counts t
-      ON ids.tokenId = t.tokenId
+      ON ids.chainId = t.chainId AND ids.tokenId = t.tokenId
     LEFT JOIN holder_counts h
-      ON ids.tokenId = h.tokenId
+      ON ids.chainId = h.chainId AND ids.tokenId = h.tokenId
     LEFT JOIN dex_counts d
-      ON ids.tokenId = d.tokenId
+      ON ids.chainId = d.chainId AND ids.tokenId = d.tokenId
     ORDER BY transferCount DESC, holderCount DESC, dexActionCount DESC, tokenId ASC
     LIMIT @limit
   `;
   const [activityRows] = await bigQuery.query({
     query: activityQuery,
-    params: { limit: cappedLimit },
+    params: { limit: cappedLimit, ...(chainId ? { chainId } : {}) },
     useLegacySql: false,
   });
 
@@ -5531,6 +5520,7 @@ export async function listAvailableOnchainTokens(limit = 20): Promise<AvailableO
         const profile = profileMap.get(tokenId);
         if (!profile) return null;
         return {
+          chainId: toNullableNumber((row as { chainId?: string | number | null }).chainId),
           tokenId,
           symbol: profile.symbol,
           name: profile.name,
@@ -6004,61 +5994,24 @@ export async function listAvailableOnchainPools(
   };
 }
 
-export async function getOnchainPoolAddsBySymbol(symbol: string): Promise<OnchainPoolAddsResult | null> {
-  const currentPool = getPool();
+export async function getOnchainPoolAddsBySymbol(
+  symbol: string,
+  options?: {
+    tokenId?: number | null;
+    chainId?: number | null;
+  }
+): Promise<OnchainPoolAddsResult | null> {
   const bigQuery = getBigQueryClient();
   const dataset = process.env.BIGQUERY_DATASET;
-  const normalizedSymbol = symbol.trim().toUpperCase();
-  const fallbackToken = fallbackOnchainTokens[normalizedSymbol] ?? null;
-  let profile: TokenProfileResult | null = null;
+  const context = await resolveOnchainTokenContext({
+    symbol,
+    tokenId: options?.tokenId,
+    chainId: options?.chainId,
+  });
 
-  try {
-    profile = await getTokenProfileBySymbol(symbol);
-  } catch {
-    profile = null;
-  }
+  if (!dataset || !context) return null;
 
-  if (!dataset || (!profile && !fallbackToken)) return null;
-
-  const resolvedTokenId = profile?.tokenId ?? fallbackToken?.tokenId ?? 0;
-  let tokenAddressRows: Array<{ tokenAddressId: number | null; address: string }> = [];
-
-  if (profile) {
-    try {
-      const [rows] = await currentPool.query<
-        (RowDataPacket & {
-          tokenAddressId: number;
-          address: string;
-        })[]
-      >(
-        `
-          SELECT
-            ta.id AS tokenAddressId,
-            ta.address AS address
-          FROM token_address ta
-          WHERE ta.token_id = ?
-          ORDER BY ta.id DESC
-        `,
-        [profile.tokenId]
-      );
-
-      tokenAddressRows = rows.map(row => ({
-        tokenAddressId: row.tokenAddressId,
-        address: String(row.address).toLowerCase(),
-      }));
-    } catch {
-      tokenAddressRows = [];
-    }
-  }
-
-  if (tokenAddressRows.length === 0 && fallbackToken) {
-    tokenAddressRows = fallbackToken.addresses.map(address => ({
-      tokenAddressId: null,
-      address: address.toLowerCase(),
-    }));
-  }
-
-  const dedupedTokenAddresses = Array.from(new Map(tokenAddressRows.map(row => [row.address, row])).values());
+  const { profile, resolvedTokenId, dedupedTokenAddresses } = context;
   const tokenAddress = dedupedTokenAddresses[0] ?? null;
 
   const latestQuery = `
@@ -6096,6 +6049,7 @@ export async function getOnchainPoolAddsBySymbol(symbol: string): Promise<Onchai
     ) started
       ON started.pool_id = pool.pool_id
     WHERE action.token_id = @tokenId
+      ${options?.chainId ? "AND CAST(action.chain_id AS INT64) = @chainId" : ""}
       AND action.action_type = 'add_liquidity'
     ORDER BY TIMESTAMP(action.block_time) ASC
     LIMIT 20
@@ -6118,18 +6072,19 @@ export async function getOnchainPoolAddsBySymbol(symbol: string): Promise<Onchai
     ) started
       ON started.pool_id = pool.pool_id
     WHERE action.token_id = @tokenId
+      ${options?.chainId ? "AND CAST(action.chain_id AS INT64) = @chainId" : ""}
       AND action.action_type = 'add_liquidity'
   `;
 
   const [latestRows] = await bigQuery.query({
     query: latestQuery,
-    params: { tokenId: resolvedTokenId },
+    params: { tokenId: resolvedTokenId, ...(options?.chainId ? { chainId: options.chainId } : {}) },
     useLegacySql: false,
   });
 
   const [totalRows] = await bigQuery.query({
     query: totalQuery,
-    params: { tokenId: resolvedTokenId },
+    params: { tokenId: resolvedTokenId, ...(options?.chainId ? { chainId: options.chainId } : {}) },
     useLegacySql: false,
   });
 
