@@ -271,6 +271,7 @@ type TokenListingViewResult = {
 };
 
 type TokenKlineRange = "1m" | "3m" | "6m" | "1y";
+const CMC_MAX_SAFE_HISTORICAL_DAYS = 89;
 
 type TokenKlineResult = {
   tokenId: number;
@@ -595,24 +596,41 @@ type OnchainPoolAddsResult = {
   tokenAddressId: number | null;
   tokenAddress: string | null;
   total: number;
-  latestBlockTime: string | null;
+  earliestBlockTime: string | null;
+  earliestStartedTime: string | null;
   items: Array<{
-    transferId: number | null;
+    poolRegistryId: string | null;
+    poolId: string | null;
+    poolAddress: string | null;
     txhash: string | null;
     blockTime: string | null;
+    startedTime: string | null;
     traderAddress: string;
-    pairAddress: string;
+    recipientAddress: string | null;
+    quoteTokenAddress: string | null;
+    quoteTokenSymbol: string | null;
+    token0Symbol: string | null;
+    token1Symbol: string | null;
     actionType: string | null;
-    valueIn: string | null;
-    valueOut: string | null;
-    amountIn: number | null;
-    amountOut: number | null;
+    eventName: string | null;
+    tokenAmount: number | null;
+    quoteTokenAmount: number | null;
+    value: number | null;
     price: number | null;
-    priceLow: number | null;
-    priceHigh: number | null;
-    estimatedUsdValue: number | null;
+    parseSource: string | null;
+    parseReason: string | null;
     chainId: number | null;
   }>;
+};
+
+type OnchainPoolAddsByPoolResult = {
+  poolRegistryId: string;
+  poolId: string | null;
+  poolAddress: string | null;
+  total: number;
+  earliestBlockTime: string | null;
+  earliestStartedTime: string | null;
+  items: OnchainPoolAddsResult["items"];
 };
 
 type AnnouncementSearchResult = {
@@ -672,6 +690,37 @@ type AvailableOnchainTokenResult = {
     holderCount: number;
     dexActionCount: number;
   }>;
+};
+
+type AvailableOnchainPoolResult = {
+  items: Array<{
+    poolRegistryId: string | null;
+    poolId: string | null;
+    poolAddress: string | null;
+    chainId: number | null;
+    dexName: string | null;
+    protocolVersion: string | null;
+    coreTokenSymbol: string | null;
+    coreTokenAddress: string | null;
+    quoteTokenSymbol: string | null;
+    quoteTokenAddress: string | null;
+    token0Symbol: string | null;
+    token0Address: string | null;
+    token1Symbol: string | null;
+    token1Address: string | null;
+    poolLockTime: string | null;
+    poolCreatedTime: string | null;
+    startedTime: string | null;
+    firstAddLiquidityTime: string | null;
+    firstAddTraderAddress: string | null;
+    firstAddTokenAmount: number | null;
+    firstAddQuoteTokenAmount: number | null;
+    firstAddValue: number | null;
+    firstAddPrice: number | null;
+  }>;
+  total: number;
+  page: number;
+  pageSize: number;
 };
 
 type OnchainOverviewResult = {
@@ -955,7 +1004,7 @@ function getKlineRangeConfig(range: TokenKlineRange) {
     case "1m":
       return { period: "hourly", interval: "1h", count: 24 * 30, bucketHours: 1 };
     case "3m":
-      return { period: "hourly", interval: "4h", count: 6 * 90, bucketHours: 4 };
+      return { period: "hourly", interval: "4h", count: 6 * CMC_MAX_SAFE_HISTORICAL_DAYS, bucketHours: 4 };
     case "6m":
       return { period: "daily", interval: "1d", count: 180, bucketHours: 24 };
     case "1y":
@@ -963,6 +1012,10 @@ function getKlineRangeConfig(range: TokenKlineRange) {
     default:
       return { period: "hourly", interval: "4h", count: 6 * 90, bucketHours: 4 };
   }
+}
+
+function canUseCoinMarketCapForKline(range: TokenKlineRange) {
+  return range === "1m" || range === "3m";
 }
 
 function getCoinGeckoDays(range: TokenKlineRange) {
@@ -2689,7 +2742,7 @@ export async function getTokenKlineBySymbol(
 
   const errors: string[] = [];
 
-  if (cmcIdentifier) {
+  if (cmcIdentifier && canUseCoinMarketCapForKline(range)) {
     try {
       const points = await fetchCoinMarketCapKline(cmcIdentifier, range);
       const normalizedPoints = bucketKlinePoints(points, bucketHours);
@@ -2705,6 +2758,8 @@ export async function getTokenKlineBySymbol(
     } catch (error) {
       errors.push(error instanceof Error ? error.message : "CMC request failed");
     }
+  } else if (cmcIdentifier) {
+    errors.push(`CMC skipped for ${range} because current plan only supports recent 3-month history`);
   }
 
   if (cgIdentifier) {
@@ -5490,6 +5545,465 @@ export async function listAvailableOnchainTokens(limit = 20): Promise<AvailableO
   };
 }
 
+const COMMON_QUOTE_SYMBOLS = new Set([
+  "BNB",
+  "WBNB",
+  "USDT",
+  "USDC",
+  "FDUSD",
+  "BUSD",
+  "USDE",
+  "USD1",
+  "USDS",
+  "DAI",
+]);
+
+function derivePoolCoreAndQuote(params: {
+  token0Symbol: string | null;
+  token0Address: string | null;
+  token1Symbol: string | null;
+  token1Address: string | null;
+  fallbackCoreTokenSymbol: string | null;
+  fallbackCoreTokenAddress: string | null;
+  fallbackQuoteTokenSymbol: string | null;
+  fallbackQuoteTokenAddress: string | null;
+}) {
+  const token0Symbol = params.token0Symbol?.trim() || null;
+  const token1Symbol = params.token1Symbol?.trim() || null;
+  const token0Address = params.token0Address?.trim().toLowerCase() || null;
+  const token1Address = params.token1Address?.trim().toLowerCase() || null;
+  const fallbackCoreTokenSymbol = params.fallbackCoreTokenSymbol?.trim() || null;
+  const fallbackCoreTokenAddress = params.fallbackCoreTokenAddress?.trim().toLowerCase() || null;
+  const fallbackQuoteTokenSymbol = params.fallbackQuoteTokenSymbol?.trim() || null;
+  const fallbackQuoteTokenAddress = params.fallbackQuoteTokenAddress?.trim().toLowerCase() || null;
+
+  const token0IsQuote = token0Symbol ? COMMON_QUOTE_SYMBOLS.has(token0Symbol.toUpperCase()) : false;
+  const token1IsQuote = token1Symbol ? COMMON_QUOTE_SYMBOLS.has(token1Symbol.toUpperCase()) : false;
+
+  if (token0IsQuote && !token1IsQuote) {
+    return {
+      coreTokenSymbol: token1Symbol,
+      coreTokenAddress: token1Address,
+      quoteTokenSymbol: token0Symbol,
+      quoteTokenAddress: token0Address,
+    };
+  }
+
+  if (token1IsQuote && !token0IsQuote) {
+    return {
+      coreTokenSymbol: token0Symbol,
+      coreTokenAddress: token0Address,
+      quoteTokenSymbol: token1Symbol,
+      quoteTokenAddress: token1Address,
+    };
+  }
+
+  if (fallbackCoreTokenSymbol || fallbackCoreTokenAddress || fallbackQuoteTokenSymbol || fallbackQuoteTokenAddress) {
+    return {
+      coreTokenSymbol: fallbackCoreTokenSymbol ?? token0Symbol ?? token1Symbol,
+      coreTokenAddress: fallbackCoreTokenAddress ?? token0Address ?? token1Address,
+      quoteTokenSymbol: fallbackQuoteTokenSymbol ?? token1Symbol ?? token0Symbol,
+      quoteTokenAddress: fallbackQuoteTokenAddress ?? token1Address ?? token0Address,
+    };
+  }
+
+  return {
+    coreTokenSymbol: token0Symbol ?? token1Symbol,
+    coreTokenAddress: token0Address ?? token1Address,
+    quoteTokenSymbol: token1Symbol ?? token0Symbol,
+    quoteTokenAddress: token1Address ?? token0Address,
+  };
+}
+
+async function getDexPoolRegistryMappingsByPoolIds(poolIds: string[]) {
+  if (poolIds.length === 0) {
+    return new Map<string, { id: string; poolId: string; poolAddress: string | null }>();
+  }
+
+  const currentPool = getPool();
+  const placeholders = poolIds.map(() => "?").join(", ");
+  const [rows] = await currentPool.query<
+    (RowDataPacket & {
+      id: number;
+      poolId: string | null;
+      poolAddress: string | null;
+      createdAt: string | null;
+    })[]
+  >(
+    `
+      SELECT
+        id,
+        CAST(pool_id AS CHAR) AS poolId,
+        LOWER(pool_address) AS poolAddress,
+        created_at AS createdAt
+      FROM dex_pool_registry
+      WHERE pool_id IN (${placeholders})
+      ORDER BY created_at DESC, id DESC
+    `,
+    poolIds
+  );
+
+  const mapping = new Map<string, { id: string; poolId: string; poolAddress: string | null }>();
+  for (const row of rows) {
+    if (!row.poolId || mapping.has(row.poolId)) continue;
+    mapping.set(row.poolId, {
+      id: String(row.id),
+      poolId: row.poolId,
+      poolAddress: row.poolAddress ? String(row.poolAddress).toLowerCase() : null,
+    });
+  }
+
+  return mapping;
+}
+
+async function getFirstAddRowsByPoolRegistryIds(
+  bigQuery: BigQuery,
+  projectId: string,
+  dataset: string,
+  poolRegistryIds: string[]
+) {
+  if (poolRegistryIds.length === 0) {
+    return new Map<
+      string,
+      {
+        poolRegistryId: string;
+        tokenSymbol: string | null;
+        tokenAddress: string | null;
+        quoteTokenSymbol: string | null;
+        quoteTokenAddress: string | null;
+        traderAddress: string | null;
+        tokenAmount: number | null;
+        quoteTokenAmount: number | null;
+        value: number | null;
+        price: number | null;
+        blockTime: string | null;
+      }
+    >();
+  }
+
+  const [rows] = await bigQuery.query({
+    query: `
+      SELECT
+        CAST(pool_registry_id AS STRING) AS poolRegistryId,
+        token_symbol AS tokenSymbol,
+        LOWER(token_address) AS tokenAddress,
+        quote_token_symbol AS quoteTokenSymbol,
+        LOWER(quote_token_address) AS quoteTokenAddress,
+        LOWER(trader_address) AS traderAddress,
+        SAFE_CAST(token_amount AS NUMERIC) AS tokenAmount,
+        SAFE_CAST(quote_token_amount AS NUMERIC) AS quoteTokenAmount,
+        SAFE_CAST(value AS NUMERIC) AS value,
+        SAFE_CAST(price AS NUMERIC) AS price,
+        block_time AS blockTime
+      FROM \`${projectId}.${dataset}.token_dex_pool_action_raw\`
+      WHERE action_type = 'add_liquidity'
+        AND CAST(pool_registry_id AS STRING) IN UNNEST(@poolRegistryIds)
+      QUALIFY ROW_NUMBER() OVER (
+        PARTITION BY CAST(pool_registry_id AS STRING)
+        ORDER BY TIMESTAMP(block_time) ASC, log_index ASC
+      ) = 1
+    `,
+    params: { poolRegistryIds },
+    useLegacySql: false,
+  });
+
+  const mapping = new Map<
+    string,
+    {
+      poolRegistryId: string;
+      tokenSymbol: string | null;
+      tokenAddress: string | null;
+      quoteTokenSymbol: string | null;
+      quoteTokenAddress: string | null;
+      traderAddress: string | null;
+      tokenAmount: number | null;
+      quoteTokenAmount: number | null;
+      value: number | null;
+      price: number | null;
+      blockTime: string | null;
+    }
+  >();
+
+  for (const row of rows) {
+    const poolRegistryId =
+      typeof (row as { poolRegistryId?: string | null }).poolRegistryId === "string"
+        ? String((row as { poolRegistryId?: string | null }).poolRegistryId)
+        : null;
+    if (!poolRegistryId) continue;
+    const rawBlockTime = (row as { blockTime?: { value?: string } | string | null }).blockTime;
+    const blockTime = typeof rawBlockTime === "string" ? rawBlockTime : rawBlockTime?.value ?? null;
+    mapping.set(poolRegistryId, {
+      poolRegistryId,
+      tokenSymbol:
+        typeof (row as { tokenSymbol?: string | null }).tokenSymbol === "string"
+          ? String((row as { tokenSymbol?: string | null }).tokenSymbol)
+          : null,
+      tokenAddress:
+        typeof (row as { tokenAddress?: string | null }).tokenAddress === "string"
+          ? String((row as { tokenAddress?: string | null }).tokenAddress).toLowerCase()
+          : null,
+      quoteTokenSymbol:
+        typeof (row as { quoteTokenSymbol?: string | null }).quoteTokenSymbol === "string"
+          ? String((row as { quoteTokenSymbol?: string | null }).quoteTokenSymbol)
+          : null,
+      quoteTokenAddress:
+        typeof (row as { quoteTokenAddress?: string | null }).quoteTokenAddress === "string"
+          ? String((row as { quoteTokenAddress?: string | null }).quoteTokenAddress).toLowerCase()
+          : null,
+      traderAddress:
+        typeof (row as { traderAddress?: string | null }).traderAddress === "string"
+          ? String((row as { traderAddress?: string | null }).traderAddress).toLowerCase()
+          : null,
+      tokenAmount: toNullableNumber((row as { tokenAmount?: string | number | null }).tokenAmount),
+      quoteTokenAmount: toNullableNumber((row as { quoteTokenAmount?: string | number | null }).quoteTokenAmount),
+      value: toNullableNumber((row as { value?: string | number | null }).value),
+      price: toNullableNumber((row as { price?: string | number | null }).price),
+      blockTime: blockTime?.trim() || null,
+    });
+  }
+
+  return mapping;
+}
+
+export async function listAvailableOnchainPools(
+  page = 1,
+  pageSize = 100,
+  query?: string
+): Promise<AvailableOnchainPoolResult> {
+  const bigQuery = getBigQueryClient();
+  const dataset = process.env.BIGQUERY_DATASET;
+  const projectId = process.env.BIGQUERY_PROJECT_ID;
+  if (!dataset || !projectId) {
+    return { items: [], total: 0, page: 1, pageSize };
+  }
+
+  const normalizedPage = Math.max(1, page);
+  const normalizedPageSize = Math.min(Math.max(pageSize, 20), 100);
+  const offset = (normalizedPage - 1) * normalizedPageSize;
+  const normalizedQuery = query?.trim().toLowerCase() ?? "";
+  const hasQuery = normalizedQuery.length > 0;
+
+  const baseCte = `
+    WITH pool_rows AS (
+      SELECT
+        CAST(pool_id AS STRING) AS poolId,
+        LOWER(pool_address) AS poolAddress,
+        chain_id,
+        dex_name,
+        protocol_version,
+        token0_symbol,
+        LOWER(token0_address) AS token0Address,
+        token1_symbol,
+        LOWER(token1_address) AS token1Address,
+        block_time
+      FROM \`${projectId}.${dataset}.token_dex_pool_raw\`
+    ),
+    pool_meta AS (
+      SELECT
+        poolId,
+        MIN(block_time) AS poolCreatedTime,
+        ARRAY_AGG(
+          STRUCT(
+            poolAddress,
+            chain_id,
+            dex_name,
+            protocol_version,
+            token0_symbol,
+            token0Address,
+            token1_symbol,
+            token1Address
+          )
+          ORDER BY
+            CASE WHEN poolAddress IS NULL OR poolAddress = '' THEN 1 ELSE 0 END ASC,
+            TIMESTAMP(block_time) DESC
+          LIMIT 1
+        )[OFFSET(0)] AS meta
+      FROM pool_rows
+      GROUP BY poolId
+    ),
+    first_started AS (
+      SELECT
+        CAST(pool_id AS STRING) AS poolId,
+        MIN(block_time) AS lock_time,
+        MIN(started_time) AS started_time
+      FROM \`${projectId}.${dataset}.pool_started_timestamp_raw\`
+      GROUP BY CAST(pool_id AS STRING)
+    ),
+    joined AS (
+      SELECT
+        first_started.poolId AS poolId,
+        pool.meta.poolAddress AS poolAddress,
+        pool.meta.chain_id AS chainId,
+        pool.meta.dex_name AS dexName,
+        pool.meta.protocol_version AS protocolVersion,
+        pool.meta.token0_symbol AS token0Symbol,
+        pool.meta.token0Address AS token0Address,
+        pool.meta.token1_symbol AS token1Symbol,
+        pool.meta.token1Address AS token1Address,
+        first_started.lock_time AS poolLockTime,
+        first_started.started_time AS startedTime,
+        pool.poolCreatedTime AS poolCreatedTime
+      FROM first_started
+      INNER JOIN pool_meta pool
+        ON first_started.poolId = pool.poolId
+    )
+  `;
+
+  const countQuery = `
+    ${baseCte}
+    SELECT COUNT(*) AS total
+    FROM joined
+    ${hasQuery ? `
+    WHERE LOWER(CONCAT(
+      COALESCE(token0Symbol, ''), ' ',
+      COALESCE(token1Symbol, ''), ' ',
+      COALESCE(token0Address, ''), ' ',
+      COALESCE(token1Address, ''), ' ',
+      COALESCE(poolAddress, ''), ' ',
+      COALESCE(poolId, ''), ' ',
+      COALESCE(dexName, '')
+    )) LIKE CONCAT('%', @query, '%')
+    ` : ""}
+  `;
+
+  const dataQuery = `
+    ${baseCte}
+    SELECT *
+    FROM joined
+    ${hasQuery ? `
+    WHERE LOWER(CONCAT(
+      COALESCE(token0Symbol, ''), ' ',
+      COALESCE(token1Symbol, ''), ' ',
+      COALESCE(token0Address, ''), ' ',
+      COALESCE(token1Address, ''), ' ',
+      COALESCE(poolAddress, ''), ' ',
+      COALESCE(poolId, ''), ' ',
+      COALESCE(dexName, '')
+    )) LIKE CONCAT('%', @query, '%')
+    ` : ""}
+    ORDER BY TIMESTAMP(poolCreatedTime) DESC, TIMESTAMP(startedTime) DESC
+    LIMIT @limit
+    OFFSET @offset
+  `;
+
+  const [countRows] = await bigQuery.query({
+    query: countQuery,
+    params: hasQuery ? { query: normalizedQuery } : undefined,
+    useLegacySql: false,
+  });
+
+  const total = Number((countRows?.[0] as { total?: string | number | null } | undefined)?.total ?? 0);
+
+  const [rows] = await bigQuery.query({
+    query: dataQuery,
+    params: hasQuery ? { limit: normalizedPageSize, offset, query: normalizedQuery } : { limit: normalizedPageSize, offset },
+    useLegacySql: false,
+  });
+
+  const poolIds = Array.from(
+    new Set(
+      rows
+        .map(row => {
+          const rawPoolId = (row as { poolId?: string | number | null }).poolId;
+          return rawPoolId == null ? null : String(rawPoolId);
+        })
+        .filter((poolId): poolId is string => Boolean(poolId))
+    )
+  );
+  const registryByPoolId = await getDexPoolRegistryMappingsByPoolIds(poolIds);
+  const poolRegistryIds = Array.from(new Set(Array.from(registryByPoolId.values()).map(item => item.id)));
+  const firstAddByRegistryId = await getFirstAddRowsByPoolRegistryIds(bigQuery, projectId, dataset, poolRegistryIds);
+
+  return {
+    items: rows.map(row => {
+      const rawStartedTime = (row as { startedTime?: { value?: string } | string | null }).startedTime;
+      const rawFirstAddTime = (row as { firstAddLiquidityTime?: { value?: string } | string | null }).firstAddLiquidityTime;
+      const rawPoolCreatedTime = (row as { poolCreatedTime?: { value?: string } | string | null }).poolCreatedTime;
+      const rawPoolLockTime = (row as { poolLockTime?: { value?: string } | string | null }).poolLockTime;
+      const startedTime = typeof rawStartedTime === "string" ? rawStartedTime : rawStartedTime?.value ?? null;
+      const firstAddLiquidityTime = typeof rawFirstAddTime === "string" ? rawFirstAddTime : rawFirstAddTime?.value ?? null;
+      const poolCreatedTime = typeof rawPoolCreatedTime === "string" ? rawPoolCreatedTime : rawPoolCreatedTime?.value ?? null;
+      const poolLockTime = typeof rawPoolLockTime === "string" ? rawPoolLockTime : rawPoolLockTime?.value ?? null;
+      const token0Symbol =
+        typeof (row as { token0Symbol?: string | null }).token0Symbol === "string"
+          ? String((row as { token0Symbol?: string | null }).token0Symbol)
+          : null;
+      const token1Symbol =
+        typeof (row as { token1Symbol?: string | null }).token1Symbol === "string"
+          ? String((row as { token1Symbol?: string | null }).token1Symbol)
+          : null;
+      const token0Address =
+        typeof (row as { token0Address?: string | null }).token0Address === "string"
+          ? String((row as { token0Address?: string | null }).token0Address).toLowerCase()
+          : null;
+      const token1Address =
+        typeof (row as { token1Address?: string | null }).token1Address === "string"
+          ? String((row as { token1Address?: string | null }).token1Address).toLowerCase()
+          : null;
+      const fallbackCoreTokenSymbol =
+        null;
+      const fallbackCoreTokenAddress =
+        null;
+      const fallbackQuoteTokenSymbol =
+        null;
+      const fallbackQuoteTokenAddress =
+        null;
+      const poolId =
+        typeof (row as { poolId?: string | number | null }).poolId === "string"
+          ? String((row as { poolId?: string | number | null }).poolId)
+          : (row as { poolId?: string | number | null }).poolId != null
+            ? String((row as { poolId?: string | number | null }).poolId)
+            : null;
+      const registryMapping = poolId ? registryByPoolId.get(poolId) ?? null : null;
+      const firstAdd = registryMapping ? firstAddByRegistryId.get(registryMapping.id) ?? null : null;
+      const derivedTokens = derivePoolCoreAndQuote({
+        token0Symbol,
+        token0Address,
+        token1Symbol,
+        token1Address,
+        fallbackCoreTokenSymbol: firstAdd?.tokenSymbol ?? fallbackCoreTokenSymbol,
+        fallbackCoreTokenAddress: firstAdd?.tokenAddress ?? fallbackCoreTokenAddress,
+        fallbackQuoteTokenSymbol: firstAdd?.quoteTokenSymbol ?? fallbackQuoteTokenSymbol,
+        fallbackQuoteTokenAddress: firstAdd?.quoteTokenAddress ?? fallbackQuoteTokenAddress,
+      });
+      return {
+        poolRegistryId: registryMapping?.id ?? null,
+        poolId,
+        poolAddress:
+          typeof (row as { poolAddress?: string | null }).poolAddress === "string"
+            ? String((row as { poolAddress?: string | null }).poolAddress).toLowerCase()
+            : registryMapping?.poolAddress ?? null,
+        chainId: toNullableNumber((row as { chainId?: string | number | null }).chainId),
+        dexName: typeof (row as { dexName?: string | null }).dexName === "string" ? String((row as { dexName?: string | null }).dexName) : null,
+        protocolVersion:
+          typeof (row as { protocolVersion?: string | null }).protocolVersion === "string"
+            ? String((row as { protocolVersion?: string | null }).protocolVersion)
+            : null,
+        coreTokenSymbol: derivedTokens.coreTokenSymbol,
+        coreTokenAddress: derivedTokens.coreTokenAddress,
+        quoteTokenSymbol: derivedTokens.quoteTokenSymbol,
+        quoteTokenAddress: derivedTokens.quoteTokenAddress,
+        token0Symbol,
+        token0Address,
+        token1Symbol,
+        token1Address,
+        poolLockTime: poolLockTime?.trim() || null,
+        poolCreatedTime: poolCreatedTime?.trim() || null,
+        startedTime: startedTime?.trim() || null,
+        firstAddLiquidityTime: firstAdd?.blockTime ?? null,
+        firstAddTraderAddress: firstAdd?.traderAddress ?? null,
+        firstAddTokenAmount: firstAdd?.tokenAmount ?? null,
+        firstAddQuoteTokenAmount: firstAdd?.quoteTokenAmount ?? null,
+        firstAddValue: firstAdd?.value ?? null,
+        firstAddPrice: firstAdd?.price ?? null,
+      };
+    }),
+    total,
+    page: normalizedPage,
+    pageSize: normalizedPageSize,
+  };
+}
+
 export async function getOnchainPoolAddsBySymbol(symbol: string): Promise<OnchainPoolAddsResult | null> {
   const currentPool = getPool();
   const bigQuery = getBigQueryClient();
@@ -5549,34 +6063,62 @@ export async function getOnchainPoolAddsBySymbol(symbol: string): Promise<Onchai
 
   const latestQuery = `
     SELECT
-      transfer_id AS transferId,
-      txhash AS txhash,
-      block_time AS blockTime,
-      LOWER(trader_address) AS traderAddress,
-      LOWER(pair_address) AS pairAddress,
-      action_type AS actionType,
-      CAST(value_in AS STRING) AS valueIn,
-      CAST(value_out AS STRING) AS valueOut,
-      SAFE_CAST(amount_in AS NUMERIC) AS amountIn,
-      SAFE_CAST(amount_out AS NUMERIC) AS amountOut,
-      SAFE_CAST(price AS NUMERIC) AS price,
-      SAFE_CAST(pricelow AS NUMERIC) AS priceLow,
-      SAFE_CAST(pricehigh AS NUMERIC) AS priceHigh,
-      chain_id AS chainId
-    FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.token_dex_action_raw\`
-    WHERE token_id = @tokenId
-      AND action_type = 'add_liquidity'
-    ORDER BY TIMESTAMP(block_time) ASC
+      action.pool_registry_id AS poolRegistryId,
+      CAST(pool.pool_id AS STRING) AS poolId,
+      LOWER(pool.pool_address) AS poolAddress,
+      action.txhash AS txhash,
+      action.block_time AS blockTime,
+      started.started_time AS startedTime,
+      LOWER(action.trader_address) AS traderAddress,
+      LOWER(action.recipient_address) AS recipientAddress,
+      LOWER(action.quote_token_address) AS quoteTokenAddress,
+      action.quote_token_symbol AS quoteTokenSymbol,
+      pool.token0_symbol AS token0Symbol,
+      pool.token1_symbol AS token1Symbol,
+      action.action_type AS actionType,
+      action.event_name AS eventName,
+      SAFE_CAST(action.token_amount AS NUMERIC) AS tokenAmount,
+      SAFE_CAST(action.quote_token_amount AS NUMERIC) AS quoteTokenAmount,
+      SAFE_CAST(action.value AS NUMERIC) AS value,
+      SAFE_CAST(action.price AS NUMERIC) AS price,
+      action.parse_source AS parseSource,
+      action.parse_reason AS parseReason,
+      action.chain_id AS chainId
+    FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.token_dex_pool_action_raw\` action
+    LEFT JOIN \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.token_dex_pool_raw\` pool
+      ON CAST(pool.row_id AS STRING) = CAST(action.pool_registry_id AS STRING)
+    LEFT JOIN (
+      SELECT
+        pool_id,
+        MIN(started_time) AS started_time
+      FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.pool_started_timestamp_raw\`
+      GROUP BY pool_id
+    ) started
+      ON started.pool_id = pool.pool_id
+    WHERE action.token_id = @tokenId
+      AND action.action_type = 'add_liquidity'
+    ORDER BY TIMESTAMP(action.block_time) ASC
     LIMIT 20
   `;
 
   const totalQuery = `
     SELECT
       COUNT(*) AS total,
-      MIN(block_time) AS latestBlockTime
-    FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.token_dex_action_raw\`
-    WHERE token_id = @tokenId
-      AND action_type = 'add_liquidity'
+      MIN(action.block_time) AS earliestBlockTime,
+      MIN(started.started_time) AS earliestStartedTime
+    FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.token_dex_pool_action_raw\` action
+    LEFT JOIN \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.token_dex_pool_raw\` pool
+      ON CAST(pool.row_id AS STRING) = CAST(action.pool_registry_id AS STRING)
+    LEFT JOIN (
+      SELECT
+        pool_id,
+        MIN(started_time) AS started_time
+      FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.pool_started_timestamp_raw\`
+      GROUP BY pool_id
+    ) started
+      ON started.pool_id = pool.pool_id
+    WHERE action.token_id = @tokenId
+      AND action.action_type = 'add_liquidity'
   `;
 
   const [latestRows] = await bigQuery.query({
@@ -5592,40 +6134,269 @@ export async function getOnchainPoolAddsBySymbol(symbol: string): Promise<Onchai
   });
 
   const total = Number((totalRows[0] as { total?: string | number | null } | undefined)?.total ?? 0);
-  const rawLatestBlockTime = (totalRows[0] as { latestBlockTime?: { value?: string } | string | null } | undefined)?.latestBlockTime;
-  const latestBlockTime = typeof rawLatestBlockTime === "string" ? rawLatestBlockTime : rawLatestBlockTime?.value ?? null;
+  const rawEarliestBlockTime = (totalRows[0] as { earliestBlockTime?: { value?: string } | string | null } | undefined)?.earliestBlockTime;
+  const earliestBlockTime = typeof rawEarliestBlockTime === "string" ? rawEarliestBlockTime : rawEarliestBlockTime?.value ?? null;
+  const rawEarliestStartedTime = (totalRows[0] as { earliestStartedTime?: { value?: string } | string | null } | undefined)?.earliestStartedTime;
+  const earliestStartedTime = typeof rawEarliestStartedTime === "string" ? rawEarliestStartedTime : rawEarliestStartedTime?.value ?? null;
 
   return {
     tokenId: resolvedTokenId,
     tokenAddressId: tokenAddress?.tokenAddressId ?? null,
     tokenAddress: tokenAddress?.address ?? profile?.addresses[0]?.address ?? null,
     total,
-    latestBlockTime: latestBlockTime?.trim() || null,
+    earliestBlockTime: earliestBlockTime?.trim() || null,
+    earliestStartedTime: earliestStartedTime?.trim() || null,
     items: latestRows.map(row => {
-      const amountIn = toNullableNumber((row as { amountIn?: string | number | null }).amountIn);
-      const amountOut = toNullableNumber((row as { amountOut?: string | number | null }).amountOut);
+      const tokenAmount = toNullableNumber((row as { tokenAmount?: string | number | null }).tokenAmount);
+      const quoteTokenAmount = toNullableNumber((row as { quoteTokenAmount?: string | number | null }).quoteTokenAmount);
+      const value = toNullableNumber((row as { value?: string | number | null }).value);
       const price = toNullableNumber((row as { price?: string | number | null }).price);
-      const priceLow = toNullableNumber((row as { priceLow?: string | number | null }).priceLow);
-      const priceHigh = toNullableNumber((row as { priceHigh?: string | number | null }).priceHigh);
-      const estimatedUsdValue = amountIn != null && price != null ? amountIn * price : null;
       const rawBlockTime = (row as { blockTime?: { value?: string } | string | null }).blockTime;
       const blockTime = typeof rawBlockTime === "string" ? rawBlockTime : rawBlockTime?.value ?? null;
+      const rawStartedTime = (row as { startedTime?: { value?: string } | string | null }).startedTime;
+      const startedTime = typeof rawStartedTime === "string" ? rawStartedTime : rawStartedTime?.value ?? null;
 
       return {
-        transferId: toNullableNumber((row as { transferId?: string | number | null }).transferId),
+        poolRegistryId:
+          typeof (row as { poolRegistryId?: string | number | null }).poolRegistryId === "string"
+            ? String((row as { poolRegistryId?: string | number | null }).poolRegistryId)
+            : (row as { poolRegistryId?: string | number | null }).poolRegistryId != null
+              ? String((row as { poolRegistryId?: string | number | null }).poolRegistryId)
+              : null,
+        poolId:
+          typeof (row as { poolId?: string | number | null }).poolId === "string"
+            ? String((row as { poolId?: string | number | null }).poolId)
+            : (row as { poolId?: string | number | null }).poolId != null
+              ? String((row as { poolId?: string | number | null }).poolId)
+              : null,
+        poolAddress:
+          typeof (row as { poolAddress?: string | null }).poolAddress === "string"
+            ? String((row as { poolAddress?: string | null }).poolAddress).toLowerCase()
+            : null,
         txhash: typeof (row as { txhash?: string | null }).txhash === "string" ? String((row as { txhash?: string | null }).txhash) : null,
         blockTime: blockTime?.trim() || null,
+        startedTime: startedTime?.trim() || null,
         traderAddress: String((row as { traderAddress?: string }).traderAddress ?? "").toLowerCase(),
-        pairAddress: String((row as { pairAddress?: string }).pairAddress ?? "").toLowerCase(),
+        recipientAddress:
+          typeof (row as { recipientAddress?: string | null }).recipientAddress === "string"
+            ? String((row as { recipientAddress?: string | null }).recipientAddress).toLowerCase()
+            : null,
+        quoteTokenAddress:
+          typeof (row as { quoteTokenAddress?: string | null }).quoteTokenAddress === "string"
+            ? String((row as { quoteTokenAddress?: string | null }).quoteTokenAddress).toLowerCase()
+            : null,
+        quoteTokenSymbol:
+          typeof (row as { quoteTokenSymbol?: string | null }).quoteTokenSymbol === "string"
+            ? String((row as { quoteTokenSymbol?: string | null }).quoteTokenSymbol)
+            : null,
+        token0Symbol:
+          typeof (row as { token0Symbol?: string | null }).token0Symbol === "string"
+            ? String((row as { token0Symbol?: string | null }).token0Symbol)
+            : null,
+        token1Symbol:
+          typeof (row as { token1Symbol?: string | null }).token1Symbol === "string"
+            ? String((row as { token1Symbol?: string | null }).token1Symbol)
+            : null,
         actionType: typeof (row as { actionType?: string | null }).actionType === "string" ? String((row as { actionType?: string | null }).actionType) : null,
-        valueIn: typeof (row as { valueIn?: string | null }).valueIn === "string" ? String((row as { valueIn?: string | null }).valueIn) : null,
-        valueOut: typeof (row as { valueOut?: string | null }).valueOut === "string" ? String((row as { valueOut?: string | null }).valueOut) : null,
-        amountIn,
-        amountOut,
+        eventName: typeof (row as { eventName?: string | null }).eventName === "string" ? String((row as { eventName?: string | null }).eventName) : null,
+        tokenAmount,
+        quoteTokenAmount,
+        value,
         price,
-        priceLow,
-        priceHigh,
-        estimatedUsdValue,
+        parseSource: typeof (row as { parseSource?: string | null }).parseSource === "string" ? String((row as { parseSource?: string | null }).parseSource) : null,
+        parseReason: typeof (row as { parseReason?: string | null }).parseReason === "string" ? String((row as { parseReason?: string | null }).parseReason) : null,
+        chainId: toNullableNumber((row as { chainId?: string | number | null }).chainId),
+      };
+    }),
+  };
+}
+
+export async function getOnchainPoolAddsByPoolId(
+  poolRegistryId: string
+): Promise<OnchainPoolAddsByPoolResult | null> {
+  const bigQuery = getBigQueryClient();
+  const dataset = process.env.BIGQUERY_DATASET;
+  const projectId = process.env.BIGQUERY_PROJECT_ID;
+  const normalizedPoolRegistryId = poolRegistryId.trim();
+
+  if (!dataset || !projectId || !normalizedPoolRegistryId) return null;
+
+  const currentPool = getPool();
+  const [registryRows] = await currentPool.query<
+    (RowDataPacket & {
+      id: number;
+      poolId: string | null;
+      poolAddress: string | null;
+      token0Symbol: string | null;
+      token1Symbol: string | null;
+      createdAt: string | null;
+    })[]
+  >(
+    `
+      SELECT
+        id,
+        CAST(pool_id AS CHAR) AS poolId,
+        LOWER(pool_address) AS poolAddress,
+        token0_symbol AS token0Symbol,
+        token1_symbol AS token1Symbol,
+        created_at AS createdAt
+      FROM dex_pool_registry
+      WHERE id = ?
+      LIMIT 1
+    `,
+    [normalizedPoolRegistryId]
+  );
+
+  const registry = registryRows[0] ?? null;
+  if (!registry) return null;
+
+  const normalizedPoolId = registry.poolId?.trim() || null;
+
+  const latestQuery = `
+    SELECT
+      CAST(action.pool_registry_id AS STRING) AS poolRegistryId,
+      action.txhash AS txhash,
+      action.block_time AS blockTime,
+      LOWER(action.trader_address) AS traderAddress,
+      LOWER(action.recipient_address) AS recipientAddress,
+      LOWER(action.quote_token_address) AS quoteTokenAddress,
+      action.quote_token_symbol AS quoteTokenSymbol,
+      action.action_type AS actionType,
+      action.event_name AS eventName,
+      SAFE_CAST(action.token_amount AS NUMERIC) AS tokenAmount,
+      SAFE_CAST(action.quote_token_amount AS NUMERIC) AS quoteTokenAmount,
+      SAFE_CAST(action.value AS NUMERIC) AS value,
+      SAFE_CAST(action.price AS NUMERIC) AS price,
+      action.parse_source AS parseSource,
+      action.parse_reason AS parseReason,
+      action.chain_id AS chainId
+    FROM \`${projectId}.${dataset}.token_dex_pool_action_raw\` action
+    WHERE CAST(action.pool_registry_id AS STRING) = @poolRegistryId
+      AND action.action_type = 'add_liquidity'
+    ORDER BY TIMESTAMP(action.block_time) ASC
+    LIMIT 20
+  `;
+
+  const totalQuery = `
+    SELECT
+      COUNT(*) AS total,
+      MIN(action.block_time) AS earliestBlockTime
+    FROM \`${projectId}.${dataset}.token_dex_pool_action_raw\` action
+    WHERE CAST(action.pool_registry_id AS STRING) = @poolRegistryId
+      AND action.action_type = 'add_liquidity'
+  `;
+
+  const startedQuery = normalizedPoolId
+    ? `
+      SELECT
+        MIN(block_time) AS earliestLockTime,
+        MIN(started_time) AS earliestStartedTime
+      FROM \`${projectId}.${dataset}.pool_started_timestamp_raw\`
+      WHERE CAST(pool_id AS STRING) = @poolId
+    `
+    : null;
+
+  const [latestRows] = await bigQuery.query({
+    query: latestQuery,
+    params: { poolRegistryId: normalizedPoolRegistryId },
+    useLegacySql: false,
+  });
+
+  const [totalRows] = await bigQuery.query({
+    query: totalQuery,
+    params: { poolRegistryId: normalizedPoolRegistryId },
+    useLegacySql: false,
+  });
+
+  const [startedRows] = startedQuery
+    ? await bigQuery.query({
+        query: startedQuery,
+        params: { poolId: normalizedPoolId },
+        useLegacySql: false,
+      })
+    : [[]];
+
+  const totalRow = (totalRows[0] as {
+    total?: string | number | null;
+    earliestBlockTime?: { value?: string } | string | null;
+  } | undefined) ?? {};
+  const startedRow = (startedRows[0] as {
+    earliestLockTime?: { value?: string } | string | null;
+    earliestStartedTime?: { value?: string } | string | null;
+  } | undefined) ?? {};
+
+  const total = Number(totalRow.total ?? 0);
+  const rawEarliestBlockTime = totalRow.earliestBlockTime;
+  const rawEarliestStartedTime = startedRow.earliestStartedTime;
+  const earliestBlockTime =
+    typeof rawEarliestBlockTime === "string" ? rawEarliestBlockTime : rawEarliestBlockTime?.value ?? null;
+  const earliestStartedTime =
+    typeof rawEarliestStartedTime === "string" ? rawEarliestStartedTime : rawEarliestStartedTime?.value ?? null;
+
+  return {
+    poolRegistryId: String(registry.id),
+    poolId: normalizedPoolId,
+    poolAddress: registry.poolAddress ? String(registry.poolAddress).toLowerCase() : null,
+    total,
+    earliestBlockTime: earliestBlockTime?.trim() || null,
+    earliestStartedTime: earliestStartedTime?.trim() || null,
+    items: latestRows.map(row => {
+      const tokenAmount = toNullableNumber((row as { tokenAmount?: string | number | null }).tokenAmount);
+      const quoteTokenAmount = toNullableNumber((row as { quoteTokenAmount?: string | number | null }).quoteTokenAmount);
+      const value = toNullableNumber((row as { value?: string | number | null }).value);
+      const price = toNullableNumber((row as { price?: string | number | null }).price);
+      const rawBlockTime = (row as { blockTime?: { value?: string } | string | null }).blockTime;
+      const blockTime = typeof rawBlockTime === "string" ? rawBlockTime : rawBlockTime?.value ?? null;
+      const rawStartedTime = (row as { startedTime?: { value?: string } | string | null }).startedTime;
+      const startedTime = typeof rawStartedTime === "string" ? rawStartedTime : rawStartedTime?.value ?? null;
+
+      return {
+        poolRegistryId:
+          typeof (row as { poolRegistryId?: string | number | null }).poolRegistryId === "string"
+            ? String((row as { poolRegistryId?: string | number | null }).poolRegistryId)
+            : (row as { poolRegistryId?: string | number | null }).poolRegistryId != null
+              ? String((row as { poolRegistryId?: string | number | null }).poolRegistryId)
+              : null,
+        poolId: normalizedPoolId,
+        poolAddress: registry.poolAddress ? String(registry.poolAddress).toLowerCase() : null,
+        txhash: typeof (row as { txhash?: string | null }).txhash === "string" ? String((row as { txhash?: string | null }).txhash) : null,
+        blockTime: blockTime?.trim() || null,
+        startedTime: (startedTime?.trim() || earliestStartedTime?.trim()) ?? null,
+        traderAddress: String((row as { traderAddress?: string }).traderAddress ?? "").toLowerCase(),
+        recipientAddress:
+          typeof (row as { recipientAddress?: string | null }).recipientAddress === "string"
+            ? String((row as { recipientAddress?: string | null }).recipientAddress).toLowerCase()
+            : null,
+        quoteTokenAddress:
+          typeof (row as { quoteTokenAddress?: string | null }).quoteTokenAddress === "string"
+            ? String((row as { quoteTokenAddress?: string | null }).quoteTokenAddress).toLowerCase()
+            : null,
+        quoteTokenSymbol:
+          typeof (row as { quoteTokenSymbol?: string | null }).quoteTokenSymbol === "string"
+            ? String((row as { quoteTokenSymbol?: string | null }).quoteTokenSymbol)
+            : null,
+        token0Symbol: registry.token0Symbol ? String(registry.token0Symbol) : null,
+        token1Symbol: registry.token1Symbol ? String(registry.token1Symbol) : null,
+        actionType:
+          typeof (row as { actionType?: string | null }).actionType === "string"
+            ? String((row as { actionType?: string | null }).actionType)
+            : null,
+        eventName:
+          typeof (row as { eventName?: string | null }).eventName === "string"
+            ? String((row as { eventName?: string | null }).eventName)
+            : null,
+        tokenAmount,
+        quoteTokenAmount,
+        value,
+        price,
+        parseSource:
+          typeof (row as { parseSource?: string | null }).parseSource === "string"
+            ? String((row as { parseSource?: string | null }).parseSource)
+            : null,
+        parseReason:
+          typeof (row as { parseReason?: string | null }).parseReason === "string"
+            ? String((row as { parseReason?: string | null }).parseReason)
+            : null,
         chainId: toNullableNumber((row as { chainId?: string | number | null }).chainId),
       };
     }),

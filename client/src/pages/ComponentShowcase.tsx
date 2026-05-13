@@ -51,6 +51,16 @@ type WorkspaceTask = {
   detectedSymbol: string | null;
   taskType: string;
   usedTools: string[];
+  researchPlan: ResearchPlan | null;
+};
+
+type ResearchPlan = {
+  subQuestions: string[];
+  plannedTools: Array<{
+    name: string;
+    rationale: string;
+  }>;
+  rationale: string;
 };
 
 const workspace = mockCryptoAiDataSource.getFreeChatWorkspace();
@@ -80,6 +90,7 @@ function createTask(title = "新对话"): WorkspaceTask {
     detectedSymbol: null,
     taskType: "general",
     usedTools: [],
+    researchPlan: null,
   };
 }
 
@@ -113,6 +124,7 @@ function loadPersistedTasks() {
       detectedSymbol: task.detectedSymbol ?? null,
       taskType: task.taskType ?? "general",
       usedTools: Array.isArray(task.usedTools) ? task.usedTools : [],
+      researchPlan: isResearchPlan(task.researchPlan) ? task.researchPlan : null,
     }));
   } catch {
     return getDefaultTasks();
@@ -205,6 +217,7 @@ export default function ComponentsShowcase() {
       detectedSymbol: item.detectedSymbol ?? null,
       taskType: item.taskType,
       usedTools: [],
+      researchPlan: null,
     }));
 
     setTasks(prev => {
@@ -251,6 +264,7 @@ export default function ComponentsShowcase() {
       detectedSymbol: detail.detectedSymbol,
       taskType: detail.taskType,
       usedTools: detail.usedTools,
+      researchPlan: isResearchPlan(detail.researchPlan) ? detail.researchPlan : null,
     }));
   }, [conversationDetailQuery.data]);
 
@@ -279,6 +293,7 @@ export default function ComponentsShowcase() {
       title: deriveTaskTitle(task.title, content),
       messages: baseMessages,
       executionSteps: [],
+      researchPlan: null,
     }));
 
     setIsStreaming(true);
@@ -333,6 +348,11 @@ export default function ComponentsShowcase() {
               liveSteps.push(step);
             }
             updateTaskById(taskId, task => ({ ...task, executionSteps: [...liveSteps] }));
+          } else if (event.type === "plan") {
+            const plan = event.plan;
+            if (isResearchPlan(plan)) {
+              updateTaskById(taskId, task => ({ ...task, researchPlan: plan }));
+            }
           } else if (event.type === "tool_call") {
             const toolStep: WorkspaceTask["executionSteps"][number] = {
               id: `tool-${String(event.name)}-${Date.now()}`,
@@ -633,6 +653,46 @@ export default function ComponentsShowcase() {
                 <CardHeader className="pb-3">
                   <CardTitle className="flex items-center gap-2 text-sm font-medium">
                     <Workflow className="h-4 w-4 text-[#1558c0]" />
+                    研究计划
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  {!activeTask.researchPlan ? (
+                    <div className="text-sm text-muted-foreground">发送问题后会展示模型的研究计划。</div>
+                  ) : (
+                    <>
+                      <div className="rounded-xl border border-[#edf2f7] bg-[#fbfdff] px-3 py-2.5 text-sm leading-6 text-muted-foreground">
+                        {activeTask.researchPlan.rationale}
+                      </div>
+                      <div className="space-y-2">
+                        {activeTask.researchPlan.subQuestions.map((item, index) => (
+                          <div key={`${item}-${index}`} className="rounded-xl border border-[#edf2f7] bg-white px-3 py-2 text-sm text-[oklch(var(--crypto-ink))]">
+                            {index + 1}. {item}
+                          </div>
+                        ))}
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {activeTask.researchPlan.plannedTools.length === 0 ? (
+                          <Badge variant="outline" className="border-[#dfe7f1] bg-[#fbfdff] text-[#667085]">
+                            无需工具
+                          </Badge>
+                        ) : (
+                          activeTask.researchPlan.plannedTools.map(tool => (
+                            <Badge key={tool.name} variant="outline" className="border-[#d6e3f4] bg-[#f7fbff] text-[#1558c0]" title={tool.rationale}>
+                              {tool.name}
+                            </Badge>
+                          ))
+                        )}
+                      </div>
+                    </>
+                  )}
+                </CardContent>
+              </Card>
+
+              <Card className="rounded-2xl border border-[#dfe7f1] bg-white shadow-[0_8px_20px_rgba(83,102,138,0.06)]">
+                <CardHeader className="pb-3">
+                  <CardTitle className="flex items-center gap-2 text-sm font-medium">
+                    <Workflow className="h-4 w-4 text-[#1558c0]" />
                     执行步骤
                   </CardTitle>
                 </CardHeader>
@@ -747,5 +807,15 @@ function IntentRow({ label, value }: { label: string; value: string }) {
       <div className="text-xs font-medium text-[#667085]">{label}</div>
       <div className="text-right text-sm text-[oklch(var(--crypto-ink))]">{value}</div>
     </div>
+  );
+}
+
+function isResearchPlan(value: unknown): value is ResearchPlan {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  return (
+    Array.isArray(record.subQuestions) &&
+    Array.isArray(record.plannedTools) &&
+    typeof record.rationale === "string"
   );
 }

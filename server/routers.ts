@@ -16,6 +16,7 @@ import {
   getOnchainHoldersBySymbol,
   getOnchainLargeTransfersBySymbol,
   getOnchainOverviewBySymbol,
+  getOnchainPoolAddsByPoolId,
   getOnchainPoolAddsBySymbol,
   getTokenFundingViewBySymbol,
   getTokenSocialHeatViewBySymbol,
@@ -27,6 +28,7 @@ import {
   getTokenProfileBySymbol,
   getTokenUnlockViewBySymbol,
   listMarketWatchlist,
+  listAvailableOnchainPools,
   listAvailableOnchainTokens,
   listMarketTokens,
   searchListingAnnouncements,
@@ -174,6 +176,7 @@ export const appRouter = router({
             taskType: payload.taskType,
             intent: payload.intent ?? null,
             usedTools: payload.usedTools,
+            researchPlan: payload.researchPlan ?? null,
             suggestedNextActions: payload.suggestedNextActions,
             workspace: input.workspace ?? "free_chat",
             signalContext: input.signalContext ?? null,
@@ -260,6 +263,7 @@ export const appRouter = router({
           executionSteps: Array.isArray(state?.executionSteps) ? state.executionSteps : [],
           intent: state?.intent ?? null,
           usedTools: Array.isArray(state?.usedTools) ? state.usedTools : [],
+          researchPlan: state && isResearchPlan(state.researchPlan) ? state.researchPlan : null,
           suggestedNextActions: Array.isArray(state?.suggestedNextActions) ? state.suggestedNextActions : [],
           artifacts: result.artifacts.map(artifact => ({
             id: artifact.id,
@@ -473,6 +477,17 @@ export const appRouter = router({
       .query(async ({ input }) => {
         return await listAvailableOnchainTokens(input?.limit ?? 20);
       }),
+    listPools: publicProcedure
+      .input(
+        z.object({
+          page: z.number().int().min(1).optional(),
+          pageSize: z.number().int().min(20).max(100).optional(),
+          query: z.string().trim().optional(),
+        }).optional()
+      )
+      .query(async ({ input }) => {
+        return await listAvailableOnchainPools(input?.page ?? 1, input?.pageSize ?? 100, input?.query);
+      }),
     getOverview: publicProcedure
       .input(
         z.object({
@@ -549,6 +564,15 @@ export const appRouter = router({
       )
       .query(async ({ input }) => {
         return await getOnchainPoolAddsBySymbol(input.symbol);
+      }),
+    getPoolAddsByPool: publicProcedure
+      .input(
+        z.object({
+          poolRegistryId: z.string().trim().min(1),
+        })
+      )
+      .query(async ({ input }) => {
+        return await getOnchainPoolAddsByPoolId(input.poolRegistryId);
       }),
     getCexFlowTransfers: publicProcedure
       .input(
@@ -941,4 +965,14 @@ function safeParseJson(value: string | null) {
   } catch {
     return null;
   }
+}
+
+function isResearchPlan(value: unknown) {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  return (
+    Array.isArray(record.subQuestions) &&
+    Array.isArray(record.plannedTools) &&
+    typeof record.rationale === "string"
+  );
 }

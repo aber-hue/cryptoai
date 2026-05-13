@@ -6,6 +6,7 @@ import type {
   ChatCitation,
   ChatExecutionStep,
   ChatInputMessage,
+  ResearchPlan,
   ChatSignalContext,
   ChatTaskType,
   ChatToolResult,
@@ -678,7 +679,7 @@ async function executeTool(
 
 // ── System prompt ────────────────────────────────────────────────────────────
 
-function buildSystemPrompt(signalContext?: ChatSignalContext): string {
+function buildSystemPrompt(signalContext?: ChatSignalContext, plan?: ResearchPlan | null): string {
   const lines = [
     "你是 Crypto Research Copilot，一个专业的加密货币研究助手。",
     "",
@@ -709,6 +710,22 @@ function buildSystemPrompt(signalContext?: ChatSignalContext): string {
     lines.push(...extra);
   }
 
+  if (plan) {
+    lines.push(
+      "",
+      "## 建议研究计划",
+      `- 计划理由: ${plan.rationale}`,
+      "- 子问题:",
+      ...plan.subQuestions.map(item => `  - ${item}`),
+      "- 建议工具:",
+      ...(plan.plannedTools.length > 0
+        ? plan.plannedTools.map(item => `  - ${item.name}: ${item.rationale}`)
+        : ["  - 无需数据工具或由模型自行判断"]),
+      "",
+      "你可以参考这个计划，但如果工具结果显示需要调整，也可以选择其他工具。"
+    );
+  }
+
   return lines.join("\n");
 }
 
@@ -732,6 +749,7 @@ export async function runAgentLoop(
     workspace?: "free_chat" | "signal";
     signalContext?: ChatSignalContext;
     signal?: AbortSignal;
+    plan?: ResearchPlan | null;
   },
   emit: (event: AgentEvent) => void
 ): Promise<ChatAnswerPayload> {
@@ -748,7 +766,7 @@ export async function runAgentLoop(
 
   // Build LLM conversation history
   const llmMessages: Message[] = [
-    { role: "system", content: buildSystemPrompt(options.signalContext) },
+    { role: "system", content: buildSystemPrompt(options.signalContext, options.plan) },
     ...messages.map(m => ({ role: m.role as Message["role"], content: m.content })),
   ];
 
@@ -928,6 +946,7 @@ export async function runAgentLoop(
     artifacts,
     usedTools: usedToolNames,
     usedFallback: finalAnswer === null,
+    researchPlan: options.plan ?? null,
   };
 
   emit({ type: "answer", payload });

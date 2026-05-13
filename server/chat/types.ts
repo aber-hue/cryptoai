@@ -65,6 +65,15 @@ export type ChatExecutionStep = {
   detail?: string;
 };
 
+export type ResearchPlan = {
+  subQuestions: string[];
+  plannedTools: Array<{
+    name: string;
+    rationale: string;
+  }>;
+  rationale: string;
+};
+
 export type ChatCitation = {
   id: string;
   title: string;
@@ -103,4 +112,5 @@ export type ChatAnswerPayload = {
   artifacts: ChatArtifact[];
   usedTools: string[];
   usedFallback: boolean;
+  researchPlan?: ResearchPlan | null;
 };

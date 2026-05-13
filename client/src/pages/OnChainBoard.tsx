@@ -2214,14 +2214,20 @@ export default function OnChainBoard() {
     initialTab === "cex-flows"
       ? initialTab
       : "overview";
+  const initialTrack = initialActiveView === "pool-adds" ? "pool-discovery" : "token-analysis";
 
   const [selectedSymbol, setSelectedSymbol] = useState(initialSymbol);
-  const [tokenQuery, setTokenQuery] = useState(initialSymbol);
+  const [tokenQuery, setTokenQuery] = useState("");
+  const [activeTrack, setActiveTrack] = useState<"token-analysis" | "pool-discovery">(initialTrack);
   const [activeView, setActiveView] = useState<"overview" | "fund-flow" | "holders" | "cex-flows" | "pool-adds" | "large-transfers">(initialActiveView);
+  const [selectedTokenDetail, setSelectedTokenDetail] = useState<string | null>(null);
+  const [selectedPoolRegistryId, setSelectedPoolRegistryId] = useState<string | null>(null);
+  const [selectedPoolId, setSelectedPoolId] = useState<string | null>(null);
   const [isFlowFullscreenOpen, setIsFlowFullscreenOpen] = useState(false);
   const [flowMinAmount, setFlowMinAmount] = useState(0);
   const [collapsedNodeIds, setCollapsedNodeIds] = useState<Set<string>>(new Set());
   const [holderPage, setHolderPage] = useState(1);
+  const [poolPage, setPoolPage] = useState(1);
   const [largeTransferSearch, setLargeTransferSearch] = useState("");
   const [largeTransferInput, setLargeTransferInput] = useState("");
   const [largeTransferSortOrder, setLargeTransferSortOrder] = useState<"asc" | "desc">("desc");
@@ -2236,9 +2242,25 @@ export default function OnChainBoard() {
   const [expandedCexFlowDates, setExpandedCexFlowDates] = useState<Set<string>>(new Set(initialExpandDate ? [initialExpandDate] : []));
   const [isTokenPickerOpen, setIsTokenPickerOpen] = useState(false);
   const tokenPickerRef = useRef<HTMLDivElement | null>(null);
+  const tokenAnalysisTabs = [
+    { key: "overview", label: "总览" },
+    { key: "fund-flow", label: "资金流图" },
+    { key: "holders", label: "Holder" },
+    { key: "cex-flows", label: "CEX流入流出" },
+    { key: "large-transfers", label: "大额转账" },
+  ] as const;
   const onchainTokensQuery = trpc.onchain.listTokens.useQuery(
     { limit: 60 },
     {
+      staleTime: 5 * 60 * 1000,
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: false,
+    }
+  );
+  const onchainPoolsQuery = trpc.onchain.listPools.useQuery(
+    { page: poolPage, pageSize: 100, query: activeTrack === "pool-discovery" ? tokenQuery.trim() || undefined : undefined },
+    {
+      enabled: activeTrack === "pool-discovery",
       staleTime: 5 * 60 * 1000,
       refetchOnWindowFocus: false,
       refetchOnReconnect: false,
@@ -2311,10 +2333,23 @@ export default function OnChainBoard() {
       symbol: selectedSymbol,
     },
     {
-      enabled: activeView === "pool-adds",
+      enabled: activeTrack === "token-analysis" && activeView === "pool-adds" && selectedSymbol.trim().length > 0,
       staleTime: 5 * 60 * 1000,
       refetchOnWindowFocus: false,
       refetchOnReconnect: false,
+      retry: 1,
+    }
+  );
+  const poolAddsByPoolQuery = trpc.onchain.getPoolAddsByPool.useQuery(
+    {
+      poolRegistryId: selectedPoolRegistryId ?? "",
+    },
+    {
+      enabled: activeTrack === "pool-discovery" && activeView === "pool-adds" && selectedPoolRegistryId != null,
+      staleTime: 5 * 60 * 1000,
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: false,
+      retry: 1,
     }
   );
 
@@ -2405,11 +2440,12 @@ export default function OnChainBoard() {
     const hasSelected = flowTokenOptions.some(token => token.symbol === selectedSymbol);
     if (!hasSelected) {
       setSelectedSymbol(flowTokenOptions[0].symbol);
-      setTokenQuery(flowTokenOptions[0].symbol);
     }
   }, [flowTokenOptions, selectedSymbol]);
 
   const selectedTokenMeta = flowTokenOptions.find(item => item.symbol === selectedSymbol) ?? flowTokenOptions[0];
+  const isTokenDetailOpen = activeTrack === "token-analysis" && selectedTokenDetail !== null;
+  const isPoolDetailOpen = activeTrack === "pool-discovery" && selectedPoolRegistryId !== null;
   const recommendedFlowSymbols = flowTokenOptions.slice(0, 3).map(token => token.symbol);
   const dashboard =
     tokenDashboards.find(item => item.symbol === selectedSymbol) ??
@@ -2537,6 +2573,12 @@ export default function OnChainBoard() {
   });
   const visibleTokenOptions =
     isTokenPickerOpen && normalizedTokenQuery === selectedSymbol.toLowerCase() ? flowTokenOptions : tokenMatches;
+  const filteredTokenList = tokenMatches;
+  const filteredPoolList = onchainPoolsQuery.data?.items ?? [];
+  const selectedPool = useMemo(
+    () => (onchainPoolsQuery.data?.items ?? []).find(item => item.poolRegistryId === selectedPoolRegistryId) ?? null,
+    [onchainPoolsQuery.data?.items, selectedPoolRegistryId]
+  );
   const fundFlowGraph: FlowGraph = fundFlowQuery.data
     ? {
         nodes: fundFlowQuery.data.nodes,
@@ -2609,6 +2651,10 @@ export default function OnChainBoard() {
   }, [selectedSymbol]);
 
   useEffect(() => {
+    setPoolPage(1);
+  }, [activeTrack, tokenQuery]);
+
+  useEffect(() => {
     setLargeTransferSearch("");
     setLargeTransferInput("");
     setLargeTransferSortOrder("desc");
@@ -2631,6 +2677,12 @@ export default function OnChainBoard() {
     }
   };
 
+  useEffect(() => {
+    if (activeView === "pool-adds" && selectedSymbol.trim().length > 0) {
+      void poolAddsQuery.refetch();
+    }
+  }, [activeView, selectedSymbol]);
+
   const handleCopyHolderTokenAddress = async () => {
     if (!holdersQuery.data?.tokenAddress) return;
     try {
@@ -2643,12 +2695,41 @@ export default function OnChainBoard() {
   };
 
   const handleTokenSearch = () => {
-    const match = tokenMatches[0];
-    if (match) {
-      setSelectedSymbol(match.symbol);
-      setTokenQuery(match.symbol);
-      setIsTokenPickerOpen(false);
+    if (activeTrack === "token-analysis") {
+      const match = tokenMatches[0];
+      if (match) {
+        setSelectedSymbol(match.symbol);
+        setTokenQuery(match.symbol);
+        setSelectedTokenDetail(match.symbol);
+        setActiveView("overview");
+        setIsTokenPickerOpen(false);
+      }
+      return;
     }
+
+    if (activeTrack === "pool-discovery") {
+      const firstPool = filteredPoolList[0];
+      if (firstPool) {
+        const nextSymbol =
+          (firstPool.coreTokenSymbol && firstPool.coreTokenSymbol.trim()) ||
+          (firstPool.token0Symbol && firstPool.token0Symbol.trim()) ||
+          selectedSymbol;
+        setSelectedPoolRegistryId(firstPool.poolRegistryId);
+        setSelectedSymbol(nextSymbol.toUpperCase());
+        setTokenQuery(nextSymbol.toUpperCase());
+        setActiveView("pool-adds");
+      }
+    }
+  };
+
+  const handleSelectToken = (symbol: string) => {
+    setSelectedSymbol(symbol);
+    setTokenQuery(symbol);
+    setIsTokenPickerOpen(false);
+    setActiveTrack("token-analysis");
+    setSelectedTokenDetail(symbol);
+    setSelectedPoolRegistryId(null);
+    setActiveView("overview");
   };
 
   const handleLargeTransferSearch = () => {
@@ -2715,22 +2796,63 @@ export default function OnChainBoard() {
 
   return (
     <div className="space-y-6 pb-8">
+      <div className="space-y-3 px-1">
+        <div className="flex flex-wrap gap-2">
+          {[
+            { key: "token-analysis", label: "代币分析", description: "围绕 Binance Alpha 代币查看链上分析详情" },
+            { key: "pool-discovery", label: "池子发现", description: "围绕 Pancake 新池发现更早的交易与加池机会" },
+          ].map(item => (
+            <button
+              key={item.key}
+              onClick={() => {
+                const nextTrack = item.key as "token-analysis" | "pool-discovery";
+                setActiveTrack(nextTrack);
+                setIsTokenPickerOpen(false);
+                if (nextTrack === "token-analysis") {
+                  setSelectedPoolRegistryId(null);
+                  setSelectedTokenDetail(null);
+                  setTokenQuery("");
+                  setActiveView("overview");
+                } else {
+                  setSelectedTokenDetail(null);
+                  setSelectedPoolRegistryId(null);
+                  setTokenQuery("");
+                  setActiveView("pool-adds");
+                }
+              }}
+              className={cn(
+                "rounded-[20px] border px-4 py-3 text-left transition",
+                activeTrack === item.key
+                  ? "border-[#BFDBFE] bg-[#EFF6FF] shadow-[0_8px_18px_rgba(30,64,175,0.12)]"
+                  : "border-white/80 bg-white text-[#475569] hover:bg-[#F8FBFF]"
+              )}
+            >
+              <div className={cn("text-sm font-semibold", activeTrack === item.key ? "text-[#1E40AF]" : "text-[#0F172A]")}>{item.label}</div>
+              <div className="mt-1 text-xs text-[#64748B]">{item.description}</div>
+            </button>
+          ))}
+        </div>
+      </div>
+
       <section className="rounded-[28px] border border-white/80 bg-[linear-gradient(135deg,rgba(255,255,255,0.92),rgba(239,246,255,0.88))] p-5 shadow-[0_16px_40px_rgba(30,64,175,0.08)]">
         <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
           <div>
-            <h1 className="page-title text-[#0F172A]">链上数据分析看板</h1>
+            <h1 className="page-title text-[#0F172A]">{activeTrack === "token-analysis" ? "代币分析" : "池子发现"}</h1>
           </div>
 
+          {!isTokenDetailOpen && !isPoolDetailOpen ? (
           <div className="grid gap-3 md:grid-cols-[minmax(0,420px)_auto_auto] xl:items-center">
             <div ref={tokenPickerRef} className="relative min-w-[280px]">
               <label className="flex items-center gap-3 rounded-[18px] border border-[#DBEAFE] bg-white px-4 py-3 text-sm shadow-[0_6px_18px_rgba(148,163,184,0.08)]">
                 <Search className="h-4 w-4 text-[#64748B]" />
                 <input
                   value={tokenQuery}
-                  onFocus={() => setIsTokenPickerOpen(true)}
+                  onFocus={() => {
+                    if (activeTrack === "token-analysis") setIsTokenPickerOpen(true);
+                  }}
                   onChange={event => {
                     setTokenQuery(event.target.value);
-                    setIsTokenPickerOpen(true);
+                    if (activeTrack === "token-analysis") setIsTokenPickerOpen(true);
                   }}
                   onKeyDown={event => {
                     if (event.key === "Enter") {
@@ -2741,20 +2863,22 @@ export default function OnChainBoard() {
                       setIsTokenPickerOpen(false);
                     }
                   }}
-                  placeholder="搜索或选择代币 Symbol / 名称"
+                  placeholder={activeTrack === "token-analysis" ? "搜索或选择代币 Symbol / 名称" : "搜索池子本币 / 配对币 / 池子地址"}
                   className="w-full bg-transparent font-medium text-[#0F172A] outline-none"
                 />
-                <button
-                  type="button"
-                  onClick={() => setIsTokenPickerOpen(open => !open)}
-                  className="shrink-0 text-[#64748B] transition hover:text-[#1D4ED8]"
-                  aria-label="展开代币下拉"
-                >
-                  <ChevronDown className={cn("h-4 w-4 transition-transform", isTokenPickerOpen && "rotate-180")} />
-                </button>
+                {activeTrack === "token-analysis" ? (
+                  <button
+                    type="button"
+                    onClick={() => setIsTokenPickerOpen(open => !open)}
+                    className="shrink-0 text-[#64748B] transition hover:text-[#1D4ED8]"
+                    aria-label="展开代币下拉"
+                  >
+                    <ChevronDown className={cn("h-4 w-4 transition-transform", isTokenPickerOpen && "rotate-180")} />
+                  </button>
+                ) : null}
               </label>
 
-              {isTokenPickerOpen ? (
+              {activeTrack === "token-analysis" && isTokenPickerOpen ? (
                 <div className="absolute left-0 right-0 top-[calc(100%+8px)] z-30 overflow-hidden rounded-[20px] border border-[#DBEAFE] bg-white shadow-[0_20px_40px_rgba(15,23,42,0.12)]">
                   <div className="flex items-center justify-between border-b border-[#EFF6FF] px-4 py-2 text-xs text-[#64748B]">
                     <span>可下拉选择链上有数据的代币</span>
@@ -2766,11 +2890,7 @@ export default function OnChainBoard() {
                         <button
                           key={token.symbol}
                           type="button"
-                          onClick={() => {
-                            setSelectedSymbol(token.symbol);
-                            setTokenQuery(token.symbol);
-                            setIsTokenPickerOpen(false);
-                          }}
+                          onClick={() => handleSelectToken(token.symbol)}
                           className={cn(
                             "flex w-full items-center justify-between px-4 py-2.5 text-left transition hover:bg-[#F8FBFF]",
                             token.symbol === selectedSymbol && "bg-[#EFF6FF]"
@@ -2804,16 +2924,15 @@ export default function OnChainBoard() {
               刷新
             </Button>
           </div>
+          ) : null}
         </div>
 
+        {activeTrack === "token-analysis" && isTokenDetailOpen ? (
         <div className="mt-4 flex flex-wrap items-center gap-3 text-sm text-[#64748B]">
           {tokenMatches.slice(0, 3).map(token => (
             <button
               key={token.symbol}
-              onClick={() => {
-                setSelectedSymbol(token.symbol);
-                setTokenQuery(token.symbol);
-              }}
+              onClick={() => handleSelectToken(token.symbol)}
               className={cn(
                 "rounded-full px-3 py-1.5 transition",
                 token.symbol === selectedSymbol ? "bg-[#DBEAFE] text-[#1D4ED8]" : "bg-white text-[#475569]"
@@ -2823,17 +2942,39 @@ export default function OnChainBoard() {
             </button>
           ))}
         </div>
+        ) : null}
       </section>
 
-      <div className="flex flex-wrap gap-2 px-1">
-        {[
-          { key: "overview", label: "总览" },
-          { key: "fund-flow", label: "资金流图" },
-          { key: "holders", label: "Holder" },
-          { key: "cex-flows", label: "CEX流入流出" },
-          { key: "pool-adds", label: "加池记录" },
-          { key: "large-transfers", label: "大额转账" },
-        ].map(item => (
+      <div className="space-y-3 px-1">
+        {((activeTrack === "token-analysis" && isTokenDetailOpen) || (activeTrack === "pool-discovery" && isPoolDetailOpen)) ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            className="rounded-full bg-[#1E40AF] text-white hover:bg-[#1D4ED8]"
+            onClick={() => {
+              if (activeTrack === "token-analysis") {
+                setSelectedTokenDetail(null);
+                setTokenQuery("");
+                setActiveView("overview");
+              } else {
+                setSelectedPoolRegistryId(null);
+                setTokenQuery("");
+                setActiveView("pool-adds");
+              }
+            }}
+          >
+            返回列表
+          </Button>
+          <div className="text-sm text-[#64748B]">
+            {activeTrack === "token-analysis"
+              ? `${selectedTokenMeta?.symbol ?? selectedSymbol} · 代币详情`
+              : `${selectedPool?.coreTokenSymbol ?? selectedPool?.token0Symbol ?? "池子"} · 池子详情`}
+          </div>
+        </div>
+        ) : null}
+
+        {(activeTrack === "token-analysis" && isTokenDetailOpen) ? (
+        <div className="flex flex-wrap gap-2">
+          {[...tokenAnalysisTabs, { key: "pool-adds", label: "加池记录" } as const].map(item => (
           <button
             key={item.key}
             onClick={() => setActiveView(item.key as "overview" | "fund-flow" | "holders" | "cex-flows" | "pool-adds" | "large-transfers")}
@@ -2847,9 +2988,180 @@ export default function OnChainBoard() {
             {item.label}
           </button>
         ))}
+        </div>
+        ) : null}
       </div>
 
-      {activeView === "fund-flow" ? (
+      {activeTrack === "token-analysis" && !isTokenDetailOpen ? (
+        <section className="rounded-[24px] border border-white/80 bg-white/90 p-5 shadow-[0_14px_36px_rgba(71,85,105,0.08)]">
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <div>
+              <h2 className="text-xl font-semibold text-[#0F172A]">代币列表</h2>
+              <p className="mt-1 text-sm text-[#64748B]">按 Binance Alpha 代币维度进入链上分析详情。</p>
+            </div>
+            <div className="text-xs text-[#64748B]">
+              {onchainTokensQuery.isLoading ? "加载中..." : `${flowTokenOptions.length} 个代币`}
+            </div>
+          </div>
+          <div className="overflow-hidden rounded-[20px] border border-[#E2E8F0]">
+            <Table>
+              <TableHeader>
+                <TableRow className="bg-[#F8FAFC]">
+                  <TableHead>代币</TableHead>
+                  <TableHead>名称</TableHead>
+                  <TableHead className="text-right">Transfer</TableHead>
+                  <TableHead className="text-right">Holder</TableHead>
+                  <TableHead className="w-[120px] text-right">操作</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {filteredTokenList.map(token => (
+                  <TableRow key={token.symbol}>
+                    <TableCell className="font-semibold text-[#0F172A]">{token.symbol}</TableCell>
+                    <TableCell className="text-[#475569]">{token.name}</TableCell>
+                    <TableCell className="text-right">{token.transferCount.toLocaleString()}</TableCell>
+                    <TableCell className="text-right">{token.holderCount.toLocaleString()}</TableCell>
+                    <TableCell className="text-right">
+                      <Button
+                        variant={token.symbol === selectedSymbol ? "default" : "secondary"}
+                        className="h-8 rounded-full px-3"
+                        onClick={() => handleSelectToken(token.symbol)}
+                      >
+                        查看
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        </section>
+      ) : activeTrack === "pool-discovery" && !isPoolDetailOpen ? (
+        <section className="rounded-[24px] border border-white/80 bg-white/90 p-5 shadow-[0_14px_36px_rgba(71,85,105,0.08)]">
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <div>
+              <h2 className="text-xl font-semibold text-[#0F172A]">池子列表</h2>
+              <p className="mt-1 text-sm text-[#64748B]">按 Pancake 新池维度做早期发现，查看核心本币、配对币与开盘信息。</p>
+              <p className="mt-1 text-xs text-[#94A3B8]">搜索会在全部池子数据里执行，并按建池/开盘时间倒序返回。</p>
+            </div>
+            <div className="text-xs text-[#64748B]">
+              {onchainPoolsQuery.isLoading
+                ? "加载中..."
+                : `${onchainPoolsQuery.data?.total ?? onchainPoolsQuery.data?.items.length ?? 0} 个池子`}
+            </div>
+          </div>
+          <div className="overflow-hidden rounded-[20px] border border-[#E2E8F0]">
+            <Table>
+              <TableHeader>
+                <TableRow className="bg-[#F8FAFC]">
+                  <TableHead>核心本币</TableHead>
+                  <TableHead>配对币</TableHead>
+                  <TableHead>池子地址</TableHead>
+                  <TableHead>加时间锁时间</TableHead>
+                  <TableHead>建池时间</TableHead>
+                  <TableHead>开盘时间</TableHead>
+                  <TableHead>首次加池</TableHead>
+                  <TableHead className="text-right">首次价格</TableHead>
+                  <TableHead>DEX</TableHead>
+                  <TableHead className="w-[120px] text-right">操作</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {onchainPoolsQuery.isLoading ? (
+                  <TableRow>
+                    <TableCell colSpan={10} className="py-8 text-center text-sm text-[#64748B]">池子列表加载中...</TableCell>
+                  </TableRow>
+                ) : onchainPoolsQuery.error ? (
+                  <TableRow>
+                    <TableCell colSpan={10} className="py-8 text-center text-sm text-[#DC2626]">
+                      池子列表加载失败
+                      {onchainPoolsQuery.error.message ? `：${onchainPoolsQuery.error.message}` : ""}
+                    </TableCell>
+                  </TableRow>
+                ) : filteredPoolList.length ? (
+                  filteredPoolList.map(pool => {
+                    const nextSymbol =
+                      (pool.coreTokenSymbol && pool.coreTokenSymbol.trim()) ||
+                      (pool.token0Symbol && pool.token0Symbol.trim()) ||
+                      selectedSymbol;
+                    return (
+                      <TableRow key={`${pool.poolRegistryId}-${pool.poolAddress ?? pool.poolId ?? "pool"}`}>
+                        <TableCell className="font-semibold text-[#0F172A]">{pool.coreTokenSymbol ?? pool.token0Symbol ?? "—"}</TableCell>
+                        <TableCell className="text-[#475569]">{pool.quoteTokenSymbol ?? pool.token1Symbol ?? "—"}</TableCell>
+                        <TableCell className="font-mono text-xs text-[#1D4ED8]">{pool.poolAddress ? formatAddressDisplay(pool.poolAddress) : "—"}</TableCell>
+                        <TableCell>{pool.poolLockTime ? formatShanghaiDateTime(pool.poolLockTime) : "—"}</TableCell>
+                        <TableCell>{pool.poolCreatedTime ? formatShanghaiDateTime(pool.poolCreatedTime) : "—"}</TableCell>
+                        <TableCell>{pool.startedTime ? formatShanghaiDateTime(pool.startedTime) : "—"}</TableCell>
+                        <TableCell>{pool.firstAddLiquidityTime ? formatShanghaiDateTime(pool.firstAddLiquidityTime) : "—"}</TableCell>
+                        <TableCell className="text-right">{pool.firstAddPrice != null ? compactNumber(pool.firstAddPrice, 6) : "—"}</TableCell>
+                        <TableCell>{pool.dexName ?? "Pancake"}</TableCell>
+                        <TableCell className="text-right">
+                          <Button
+                            variant="secondary"
+                            className="h-8 rounded-full px-3"
+                            onClick={() => {
+                              setSelectedPoolRegistryId(pool.poolRegistryId);
+                              setSelectedPoolId(pool.poolId);
+                              setSelectedSymbol(nextSymbol.toUpperCase());
+                              setTokenQuery(nextSymbol.toUpperCase());
+                              setActiveTrack("pool-discovery");
+                              setActiveView("pool-adds");
+                            }}
+                          >
+                            查看
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })
+                ) : normalizedTokenQuery ? (
+                  <TableRow>
+                    <TableCell colSpan={10} className="py-8 text-center text-sm text-[#64748B]">当前搜索条件下没有匹配的池子</TableCell>
+                  </TableRow>
+                ) : (
+                  <TableRow>
+                    <TableCell colSpan={10} className="py-8 text-center text-sm text-[#64748B]">当前暂无池子发现数据。</TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </div>
+          <div className="mt-4 flex items-center justify-end gap-3">
+            <div className="text-sm text-[#64748B]">
+              {onchainPoolsQuery.data
+                ? `${onchainPoolsQuery.data.page} / ${Math.max(1, Math.ceil(onchainPoolsQuery.data.total / onchainPoolsQuery.data.pageSize))}`
+                : "—"}
+            </div>
+            <Button
+              variant="secondary"
+              className="rounded-full"
+              disabled={poolPage <= 1}
+              onClick={() => setPoolPage(current => Math.max(1, current - 1))}
+            >
+              上一页
+            </Button>
+            <Button
+              variant="secondary"
+              className="rounded-full"
+              disabled={
+                !onchainPoolsQuery.data ||
+                poolPage >= Math.max(1, Math.ceil(onchainPoolsQuery.data.total / onchainPoolsQuery.data.pageSize))
+              }
+              onClick={() =>
+                setPoolPage(current =>
+                  onchainPoolsQuery.data
+                    ? Math.min(Math.max(1, Math.ceil(onchainPoolsQuery.data.total / onchainPoolsQuery.data.pageSize)), current + 1)
+                    : current
+                )
+              }
+            >
+              下一页
+            </Button>
+          </div>
+        </section>
+      ) : null}
+
+      {activeTrack === "token-analysis" && isTokenDetailOpen && activeView === "fund-flow" ? (
         <div className="space-y-6">
           <div className="flex gap-3 overflow-x-auto pb-1">
             {fundFlowGraph.summaries.map(summary => (
@@ -2981,9 +3293,9 @@ export default function OnChainBoard() {
         </div>
       ) : null}
 
-      {activeView === "holders" ? (
+      {activeTrack === "token-analysis" && isTokenDetailOpen && activeView === "holders" ? (
         <div className="space-y-6">
-          <div className="grid gap-3 md:grid-cols-4">
+          <div className="grid gap-3 md:grid-cols-5">
             <Card className="rounded-[18px] border border-white/80 bg-white/90 shadow-[0_10px_24px_rgba(71,85,105,0.08)]">
               <CardContent className="p-3.5">
                 <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#64748B]">Snapshot</div>
@@ -3128,7 +3440,7 @@ export default function OnChainBoard() {
         </div>
       ) : null}
 
-      {activeView === "cex-flows" ? (
+      {activeTrack === "token-analysis" && isTokenDetailOpen && activeView === "cex-flows" ? (
         <div className="space-y-6">
           <div className="grid gap-3 md:grid-cols-4">
             <Card className="rounded-[18px] border border-white/80 bg-white/90 shadow-[0_10px_24px_rgba(71,85,105,0.08)]">
@@ -3301,14 +3613,93 @@ export default function OnChainBoard() {
         </div>
       ) : null}
 
-      {activeView === "pool-adds" ? (
+      {(((activeTrack === "token-analysis" && isTokenDetailOpen) || (activeTrack === "pool-discovery" && isPoolDetailOpen)) && activeView === "pool-adds") ? (
         <div className="space-y-6">
+          {(() => {
+            const activePoolAddsData =
+              activeTrack === "pool-discovery" ? poolAddsByPoolQuery.data : poolAddsQuery.data;
+            const activePoolAddsError =
+              activeTrack === "pool-discovery" ? poolAddsByPoolQuery.error : poolAddsQuery.error;
+            const activePoolAddsLoading =
+              activeTrack === "pool-discovery" ? poolAddsByPoolQuery.isLoading : poolAddsQuery.isLoading;
+            const visiblePoolAddItems =
+              activeTrack === "pool-discovery"
+                ? poolAddsByPoolQuery.data?.items ?? []
+                : poolAddsQuery.data?.items ?? [];
+            const visiblePoolAddTotal =
+              activeTrack === "pool-discovery" ? (poolAddsByPoolQuery.data?.total ?? 0) : (poolAddsQuery.data?.total ?? 0);
+            const visibleEarliestAdd = visiblePoolAddItems[0]?.blockTime ?? activePoolAddsData?.earliestBlockTime ?? null;
+            const visibleEarliestStarted =
+              (activeTrack === "pool-discovery" ? selectedPool?.startedTime ?? null : null) ??
+              visiblePoolAddItems[0]?.startedTime ??
+              activePoolAddsData?.earliestStartedTime ??
+              null;
+            return (
+              <>
+          {activeTrack === "pool-discovery" && selectedPool ? (
+            <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-8">
+              <Card className="rounded-[18px] border border-white/80 bg-white/90 shadow-[0_10px_24px_rgba(71,85,105,0.08)]">
+                <CardContent className="p-3.5">
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#64748B]">核心本币</div>
+                  <div className="mt-1 text-base font-semibold text-[#0F172A]">{selectedPool.coreTokenSymbol ?? selectedPool.token0Symbol ?? "—"}</div>
+                </CardContent>
+              </Card>
+              <Card className="rounded-[18px] border border-white/80 bg-white/90 shadow-[0_10px_24px_rgba(71,85,105,0.08)]">
+                <CardContent className="p-3.5">
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#64748B]">配对币</div>
+                  <div className="mt-1 text-base font-semibold text-[#0F172A]">{selectedPool.quoteTokenSymbol ?? selectedPool.token1Symbol ?? "—"}</div>
+                </CardContent>
+              </Card>
+              <Card className="rounded-[18px] border border-white/80 bg-white/90 shadow-[0_10px_24px_rgba(71,85,105,0.08)]">
+                <CardContent className="p-3.5">
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#64748B]">池子地址</div>
+                  <div className="mt-1 text-sm font-semibold text-[#0F172A]">{selectedPool.poolAddress ? formatAddressDisplay(selectedPool.poolAddress) : "—"}</div>
+                </CardContent>
+              </Card>
+              <Card className="rounded-[18px] border border-white/80 bg-white/90 shadow-[0_10px_24px_rgba(71,85,105,0.08)]">
+                <CardContent className="p-3.5">
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#64748B]">加时间锁时间</div>
+                  <div className="mt-1 text-base font-semibold text-[#0F172A]">{selectedPool.poolLockTime ? formatShanghaiDateTime(selectedPool.poolLockTime) : "—"}</div>
+                </CardContent>
+              </Card>
+              <Card className="rounded-[18px] border border-white/80 bg-white/90 shadow-[0_10px_24px_rgba(71,85,105,0.08)]">
+                <CardContent className="p-3.5">
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#64748B]">建池时间</div>
+                  <div className="mt-1 text-base font-semibold text-[#0F172A]">{selectedPool.poolCreatedTime ? formatShanghaiDateTime(selectedPool.poolCreatedTime) : "—"}</div>
+                </CardContent>
+              </Card>
+              <Card className="rounded-[18px] border border-white/80 bg-white/90 shadow-[0_10px_24px_rgba(71,85,105,0.08)]">
+                <CardContent className="p-3.5">
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#64748B]">开盘时间</div>
+                  <div className="mt-1 text-base font-semibold text-[#0F172A]">{selectedPool.startedTime ? formatShanghaiDateTime(selectedPool.startedTime) : "—"}</div>
+                </CardContent>
+              </Card>
+              <Card className="rounded-[18px] border border-white/80 bg-white/90 shadow-[0_10px_24px_rgba(71,85,105,0.08)]">
+                <CardContent className="p-3.5">
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#64748B]">首次加池</div>
+                  <div className="mt-1 text-base font-semibold text-[#0F172A]">{selectedPool.firstAddLiquidityTime ? formatShanghaiDateTime(selectedPool.firstAddLiquidityTime) : "—"}</div>
+                </CardContent>
+              </Card>
+              <Card className="rounded-[18px] border border-white/80 bg-white/90 shadow-[0_10px_24px_rgba(71,85,105,0.08)]">
+                <CardContent className="p-3.5">
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#64748B]">池子大小</div>
+                  <div className="mt-1 text-base font-semibold text-[#0F172A]">{selectedPool.firstAddValue != null ? compactCurrency(selectedPool.firstAddValue) : "—"}</div>
+                </CardContent>
+              </Card>
+              <Card className="rounded-[18px] border border-white/80 bg-white/90 shadow-[0_10px_24px_rgba(71,85,105,0.08)]">
+                <CardContent className="p-3.5">
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#64748B]">首次价格</div>
+                  <div className="mt-1 text-base font-semibold text-[#0F172A]">{selectedPool.firstAddPrice != null ? compactNumber(selectedPool.firstAddPrice, 6) : "—"}</div>
+                </CardContent>
+              </Card>
+            </div>
+          ) : null}
           <div className="grid gap-3 md:grid-cols-4">
             <Card className="rounded-[18px] border border-white/80 bg-white/90 shadow-[0_10px_24px_rgba(71,85,105,0.08)]">
               <CardContent className="p-3.5">
                 <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#64748B]">加池记录数</div>
                 <div className="mt-1 text-base font-semibold text-[#0F172A]">
-                  {poolAddsQuery.data ? poolAddsQuery.data.total.toLocaleString() : "—"}
+                  {activePoolAddsData ? visiblePoolAddTotal.toLocaleString() : "—"}
                 </div>
                 <div className="mt-1 text-xs text-[#64748B]">仅展示最早 20 笔 `action_type = add_liquidity` 记录</div>
               </CardContent>
@@ -3317,23 +3708,35 @@ export default function OnChainBoard() {
               <CardContent className="p-3.5">
                 <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#64748B]">最早加池时间</div>
                 <div className="mt-1 text-base font-semibold text-[#0F172A]">
-                  {poolAddsQuery.data?.latestBlockTime ? formatShanghaiDateTime(poolAddsQuery.data.latestBlockTime) : "—"}
+                  {visibleEarliestAdd ? formatShanghaiDateTime(visibleEarliestAdd) : "—"}
+                </div>
+              </CardContent>
+            </Card>
+            <Card className="rounded-[18px] border border-white/80 bg-white/90 shadow-[0_10px_24px_rgba(71,85,105,0.08)]">
+              <CardContent className="p-3.5">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#64748B]">开盘时间</div>
+                <div className="mt-1 text-base font-semibold text-[#0F172A]">
+                  {visibleEarliestStarted ? formatShanghaiDateTime(visibleEarliestStarted) : "—"}
                 </div>
               </CardContent>
             </Card>
             <Card className="rounded-[18px] border border-white/80 bg-white/90 shadow-[0_10px_24px_rgba(71,85,105,0.08)]">
               <CardContent className="p-3.5">
                 <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#64748B]">Token Address</div>
-                {poolAddsQuery.data?.tokenAddress ? (
+                {(activeTrack === "pool-discovery" ? selectedPool?.coreTokenAddress : poolAddsQuery.data?.tokenAddress) ? (
                   <div className="mt-1 flex items-center gap-2">
                     <a
-                      href={formatBscScanAddress(poolAddsQuery.data.tokenAddress)}
+                      href={formatBscScanAddress(
+                        activeTrack === "pool-discovery" ? selectedPool?.coreTokenAddress ?? "" : poolAddsQuery.data?.tokenAddress ?? ""
+                      )}
                       target="_blank"
                       rel="noreferrer"
                       className="block truncate text-sm font-semibold text-[#1D4ED8] hover:text-[#1E40AF] hover:underline"
-                      title={poolAddsQuery.data.tokenAddress}
+                      title={activeTrack === "pool-discovery" ? selectedPool?.coreTokenAddress ?? "" : poolAddsQuery.data?.tokenAddress ?? ""}
                     >
-                      {formatAddressDisplay(poolAddsQuery.data.tokenAddress)}
+                      {formatAddressDisplay(
+                        activeTrack === "pool-discovery" ? selectedPool?.coreTokenAddress ?? "" : poolAddsQuery.data?.tokenAddress ?? ""
+                      )}
                     </a>
                     <button
                       type="button"
@@ -3353,7 +3756,7 @@ export default function OnChainBoard() {
               <CardContent className="p-3.5">
                 <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#64748B]">当前展示</div>
                 <div className="mt-1 text-base font-semibold text-[#0F172A]">
-                  {poolAddsQuery.data ? `${poolAddsQuery.data.items.length} / ${poolAddsQuery.data.total}` : "—"}
+                  {activePoolAddsData ? `${visiblePoolAddItems.length} / ${visiblePoolAddTotal}` : "—"}
                 </div>
               </CardContent>
             </Card>
@@ -3363,22 +3766,23 @@ export default function OnChainBoard() {
             <div className="mb-4">
               <div className="text-lg font-semibold text-[#0F172A]">加池记录</div>
               <div className="mt-1 text-sm text-[#64748B]">
-                这里只展示 BigQuery `token_dex_action_raw` 中 `action_type = add_liquidity` 的记录。
-                按表说明，`amount_in` 表示本币数量，`amount_out` 表示配对币数量，`pricelow / pricehigh` 表示流动性价格区间。
+                这里只展示 BigQuery `token_dex_pool_action_raw` 中 `action_type = add_liquidity` 的记录，并结合
+                `token_dex_pool_raw` 与 `pool_started_timestamp_raw` 查看池子身份、建池时间、时间锁与开盘时间。
               </div>
             </div>
 
-            {poolAddsQuery.isLoading ? (
+            {activePoolAddsLoading ? (
               <div className="flex h-[520px] items-center justify-center rounded-[20px] border border-[#E2E8F0] bg-[#FCFDFF] text-sm text-[#64748B]">
                 正在加载加池记录...
               </div>
-            ) : poolAddsQuery.error ? (
+            ) : activePoolAddsError ? (
               <div className="flex h-[520px] items-center justify-center rounded-[20px] border border-[#E2E8F0] bg-[#FCFDFF] text-sm text-[#64748B]">
                 加池记录加载失败
+                {activePoolAddsError.message ? `：${activePoolAddsError.message}` : ""}
               </div>
-            ) : !poolAddsQuery.data || poolAddsQuery.data.items.length === 0 ? (
+            ) : !activePoolAddsData || visiblePoolAddItems.length === 0 ? (
               <div className="flex h-[520px] items-center justify-center rounded-[20px] border border-[#E2E8F0] bg-[#FCFDFF] text-sm text-[#64748B]">
-                当前币种暂无可展示的加池记录
+                {activeTrack === "pool-discovery" ? "当前池子暂无可展示的加池记录" : "当前币种暂无可展示的加池记录"}
               </div>
             ) : (
               <div className="overflow-x-auto rounded-[20px] border border-[#E2E8F0] bg-white">
@@ -3386,21 +3790,30 @@ export default function OnChainBoard() {
                   <TableHeader>
                     <TableRow>
                       <TableHead>时间</TableHead>
+                      <TableHead>开盘时间</TableHead>
                       <TableHead>加池地址</TableHead>
                       <TableHead>池子地址</TableHead>
+                      <TableHead>Pool ID</TableHead>
+                      <TableHead>交易对</TableHead>
+                      <TableHead>配对币地址</TableHead>
+                      <TableHead>配对币 Symbol</TableHead>
                       <TableHead className="text-right">本币数量</TableHead>
                       <TableHead className="text-right">配对币数量</TableHead>
                       <TableHead className="text-right">价格</TableHead>
-                      <TableHead className="text-right">价格区间</TableHead>
                       <TableHead className="text-right">近似价值</TableHead>
+                      <TableHead>事件名</TableHead>
+                      <TableHead className="text-right">Pool Registry ID</TableHead>
                       <TableHead>交易 Hash</TableHead>
                       <TableHead className="text-right">Chain</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {poolAddsQuery.data.items.map((item, index) => (
-                      <TableRow key={`${item.traderAddress}-${item.pairAddress}-${item.blockTime ?? index}`}>
+                    {visiblePoolAddItems.map((item, index) => (
+                      <TableRow key={`${item.traderAddress}-${item.poolAddress ?? item.quoteTokenAddress ?? "na"}-${item.blockTime ?? index}`}>
                         <TableCell className="whitespace-nowrap">{formatShanghaiDateTime(item.blockTime)}</TableCell>
+                        <TableCell>
+                          {item.startedTime ? formatShanghaiDateTime(item.startedTime) : "—"}
+                        </TableCell>
                         <TableCell>
                           <button
                             type="button"
@@ -3411,23 +3824,40 @@ export default function OnChainBoard() {
                           </button>
                         </TableCell>
                         <TableCell>
-                          <button
-                            type="button"
-                            className="font-medium text-[#1D4ED8] hover:underline"
-                            onClick={() => window.open(formatBscScanAddress(item.pairAddress), "_blank", "noopener,noreferrer")}
-                          >
-                            {formatAddressDisplay(item.pairAddress)}
-                          </button>
+                          {item.poolAddress ? (
+                            <button
+                              type="button"
+                              className="font-medium text-[#1D4ED8] hover:underline"
+                              onClick={() => window.open(formatBscScanAddress(item.poolAddress!), "_blank", "noopener,noreferrer")}
+                            >
+                              {formatAddressDisplay(item.poolAddress)}
+                            </button>
+                          ) : (
+                            "—"
+                          )}
                         </TableCell>
-                        <TableCell className="text-right">{item.amountIn != null ? compactNumber(item.amountIn) : "—"}</TableCell>
-                        <TableCell className="text-right">{item.amountOut != null ? compactNumber(item.amountOut) : "—"}</TableCell>
+                        <TableCell>{item.poolId ?? "—"}</TableCell>
+                        <TableCell>{item.token0Symbol || item.token1Symbol ? `${item.token0Symbol ?? "?"} / ${item.token1Symbol ?? "?"}` : "—"}</TableCell>
+                        <TableCell>
+                          {item.quoteTokenAddress ? (
+                            <button
+                              type="button"
+                              className="font-medium text-[#1D4ED8] hover:underline"
+                              onClick={() => window.open(formatBscScanAddress(item.quoteTokenAddress!), "_blank", "noopener,noreferrer")}
+                            >
+                              {formatAddressDisplay(item.quoteTokenAddress)}
+                            </button>
+                          ) : (
+                            "—"
+                          )}
+                        </TableCell>
+                        <TableCell>{item.quoteTokenSymbol || "—"}</TableCell>
+                        <TableCell className="text-right">{item.tokenAmount != null ? compactNumber(item.tokenAmount) : "—"}</TableCell>
+                        <TableCell className="text-right">{item.quoteTokenAmount != null ? compactNumber(item.quoteTokenAmount) : "—"}</TableCell>
                         <TableCell className="text-right">{item.price != null ? compactNumber(item.price, 6) : "—"}</TableCell>
-                        <TableCell className="text-right">
-                          {item.priceLow != null || item.priceHigh != null
-                            ? `${item.priceLow != null ? compactNumber(item.priceLow, 6) : "—"} ~ ${item.priceHigh != null ? compactNumber(item.priceHigh, 6) : "—"}`
-                            : "—"}
-                        </TableCell>
-                        <TableCell className="text-right">{item.estimatedUsdValue != null ? `$${compactNumber(item.estimatedUsdValue)}` : "—"}</TableCell>
+                        <TableCell className="text-right">{item.value != null ? `$${compactNumber(item.value)}` : "—"}</TableCell>
+                        <TableCell>{item.eventName || "—"}</TableCell>
+                        <TableCell className="text-right">{item.poolRegistryId != null ? item.poolRegistryId : "—"}</TableCell>
                         <TableCell className="whitespace-nowrap">
                           {item.txhash ? (
                             <button
@@ -3449,10 +3879,13 @@ export default function OnChainBoard() {
               </div>
             )}
           </div>
+              </>
+            );
+          })()}
         </div>
       ) : null}
 
-      {activeView === "large-transfers" ? (
+      {activeTrack === "token-analysis" && isTokenDetailOpen && activeView === "large-transfers" ? (
         <div className="space-y-6">
           <div className="grid gap-3 md:grid-cols-4">
             <Card className="rounded-[18px] border border-white/80 bg-white/90 shadow-[0_10px_24px_rgba(71,85,105,0.08)]">
@@ -3737,7 +4170,7 @@ export default function OnChainBoard() {
         </div>
       ) : null}
 
-      {activeView === "overview" ? (
+      {activeTrack === "token-analysis" && isTokenDetailOpen && activeView === "overview" ? (
         overviewIsLoading ? (
           <DashboardCard title="总览加载中" subtitle="正在拉取链上代币基础信息与持仓概览">
             <div className="flex min-h-[360px] flex-col items-center justify-center gap-4 rounded-[24px] border border-dashed border-[#DBEAFE] bg-[#F8FBFF] px-6 text-center">

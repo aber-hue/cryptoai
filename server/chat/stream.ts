@@ -1,7 +1,8 @@
 import type { Application, Request, Response } from "express";
 import { sdk } from "../_core/sdk";
 import { runAgentLoop, type AgentEvent } from "./agentLoop";
-import type { ChatAnswerPayload, ChatInputMessage, ChatSignalContext } from "./types";
+import { planResearch } from "./planner";
+import type { ChatAnswerPayload, ChatInputMessage, ChatSignalContext, ResearchPlan } from "./types";
 import * as db from "../db";
 
 type StreamRequestBody = {
@@ -16,6 +17,7 @@ type StreamRequestBody = {
 // Outbound events sent to the client (superset of AgentEvent for persistence side-channel)
 type OutboundEvent =
   | AgentEvent
+  | { type: "plan"; plan: ResearchPlan }
   | { type: "conversation_saved"; conversationId: string };
 
 function sendEvent(res: Response, event: OutboundEvent) {
@@ -67,9 +69,14 @@ export function registerChatStreamRoute(app: Application) {
     };
 
     try {
+      const plan = await planResearch(messages, { signal: controller.signal });
+      if (plan) {
+        emit({ type: "plan", plan });
+      }
+
       const payload = await runAgentLoop(
         messages,
-        { workspace, signalContext, signal: controller.signal },
+        { workspace, signalContext, signal: controller.signal, plan },
         emit as (event: AgentEvent) => void
       );
 
@@ -90,6 +97,7 @@ export function registerChatStreamRoute(app: Application) {
             taskType: payload.taskType,
             intent: payload.intent ?? null,
             usedTools: payload.usedTools,
+            researchPlan: payload.researchPlan ?? plan ?? null,
             suggestedNextActions: payload.suggestedNextActions,
             workspace: workspace ?? "free_chat",
             signalContext: signalContext ?? null,
