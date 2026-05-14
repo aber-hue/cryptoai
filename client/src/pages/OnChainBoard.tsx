@@ -2506,7 +2506,9 @@ export default function OnChainBoard() {
         (selectedTokenId == null || item.tokenId === selectedTokenId)
     ) ?? flowTokenOptions[0];
   const isTokenDetailOpen = activeTrack === "token-analysis" && selectedTokenDetail !== null;
-  const isPoolDetailOpen = activeTrack === "pool-discovery" && selectedPoolRegistryId !== null;
+  const isPoolDetailOpen =
+    activeTrack === "pool-discovery" &&
+    (selectedPoolRegistryId !== null || selectedPoolId !== null);
   const recommendedFlowTokens = flowTokenOptions.slice(0, 3);
   const dashboard =
     tokenDashboards.find(item => item.symbol === selectedSymbol) ??
@@ -2637,10 +2639,14 @@ export default function OnChainBoard() {
     isTokenPickerOpen && normalizedTokenQuery === selectedSymbol.toLowerCase() ? flowTokenOptions : tokenMatches;
   const filteredTokenList = tokenMatches;
   const filteredPoolList = onchainPoolsQuery.data?.items ?? [];
-  const selectedPool = useMemo(
-    () => (onchainPoolsQuery.data?.items ?? []).find(item => item.poolRegistryId === selectedPoolRegistryId) ?? null,
-    [onchainPoolsQuery.data?.items, selectedPoolRegistryId]
-  );
+  const selectedPool = useMemo(() => {
+    const items = onchainPoolsQuery.data?.items ?? [];
+    return (
+      items.find(item => item.poolRegistryId === selectedPoolRegistryId) ??
+      items.find(item => item.poolId === selectedPoolId) ??
+      null
+    );
+  }, [onchainPoolsQuery.data?.items, selectedPoolId, selectedPoolRegistryId]);
   const fundFlowGraph: FlowGraph = fundFlowQuery.data
     ? {
         nodes: fundFlowQuery.data.nodes,
@@ -3062,6 +3068,7 @@ export default function OnChainBoard() {
                 setActiveView("overview");
               } else {
                 setSelectedPoolRegistryId(null);
+                setSelectedPoolId(null);
                 setTokenQuery("");
                 setActiveView("pool-adds");
               }
@@ -3751,11 +3758,39 @@ export default function OnChainBoard() {
             return (
               <>
           {activeTrack === "pool-discovery" && selectedPool ? (
-            <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-8">
+            <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-9">
               <Card className="rounded-[18px] border border-white/80 bg-white/90 shadow-[0_10px_24px_rgba(71,85,105,0.08)]">
                 <CardContent className="p-3.5">
                   <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#64748B]">核心本币</div>
                   <div className="mt-1 text-base font-semibold text-[#0F172A]">{selectedPool.coreTokenSymbol ?? selectedPool.token0Symbol ?? "—"}</div>
+                </CardContent>
+              </Card>
+              <Card className="rounded-[18px] border border-white/80 bg-white/90 shadow-[0_10px_24px_rgba(71,85,105,0.08)]">
+                <CardContent className="p-3.5">
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#64748B]">本币合约地址</div>
+                  {selectedPool.coreTokenAddress ? (
+                    <div className="mt-1 flex items-center gap-2">
+                      <a
+                        href={formatBscScanAddress(selectedPool.coreTokenAddress, selectedPool.chainId ?? selectedChainId)}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="block truncate text-sm font-semibold text-[#1D4ED8] hover:text-[#1E40AF] hover:underline"
+                        title={selectedPool.coreTokenAddress}
+                      >
+                        {formatAddressDisplay(selectedPool.coreTokenAddress)}
+                      </a>
+                      <button
+                        type="button"
+                        onClick={() => navigator.clipboard.writeText(selectedPool.coreTokenAddress!)}
+                        className="text-[#64748B] transition hover:text-[#1D4ED8]"
+                        title="复制地址"
+                      >
+                        <Copy className="h-4 w-4" />
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="mt-1 text-sm font-semibold text-[#0F172A]">—</div>
+                  )}
                 </CardContent>
               </Card>
               <Card className="rounded-[18px] border border-white/80 bg-white/90 shadow-[0_10px_24px_rgba(71,85,105,0.08)]">

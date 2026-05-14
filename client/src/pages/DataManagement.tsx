@@ -286,7 +286,9 @@ function matchesSelectedExchange(
   const matchesMarketType =
     !strictMarketType
       ? true
-      : marketType === "spot"
+      : marketType === "all"
+        ? true
+        : marketType === "spot"
         ? ["spot", "alpha", "boost", "xlaunch"].includes(exchangeMarketType ?? "")
         : exchangeMarketType === marketType;
 
@@ -330,7 +332,7 @@ function getMarketSearchParams() {
   return {
     tab: tab === "announcements" ? "announcements" : "coins",
     coinScope: coinScope === "watchlist" ? "watchlist" : "all",
-    marketType: marketType === "perps" ? "perps" : "spot",
+    marketType: marketType === "all" || marketType === "perps" ? marketType : "spot",
     tokenQuery: tokenQuery ?? "",
     sortField:
       sortField === "rank" ||
@@ -378,7 +380,7 @@ export default function DataManagement() {
     () => ({
       query: tokenQuery.trim() || undefined,
       symbols: coinScope === "watchlist" ? watchlistSymbols : undefined,
-      marketType: coinScope === "watchlist" ? undefined : marketType,
+      marketType: coinScope === "watchlist" || marketType === "all" ? undefined : marketType,
       sortBy:
         sortField === "marketCap" || sortField === "volume24h" || sortField === "listedAt"
           ? sortField
@@ -861,6 +863,7 @@ export default function DataManagement() {
               <div className="text-base font-semibold text-muted-foreground">交易类型</div>
               <div className="flex flex-wrap gap-3">
                 {[
+                  { key: "all", label: "全部" },
                   { key: "spot", label: "现货" },
                   { key: "perps", label: "合约" },
                 ].map(item => (

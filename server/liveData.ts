@@ -10,7 +10,7 @@ type MarketListInput = {
   query?: string;
   symbols?: string[];
   exchangeIds?: number[];
-  marketType?: "spot" | "perps";
+  marketType?: "all" | "spot" | "perps";
   sortBy?: "listedAt" | "marketCap" | "volume24h";
   sortOrder?: "asc" | "desc";
   page?: number;
@@ -489,6 +489,40 @@ type OnchainFundFlowResult = {
     title: string;
     count: number;
     totalAmount: number;
+  }>;
+};
+
+export type OnchainEarlyDistributionResult = {
+  tokenId: number;
+  tokenAddressId: number | null;
+  tokenAddress: string | null;
+  firstTransferAt: string | null;
+  graphWindowEnd: string | null;
+  behaviorWindowEnd: string | null;
+  rootAddress: string | null;
+  totalMintedAmount: number;
+  nodes: Array<{
+    address: string;
+    layer: number;
+    label: string;
+    kind: string;
+    isContract: boolean;
+    currentBalance: number | null;
+    incomingAmount: number;
+    incomingTxCount: number;
+    firstReceivedAt: string | null;
+    parentAddresses: string[];
+    outgoingAmountInBehaviorWindow: number;
+    outgoingTxCountInBehaviorWindow: number;
+    uniqueRecipientsInBehaviorWindow: number;
+  }>;
+  links: Array<{
+    source: string;
+    target: string;
+    amount: number;
+    time: string | null;
+    txhash: string | null;
+    layer: number;
   }>;
 };
 
@@ -4464,6 +4498,463 @@ export async function getOnchainFundFlowBySymbol(
     nodes,
     links: Array.from(aggregatedLinks.values()),
     summaries,
+  };
+}
+
+export async function getOnchainEarlyDistributionBySymbol(
+  symbol: string,
+  options?: {
+    tokenId?: number | null;
+    chainId?: number | null;
+    depth?: number;
+    preWindowDays?: number;
+    claimWindowDays?: number;
+    limitPerLayer?: number;
+  }
+): Promise<OnchainEarlyDistributionResult | null> {
+  const bigQuery = getBigQueryClient();
+  const dataset = process.env.BIGQUERY_DATASET;
+  const context = await resolveOnchainTokenContext({
+    symbol,
+    tokenId: options?.tokenId,
+    chainId: options?.chainId,
+  });
+
+  if (!dataset || !context) return null;
+
+  const depth = Math.min(Math.max(options?.depth ?? 4, 1), 4);
+  const preWindowDays = Math.min(Math.max(options?.preWindowDays ?? 7, 1), 60);
+  const claimWindowDays = Math.min(Math.max(options?.claimWindowDays ?? 14, preWindowDays), 90);
+  const limitPerLayer = Math.min(Math.max(options?.limitPerLayer ?? 120, 20), 300);
+  const { resolvedTokenId, dedupedTokenAddresses } = context;
+
+  if (dedupedTokenAddresses.length === 0) {
+    return {
+      tokenId: resolvedTokenId,
+      tokenAddressId: null,
+      tokenAddress: null,
+      firstTransferAt: null,
+      graphWindowEnd: null,
+      behaviorWindowEnd: null,
+      rootAddress: null,
+      totalMintedAmount: 0,
+      nodes: [],
+      links: [],
+    };
+  }
+
+  const countsQuery = `
+    SELECT
+      LOWER(token_address) AS tokenAddress,
+      COUNT(*) AS flowCount
+    FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.token_transfer_raw\`
+    WHERE LOWER(token_address) IN UNNEST(@addresses)
+    ${options?.chainId ? "AND CAST(chain_id AS INT64) = @chainId" : ""}
+    GROUP BY tokenAddress
+    ORDER BY flowCount DESC
+  `;
+  const [countRows] = await bigQuery.query({
+    query: countsQuery,
+    params: {
+      addresses: dedupedTokenAddresses.map(row => row.address),
+      ...(options?.chainId ? { chainId: options.chainId } : {}),
+    },
+    useLegacySql: false,
+  });
+
+  const chosenAddress =
+    dedupedTokenAddresses.find(row =>
+      countRows.some(
+        countRow => String((countRow as { tokenAddress?: string }).tokenAddress ?? "").toLowerCase() === row.address
+      )
+    ) ?? dedupedTokenAddresses[0];
+
+  const firstTransferQuery = `
+    SELECT MIN(block_time) AS firstTransferAt
+    FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.token_transfer_raw\`
+    WHERE LOWER(token_address) = @tokenAddress
+    ${options?.chainId ? "AND CAST(chain_id AS INT64) = @chainId" : ""}
+  `;
+  const [firstTransferRows] = await bigQuery.query({
+    query: firstTransferQuery,
+    params: {
+      tokenAddress: chosenAddress.address,
+      ...(options?.chainId ? { chainId: options.chainId } : {}),
+    },
+    useLegacySql: false,
+  });
+
+  const firstTransferAt = String(
+    (firstTransferRows[0] as { firstTransferAt?: { value?: string } | string | null })?.firstTransferAt instanceof
+      Object
+      ? ((firstTransferRows[0] as { firstTransferAt?: { value?: string } }).firstTransferAt?.value ?? "")
+      : ((firstTransferRows[0] as { firstTransferAt?: string | null })?.firstTransferAt ?? "")
+  ).trim();
+
+  if (!firstTransferAt) {
+    return {
+      tokenId: resolvedTokenId,
+      tokenAddressId: chosenAddress.tokenAddressId,
+      tokenAddress: chosenAddress.address,
+      firstTransferAt: null,
+      graphWindowEnd: null,
+      behaviorWindowEnd: null,
+      rootAddress: null,
+      totalMintedAmount: 0,
+      nodes: [],
+      links: [],
+    };
+  }
+
+  const graphWindowEnd = new Date(new Date(firstTransferAt).getTime() + preWindowDays * 24 * 60 * 60 * 1000).toISOString();
+  const behaviorWindowEnd = new Date(
+    new Date(firstTransferAt).getTime() + claimWindowDays * 24 * 60 * 60 * 1000
+  ).toISOString();
+
+  const transferQuery = `
+    SELECT
+      block_time,
+      from_address,
+      to_address,
+      amount,
+      txhash
+    FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.token_transfer_raw\`
+    WHERE LOWER(token_address) = @tokenAddress
+      ${options?.chainId ? "AND CAST(chain_id AS INT64) = @chainId" : ""}
+      AND block_time >= TIMESTAMP(@windowStart)
+      AND block_time <= TIMESTAMP(@behaviorWindowEnd)
+    ORDER BY block_time ASC, id ASC
+    LIMIT 30000
+  `;
+  const [transferRows] = await bigQuery.query({
+    query: transferQuery,
+    params: {
+      tokenAddress: chosenAddress.address,
+      windowStart: firstTransferAt,
+      behaviorWindowEnd,
+      ...(options?.chainId ? { chainId: options.chainId } : {}),
+    },
+    useLegacySql: false,
+  });
+
+  const normalizedRows = transferRows
+    .map(row => ({
+      time:
+        typeof (row as { block_time?: { value?: string } | string }).block_time === "object"
+          ? ((row as { block_time?: { value?: string } }).block_time?.value ?? null)
+          : String((row as { block_time?: string }).block_time ?? ""),
+      fromAddress: String((row as { from_address?: string }).from_address ?? "").toLowerCase(),
+      toAddress: String((row as { to_address?: string }).to_address ?? "").toLowerCase(),
+      amount: toNullableNumber((row as { amount?: string | number | null }).amount) ?? 0,
+      txhash: String((row as { txhash?: string }).txhash ?? ""),
+    }))
+    .filter(row => row.amount > 0 && row.fromAddress && row.toAddress);
+
+  if (normalizedRows.length === 0) {
+    return {
+      tokenId: resolvedTokenId,
+      tokenAddressId: chosenAddress.tokenAddressId,
+      tokenAddress: chosenAddress.address,
+      firstTransferAt,
+      graphWindowEnd,
+      behaviorWindowEnd,
+      rootAddress: null,
+      totalMintedAmount: 0,
+      nodes: [],
+      links: [],
+    };
+  }
+
+  const graphRows = normalizedRows.filter(row => row.time && row.time <= graphWindowEnd);
+  const rootAddress =
+    graphRows.find(row => row.fromAddress === "0x0000000000000000000000000000000000000000")?.fromAddress ??
+    graphRows[0]?.fromAddress ??
+    normalizedRows[0]?.fromAddress ??
+    null;
+
+  if (!rootAddress) {
+    return {
+      tokenId: resolvedTokenId,
+      tokenAddressId: chosenAddress.tokenAddressId,
+      tokenAddress: chosenAddress.address,
+      firstTransferAt,
+      graphWindowEnd,
+      behaviorWindowEnd,
+      rootAddress: null,
+      totalMintedAmount: 0,
+      nodes: [],
+      links: [],
+    };
+  }
+
+  const allAddresses = Array.from(
+    new Set(normalizedRows.flatMap(row => [row.fromAddress, row.toAddress]).filter(Boolean))
+  );
+  const walletQuery = `
+    SELECT
+      LOWER(address) AS address,
+      tag_label,
+      tags_base,
+      is_contract
+    FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.wallet_info\`
+    WHERE LOWER(address) IN UNNEST(@addresses)
+  `;
+  const [walletRows] = allAddresses.length
+    ? await bigQuery.query({
+        query: walletQuery,
+        params: { addresses: allAddresses },
+        useLegacySql: false,
+      })
+    : [[]];
+
+  const walletMeta = new Map<
+    string,
+    {
+      label: string;
+      kind: string;
+      isContract: boolean;
+    }
+  >();
+  walletRows.forEach(row => {
+    const address = String((row as { address?: string }).address ?? "").toLowerCase();
+    if (!address) return;
+    const tagLabel = (row as { tag_label?: string | null }).tag_label ?? null;
+    const tagsBase = (row as { tags_base?: string | null }).tags_base ?? null;
+    const isContract = Boolean((row as { is_contract?: boolean | null }).is_contract);
+    walletMeta.set(address, {
+      label: formatAddressTagLabel(tagLabel ?? tagsBase),
+      kind: tagsBase ?? (isContract ? "合约地址" : "普通地址"),
+      isContract,
+    });
+  });
+
+  const holderBalanceQuery = `
+    SELECT
+      LOWER(holder_address) AS holderAddress,
+      balance
+    FROM (
+      SELECT
+        holder_address,
+        balance,
+        ROW_NUMBER() OVER (
+          PARTITION BY LOWER(holder_address)
+          ORDER BY snapshot_date DESC, created_at DESC
+        ) AS rowNum
+      FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.token_holder_snapshot\`
+      WHERE LOWER(token_address) = @tokenAddress
+      ${options?.chainId ? "AND CAST(chain_id AS INT64) = @chainId" : ""}
+      AND LOWER(holder_address) IN UNNEST(@addresses)
+    )
+    WHERE rowNum = 1
+  `;
+  const [holderBalanceRows] = allAddresses.length
+    ? await bigQuery.query({
+        query: holderBalanceQuery,
+        params: {
+          tokenAddress: chosenAddress.address,
+          addresses: allAddresses,
+          ...(options?.chainId ? { chainId: options.chainId } : {}),
+        },
+        useLegacySql: false,
+      })
+    : [[]];
+
+  const holderBalanceMap = new Map<string, number | null>();
+  holderBalanceRows.forEach(row => {
+    const address = String((row as { holderAddress?: string }).holderAddress ?? "").toLowerCase();
+    if (!address) return;
+    holderBalanceMap.set(address, toNullableNumber((row as { balance?: string | number | null }).balance));
+  });
+
+  const outgoingRowsByAddress = new Map<string, typeof normalizedRows>();
+  graphRows.forEach(row => {
+    const current = outgoingRowsByAddress.get(row.fromAddress) ?? [];
+    current.push(row);
+    outgoingRowsByAddress.set(row.fromAddress, current);
+  });
+
+  const nodeState = new Map<
+    string,
+    {
+      layer: number;
+      incomingAmount: number;
+      incomingTxCount: number;
+      firstReceivedAt: string | null;
+      parentAddresses: Set<string>;
+    }
+  >();
+  const selectedLinks = new Map<
+    string,
+    {
+      source: string;
+      target: string;
+      amount: number;
+      time: string | null;
+      txhash: string | null;
+      layer: number;
+    }
+  >();
+
+  nodeState.set(rootAddress, {
+    layer: 0,
+    incomingAmount: 0,
+    incomingTxCount: 0,
+    firstReceivedAt: firstTransferAt,
+    parentAddresses: new Set<string>(),
+  });
+
+  let frontier = [rootAddress];
+
+  for (let layer = 1; layer <= depth; layer += 1) {
+    const layerIncoming = new Map<
+      string,
+      {
+        amount: number;
+        txCount: number;
+        firstReceivedAt: string | null;
+        parents: Set<string>;
+      }
+    >();
+
+    frontier.forEach(sourceAddress => {
+      const sourceRows = outgoingRowsByAddress.get(sourceAddress) ?? [];
+      sourceRows.forEach(row => {
+        if (row.toAddress === rootAddress) return;
+        const current = layerIncoming.get(row.toAddress) ?? {
+          amount: 0,
+          txCount: 0,
+          firstReceivedAt: row.time ?? null,
+          parents: new Set<string>(),
+        };
+        current.amount += row.amount;
+        current.txCount += 1;
+        current.parents.add(row.fromAddress);
+        if (!current.firstReceivedAt || ((row.time ?? "") && (row.time ?? "") < current.firstReceivedAt)) {
+          current.firstReceivedAt = row.time ?? current.firstReceivedAt;
+        }
+        layerIncoming.set(row.toAddress, current);
+
+        const key = `${row.fromAddress}->${row.toAddress}`;
+        const existing = selectedLinks.get(key);
+        if (existing) {
+          existing.amount += row.amount;
+        } else {
+          selectedLinks.set(key, {
+            source: row.fromAddress,
+            target: row.toAddress,
+            amount: row.amount,
+            time: row.time,
+            txhash: row.txhash,
+            layer,
+          });
+        }
+      });
+    });
+
+    const selectedAddresses = Array.from(layerIncoming.entries())
+      .sort((left, right) => right[1].amount - left[1].amount)
+      .slice(0, limitPerLayer)
+      .map(([address]) => address);
+
+    selectedAddresses.forEach(address => {
+      const current = layerIncoming.get(address);
+      if (!current) return;
+      const existing = nodeState.get(address);
+      if (existing && existing.layer <= layer) {
+        existing.incomingAmount += current.amount;
+        existing.incomingTxCount += current.txCount;
+        current.parents.forEach(parent => existing.parentAddresses.add(parent));
+        if (
+          current.firstReceivedAt &&
+          (!existing.firstReceivedAt || current.firstReceivedAt < existing.firstReceivedAt)
+        ) {
+          existing.firstReceivedAt = current.firstReceivedAt;
+        }
+        return;
+      }
+
+      nodeState.set(address, {
+        layer,
+        incomingAmount: current.amount,
+        incomingTxCount: current.txCount,
+        firstReceivedAt: current.firstReceivedAt,
+        parentAddresses: new Set(current.parents),
+      });
+    });
+
+    frontier = selectedAddresses;
+    if (frontier.length === 0) break;
+  }
+
+  const trackedAddresses = Array.from(nodeState.keys());
+  const behaviorRows = normalizedRows.filter(row => row.time && row.time <= behaviorWindowEnd);
+  const behaviorStats = new Map<
+    string,
+    {
+      outgoingAmount: number;
+      outgoingTxCount: number;
+      recipients: Set<string>;
+    }
+  >();
+
+  behaviorRows.forEach(row => {
+    if (!trackedAddresses.includes(row.fromAddress)) return;
+    const current = behaviorStats.get(row.fromAddress) ?? {
+      outgoingAmount: 0,
+      outgoingTxCount: 0,
+      recipients: new Set<string>(),
+    };
+    current.outgoingAmount += row.amount;
+    current.outgoingTxCount += 1;
+    current.recipients.add(row.toAddress);
+    behaviorStats.set(row.fromAddress, current);
+  });
+
+  const totalMintedAmount = Array.from(selectedLinks.values())
+    .filter(link => link.source === rootAddress)
+    .reduce((sum, link) => sum + link.amount, 0);
+
+  const nodes = Array.from(nodeState.entries())
+    .filter(([address]) => address !== rootAddress)
+    .map(([address, state]) => {
+      const meta = walletMeta.get(address);
+      const behavior = behaviorStats.get(address);
+      return {
+        address,
+        layer: state.layer,
+        label: meta?.label ?? "普通地址",
+        kind:
+          meta?.kind && meta.kind !== "普通地址"
+            ? formatAddressTagLabel(meta.kind)
+            : meta?.isContract
+              ? "合约地址"
+              : "普通地址",
+        isContract: Boolean(meta?.isContract),
+        currentBalance: holderBalanceMap.get(address) ?? null,
+        incomingAmount: state.incomingAmount,
+        incomingTxCount: state.incomingTxCount,
+        firstReceivedAt: state.firstReceivedAt,
+        parentAddresses: Array.from(state.parentAddresses),
+        outgoingAmountInBehaviorWindow: behavior?.outgoingAmount ?? 0,
+        outgoingTxCountInBehaviorWindow: behavior?.outgoingTxCount ?? 0,
+        uniqueRecipientsInBehaviorWindow: behavior?.recipients.size ?? 0,
+      };
+    })
+    .sort((left, right) => left.layer - right.layer || right.incomingAmount - left.incomingAmount);
+
+  return {
+    tokenId: resolvedTokenId,
+    tokenAddressId: chosenAddress.tokenAddressId,
+    tokenAddress: chosenAddress.address,
+    firstTransferAt,
+    graphWindowEnd,
+    behaviorWindowEnd,
+    rootAddress,
+    totalMintedAmount,
+    nodes,
+    links: Array.from(selectedLinks.values()).sort(
+      (left, right) => left.layer - right.layer || right.amount - left.amount
+    ),
   };
 }
 

@@ -384,7 +384,7 @@ export const appRouter = router({
             query: z.string().trim().optional(),
             symbols: z.array(z.string().trim().min(1)).optional(),
             exchangeIds: z.array(z.number().int().positive()).optional(),
-            marketType: z.enum(["spot", "perps"]).optional(),
+            marketType: z.enum(["all", "spot", "perps"]).optional(),
             sortBy: z.enum(["listedAt", "marketCap", "volume24h"]).optional(),
             sortOrder: z.enum(["asc", "desc"]).optional(),
             page: z.number().int().positive().optional(),

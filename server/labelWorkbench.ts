@@ -10,7 +10,7 @@ import {
 } from "../drizzle/schema";
 import { getFeatureDb } from "./featureDb";
 import {
-  getOnchainHoldersBySymbol,
+  getOnchainEarlyDistributionBySymbol,
   getTokenProfileBySymbol,
   getTokenUnlockViewBySymbol,
 } from "./liveData";
@@ -51,54 +51,54 @@ const LABEL_DEFINITIONS: LabelDefinition[] = [
     key: "team_vault",
     displayName: "团队金库",
     stage: "bootstrap",
-    detector: "tokenomics_match",
-    description: "TGE 初始分配里接收团队份额的核心金库地址。",
-    rule: "基于 token_allocation 比例，与链上大持仓地址做启发式匹配。",
+    detector: "initial_distribution_match",
+    description: "Mint 早期分发路径里承接团队份额的核心地址。",
+    rule: "基于 token_allocation 比例，结合 mint 后 4 层内早期分发金额与短期分发行为匹配。",
     conflictsWith: ["dex_pool", "cex_hot_wallet", "burn_address"],
   },
   {
     key: "investor_vault",
     displayName: "投资人金库",
     stage: "bootstrap",
-    detector: "tokenomics_match",
-    description: "接收私募或投资人初始分配份额的地址。",
-    rule: "基于 allocation.investors 比例与链上大持仓匹配。",
+    detector: "initial_distribution_match",
+    description: "Mint 早期分发路径里接收投资人份额的地址。",
+    rule: "基于 allocation.investors 比例，结合 mint 后 4 层内早期分发金额与短期分发行为匹配。",
     conflictsWith: ["dex_pool", "cex_hot_wallet"],
   },
   {
     key: "foundation_vault",
     displayName: "基金会金库",
     stage: "bootstrap",
-    detector: "tokenomics_match",
-    description: "基金会运营与治理资金的主金库地址。",
-    rule: "基于 allocation.foundation 比例与链上大持仓匹配。",
+    detector: "initial_distribution_match",
+    description: "Mint 早期分发路径里的基金会运营或治理主金库。",
+    rule: "基于 allocation.foundation 比例，结合 mint 后 4 层内早期分发金额与短期分发行为匹配。",
     conflictsWith: ["dex_pool"],
   },
   {
     key: "community_vault",
     displayName: "社区金库",
     stage: "bootstrap",
-    detector: "tokenomics_match",
-    description: "社区分配或空投准备金库。",
-    rule: "基于 allocation.community 比例与链上大持仓匹配。",
+    detector: "initial_distribution_match",
+    description: "Mint 早期分发路径里的社区分配或活动金库。",
+    rule: "基于 allocation.community 比例，结合 mint 后 4 层内早期分发金额与短期分发行为匹配。",
     conflictsWith: ["dex_pool", "cex_hot_wallet"],
   },
   {
     key: "ecosystem_vault",
     displayName: "生态金库",
     stage: "bootstrap",
-    detector: "tokenomics_match",
-    description: "生态建设、激励或 grant 分配金库。",
-    rule: "基于 allocation.ecosystem 比例与链上大持仓匹配。",
+    detector: "initial_distribution_match",
+    description: "Mint 早期分发路径里的生态建设、激励或 grant 金库。",
+    rule: "基于 allocation.ecosystem 比例，结合 mint 后 4 层内早期分发金额与短期分发行为匹配。",
     conflictsWith: ["dex_pool", "cex_hot_wallet"],
   },
   {
     key: "airdrop_vault",
     displayName: "空投金库",
     stage: "bootstrap",
-    detector: "tokenomics_match",
-    description: "用于空投或 claim 资金准备的金库。",
-    rule: "基于 allocation.airdrop 比例与链上大持仓匹配。",
+    detector: "initial_distribution_match",
+    description: "Mint 早期分发路径里的空投或 claim 资金准备地址。",
+    rule: "基于 allocation.airdrop 比例，结合 mint 后 4 层内早期分发金额与短期分发行为匹配。",
     conflictsWith: ["dex_pool", "cex_hot_wallet"],
   },
   {
@@ -269,6 +269,55 @@ function scoreHolderKind(kind: string, label: string) {
   return 0;
 }
 
+function scoreDistributionBehavior(input: {
+  labelKey: string;
+  layer: number;
+  incomingAmount: number;
+  currentBalance: number | null;
+  uniqueRecipientsInBehaviorWindow: number;
+  outgoingAmountInBehaviorWindow: number;
+}) {
+  const retainedRatio =
+    input.currentBalance != null && input.incomingAmount > 0
+      ? Math.max(0, Math.min(input.currentBalance / input.incomingAmount, 3))
+      : null;
+  const fanout = input.uniqueRecipientsInBehaviorWindow;
+  let score = 0;
+
+  score -= Math.max(input.layer - 1, 0) * 1.6;
+
+  if (["team_vault", "investor_vault", "foundation_vault", "ecosystem_vault"].includes(input.labelKey)) {
+    if (fanout <= 2) score += 2.4;
+    else if (fanout <= 5) score += 1.2;
+    else score -= Math.min(fanout - 5, 8) * 0.5;
+
+    if (retainedRatio != null) {
+      if (retainedRatio >= 0.7) score += 2.2;
+      else if (retainedRatio >= 0.4) score += 1.1;
+      else score -= 1.2;
+    }
+  }
+
+  if (["community_vault", "airdrop_vault"].includes(input.labelKey)) {
+    if (fanout >= 8) score += 2.3;
+    else if (fanout >= 4) score += 1.1;
+
+    if (retainedRatio != null) {
+      if (retainedRatio <= 0.35) score += 1.2;
+      else if (retainedRatio >= 0.8) score -= 0.8;
+    }
+
+    if (input.outgoingAmountInBehaviorWindow > input.incomingAmount * 0.3) {
+      score += 1;
+    }
+  }
+
+  return {
+    score,
+    retainedRatio,
+  };
+}
+
 function buildRunSummary(run: LabelAnalysisRun) {
   const config = parseJsonObject<{
     preWindowDays?: number;
@@ -342,6 +391,8 @@ async function refreshRunCounts(
 async function generateTokenomicsMatchProposals(input: {
   symbol: string;
   chain: string;
+  preWindowDays: number;
+  claimWindowDays: number;
   tolerancePct: number;
 }) {
   const profile = await getTokenProfileBySymbol(input.symbol);
@@ -355,20 +406,27 @@ async function generateTokenomicsMatchProposals(input: {
   }
 
   const unlockView = await getTokenUnlockViewBySymbol(input.symbol);
-  const holders = await getOnchainHoldersBySymbol(input.symbol, {
-    pageSize: 80,
+  const distribution = await getOnchainEarlyDistributionBySymbol(input.symbol, {
+    depth: 4,
+    preWindowDays: input.preWindowDays,
+    claimWindowDays: input.claimWindowDays,
+    limitPerLayer: 120,
     chainId: mapChainNameToId(input.chain) ?? undefined,
   });
 
-  const totalSupply = profile.totalSupply ?? profile.circulatingSupply ?? null;
-  if (!holders || !totalSupply || totalSupply <= 0) {
+  const totalDistributionAmount = distribution?.totalMintedAmount ?? 0;
+  if (!distribution || totalDistributionAmount <= 0) {
     return {
       tokenId: profile.tokenId,
       sourceSummary: {
         tokenAddress: chainAddress.address,
         chainName: chainAddress.chainName,
         categories: unlockView?.categories ?? [],
-        holderCount: holders?.total ?? 0,
+        firstTransferAt: distribution?.firstTransferAt ?? null,
+        graphWindowEnd: distribution?.graphWindowEnd ?? null,
+        behaviorWindowEnd: distribution?.behaviorWindowEnd ?? null,
+        rootAddress: distribution?.rootAddress ?? null,
+        graphNodeCount: distribution?.nodes.length ?? 0,
       },
       proposals: [],
     };
@@ -398,18 +456,28 @@ async function generateTokenomicsMatchProposals(input: {
     const labelDef = getLabelDefinition(labelKey);
     if (!labelDef) continue;
 
-    const candidates = holders.items
-      .filter(holder => !usedAddresses.has(holder.address))
-      .map(holder => {
-        const holderPct = holder.balance != null ? (holder.balance / totalSupply) * 100 : 0;
-        const diffPct = Math.abs(holderPct - category.ratio);
-        const kindScore = scoreHolderKind(holder.kind, holder.label);
+    const candidates = distribution.nodes
+      .filter(node => !usedAddresses.has(node.address))
+      .map(node => {
+        const distributionPct = (node.incomingAmount / totalDistributionAmount) * 100;
+        const diffPct = Math.abs(distributionPct - category.ratio);
+        const kindScore = scoreHolderKind(node.kind, node.label);
+        const behavior = scoreDistributionBehavior({
+          labelKey,
+          layer: node.layer,
+          incomingAmount: node.incomingAmount,
+          currentBalance: node.currentBalance,
+          uniqueRecipientsInBehaviorWindow: node.uniqueRecipientsInBehaviorWindow,
+          outgoingAmountInBehaviorWindow: node.outgoingAmountInBehaviorWindow,
+        });
         return {
-          holder,
-          holderPct,
+          node,
+          distributionPct,
           diffPct,
           kindScore,
-          score: diffPct - kindScore * 0.05,
+          behaviorScore: behavior.score,
+          retainedRatio: behavior.retainedRatio,
+          score: diffPct - kindScore * 0.05 - behavior.score,
         };
       })
       .filter(item => item.kindScore > -50)
@@ -422,12 +490,16 @@ async function generateTokenomicsMatchProposals(input: {
     const absoluteMaxTolerance = category.ratio >= 20 ? 14 : 10;
     if (best.diffPct > absoluteMaxTolerance) continue;
 
-    usedAddresses.add(best.holder.address);
+    usedAddresses.add(best.node.address);
     const confidence = Math.max(
-      0.45,
+      0.42,
       Math.min(
         0.96,
-        0.9 - best.diffPct * 0.05 + Math.max(best.kindScore, 0) * 0.003 + (best.diffPct <= relaxedTolerance ? 0.04 : 0)
+        0.88 -
+          best.diffPct * 0.04 +
+          Math.max(best.kindScore, 0) * 0.003 +
+          best.behaviorScore * 0.03 +
+          (best.diffPct <= relaxedTolerance ? 0.04 : 0)
       )
     );
 
@@ -435,20 +507,25 @@ async function generateTokenomicsMatchProposals(input: {
       id: nanoid(16),
       tokenId: profile.tokenId,
       chain: input.chain,
-      address: normalizeAddress(best.holder.address),
+      address: normalizeAddress(best.node.address),
       proposedLabel: labelKey,
-      proposedSubtype: best.holder.isContract ? "contract" : "eoa",
-      proposedTagsJson: JSON.stringify([category.normalizedKey, "real-data"]),
+      proposedSubtype: best.node.isContract ? "contract" : "eoa",
+      proposedTagsJson: JSON.stringify([category.normalizedKey, `layer_${best.node.layer}`, "mint-distribution"]),
       confidence: confidence.toFixed(4),
       detector: labelDef.detector,
       stage: labelDef.stage,
-      reasonSummary: `${category.rawKey} 分配占比约 ${category.ratio.toFixed(2)}%，该地址当前持仓占总供应 ${best.holderPct.toFixed(2)}%，是当前最接近的真实候选地址。`,
+      reasonSummary: `${category.rawKey} 分配占比约 ${category.ratio.toFixed(2)}%，该地址在 mint 后早期 4 层分发树内累计接收 ${best.distributionPct.toFixed(2)}%，位于第 ${best.node.layer} 层，是当前最接近的候选地址。`,
       evidenceJson: JSON.stringify([
         `来源链地址: ${chainAddress.address.toLowerCase()} (${chainAddress.chainName})`,
+        `mint 首次转账时间: ${distribution.firstTransferAt ?? "—"}`,
+        `分发图窗口: ${distribution.graphWindowEnd ?? "—"}，行为观察窗口: ${distribution.behaviorWindowEnd ?? "—"}`,
+        `mint 根地址: ${distribution.rootAddress ?? "—"}`,
         `分配类别: ${category.rawKey}，目标占比 ${category.ratio.toFixed(2)}%`,
-        `候选地址当前余额占比 ${best.holderPct.toFixed(2)}%，差值 ${best.diffPct.toFixed(2)}%`,
-        `链上标签: ${best.holder.label} / ${best.holder.kind}`,
-        `当前排名: #${best.holder.rank ?? "—"}，余额 ${best.holder.balance ?? 0}`,
+        `候选地址在分发树第 ${best.node.layer} 层，累计接收 ${best.distributionPct.toFixed(2)}%，差值 ${best.diffPct.toFixed(2)}%`,
+        `候选地址行为: ${best.node.uniqueRecipientsInBehaviorWindow} 个下游接收方，行为窗口转出 ${best.node.outgoingAmountInBehaviorWindow}`,
+        `链上标签: ${best.node.label} / ${best.node.kind}`,
+        `当前余额: ${best.node.currentBalance ?? 0}，保留比例 ${best.retainedRatio != null ? best.retainedRatio.toFixed(2) : "—"}`,
+        `父节点: ${best.node.parentAddresses.slice(0, 5).join(", ") || "—"}`,
         `类别归一化: ${category.normalizedKey} -> ${labelKey}`,
       ]),
       reviewStatus: "pending" as const,
@@ -461,8 +538,13 @@ async function generateTokenomicsMatchProposals(input: {
       tokenAddress: chainAddress.address.toLowerCase(),
       chainName: chainAddress.chainName,
       categories: unlockView?.categories ?? [],
-      holderCount: holders.total,
-      snapshotDate: holders.snapshotDate,
+      firstTransferAt: distribution.firstTransferAt,
+      graphWindowEnd: distribution.graphWindowEnd,
+      behaviorWindowEnd: distribution.behaviorWindowEnd,
+      rootAddress: distribution.rootAddress,
+      graphNodeCount: distribution.nodes.length,
+      graphLinkCount: distribution.links.length,
+      totalDistributionAmount,
       matchedCount: proposals.length,
     },
     proposals,
@@ -599,6 +681,8 @@ export async function startLabelAnalysis(input: StartAnalysisInput) {
     const generated = await generateTokenomicsMatchProposals({
       symbol: input.symbol,
       chain: input.chain,
+      preWindowDays: input.preWindowDays,
+      claimWindowDays: input.claimWindowDays,
       tolerancePct: input.tolerancePct,
     });
 

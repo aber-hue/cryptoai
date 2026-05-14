@@ -6,6 +6,8 @@ import { getFeatureDb } from "./featureDb";
 import { 
   InsertUser, 
   users, 
+  walletAuthWhitelist,
+  walletAddressTags,
   coins, 
   exchanges, 
   listings, 
@@ -132,6 +134,84 @@ export async function getUserByOpenId(openId: string) {
   const result = await db.select().from(users).where(eq(users.openId, openId)).limit(1);
 
   return result.length > 0 ? result[0] : undefined;
+}
+
+export async function getWalletWhitelistEntry(address: string) {
+  const db = await getDb();
+  if (!db) {
+    console.warn("[Database] Cannot get wallet whitelist entry: database not available");
+    return undefined;
+  }
+
+  const result = await db
+    .select()
+    .from(walletAuthWhitelist)
+    .where(eq(walletAuthWhitelist.address, address))
+    .limit(1);
+
+  return result.length > 0 ? result[0] : undefined;
+}
+
+export async function touchWalletWhitelistLogin(address: string) {
+  const db = await getDb();
+  if (!db) {
+    console.warn("[Database] Cannot update wallet whitelist login: database not available");
+    return;
+  }
+
+  await db
+    .update(walletAuthWhitelist)
+    .set({ lastLoginAt: new Date() })
+    .where(eq(walletAuthWhitelist.address, address));
+}
+
+export async function upsertWalletAddressTag(address: string, tags: string) {
+  const db = await getDb();
+  if (!db) {
+    throw new Error("Database not available");
+  }
+
+  const normalizedAddress = address.trim().toLowerCase();
+  const normalizedTags = tags.trim();
+  const existing = await db
+    .select()
+    .from(walletAddressTags)
+    .where(eq(walletAddressTags.address, normalizedAddress))
+    .limit(1);
+
+  if (existing.length > 0) {
+    await db
+      .update(walletAddressTags)
+      .set({ tags: normalizedTags })
+      .where(eq(walletAddressTags.address, normalizedAddress));
+
+    const updated = await db
+      .select()
+      .from(walletAddressTags)
+      .where(eq(walletAddressTags.address, normalizedAddress))
+      .limit(1);
+
+    return {
+      created: false,
+      item: updated[0] ?? existing[0],
+    };
+  }
+
+  await db.insert(walletAddressTags).values({
+    address: normalizedAddress,
+    tags: normalizedTags,
+  });
+
+  const inserted = await db
+    .select()
+    .from(walletAddressTags)
+    .where(eq(walletAddressTags.address, normalizedAddress))
+    .limit(1);
+
+  return {
+    created: true,
+    item: inserted[0],
+  };
 }
 
 // ==================== Coin Queries ====================

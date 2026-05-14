@@ -1,4 +1,4 @@
-export type MarketType = "spot" | "perps";
+export type MarketType = "all" | "spot" | "perps";
 
 export type ListedToken = {
   rank: number;
