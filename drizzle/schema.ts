@@ -18,24 +18,6 @@ export const users = mysqlTable("users", {
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
 
-export const walletAuthWhitelist = mysqlTable("wallet_auth_whitelist", {
-  address: varchar("address", { length: 128 }).primaryKey(),
-  label: varchar("label", { length: 255 }),
-  isActive: boolean("is_active").default(true).notNull(),
-  lastLoginAt: timestamp("last_login_at"),
-});
-
-export type WalletAuthWhitelist = typeof walletAuthWhitelist.$inferSelect;
-
-export const walletAddressTags = mysqlTable("wallet_address_tags", {
-  id: int("id").autoincrement().primaryKey(),
-  address: varchar("address", { length: 128 }).notNull(),
-  tags: text("tags"),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-});
-
-export type WalletAddressTag = typeof walletAddressTags.$inferSelect;
-
 /**
  * 交易所表
  */
