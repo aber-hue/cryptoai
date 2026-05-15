@@ -295,6 +295,24 @@ function formatListingDateTime(value: string | null) {
   }).replace(",", "");
 }
 
+function getListingEventKey(value: string | null | undefined) {
+  const date = parseUtcDateLike(value);
+  return date ? date.toISOString() : null;
+}
+
+function formatListingChartEventTitle(input: {
+  exchange: string;
+  tag: string;
+  isActivity: boolean;
+  title: string;
+}) {
+  if (input.isActivity) return input.title;
+
+  const exchange = input.exchange.trim();
+  if (!exchange) return input.title || `${input.tag} Listing`;
+  return `${exchange} Listing`;
+}
+
 function formatListingMetric(value: number | null) {
   if (value == null || Number.isNaN(value)) return "—";
   if (Math.abs(value) >= 1_000_000_000) return `$${(value / 1_000_000_000).toFixed(2)}B`;
@@ -342,6 +360,8 @@ function buildListingTrendSeries(
       exchange: string;
       tag: string;
       title: string;
+      eventTime: string;
+      eventLabel: string;
       markerType: "listing" | "activity" | "multi";
     }>;
   }>,
@@ -363,6 +383,8 @@ function buildListingTrendSeries(
         exchange: string;
         tag: string;
         title: string;
+        eventTime: string;
+        eventLabel: string;
         markerType: "listing" | "activity" | "multi";
       }>,
     }))
@@ -383,6 +405,8 @@ function buildListingTrendSeries(
       exchange: string;
       tag: string;
       title: string;
+      eventTime: string;
+      eventLabel: string;
       markerType: "listing" | "activity" | "multi";
       }>;
   }> = sortedKlines;
@@ -391,7 +415,10 @@ function buildListingTrendSeries(
     const rawTime = group.rawDate ? (parseUtcDateLike(group.rawDate)?.getTime() ?? Number.NaN) : Number.NaN;
     if (Number.isNaN(rawTime)) return;
 
-    let targetIndex = points.findIndex(point => toDateKey(point.rawDate) === toDateKey(group.rawDate));
+    let targetIndex = points.findIndex(point => {
+      const pointTime = parseUtcDateLike(point.rawDate)?.getTime();
+      return pointTime != null && pointTime === rawTime;
+    });
     if (targetIndex === -1) {
       let minDistance = Number.POSITIVE_INFINITY;
       points.forEach((point, index) => {
@@ -495,6 +522,8 @@ function ListingChartTooltip({
         exchange: string;
         tag: string;
         title: string;
+        eventTime: string;
+        eventLabel: string;
         markerType: "listing" | "activity" | "multi";
       }>;
       markerType?: "listing" | "activity" | "multi" | null;
@@ -525,9 +554,9 @@ function ListingChartTooltip({
                           : "#3b82f6",
                   }}
                 />
-                <span>{item.markerType === "listing" ? "上币事件" : item.markerType === "activity" ? "活动事件" : "多重事件"}</span>
+                <span>{item.title || item.eventLabel}</span>
               </div>
-              <div className="mt-1 text-sm text-[#101828]">{item.title || `${item.exchange} ${item.tag}`}</div>
+              <div className="mt-0.5 text-xs text-[#667085]">{item.eventTime}</div>
             </div>
           ))}
         </div>
@@ -747,6 +776,7 @@ export default function CoinDetail() {
   const initialDepthMarketType: "spot" | "perps" =
     searchParams.get("depthMarket") === "perps" ? "perps" : "spot";
   const normalizedId = (coinId ?? "").toLowerCase();
+  const routeTokenId = /^\d+$/.test(coinId ?? "") ? Number(coinId) : undefined;
   const matchedFallbackToken = listedTokens.find(item => item.symbol.toLowerCase() === normalizedId);
   const fallbackToken =
     matchedFallbackToken ??
@@ -781,6 +811,7 @@ export default function CoinDetail() {
   const [copiedAddress, setCopiedAddress] = useState<string | null>(null);
   const activeSymbol = (coinId ?? fallbackToken.symbol).toUpperCase();
   const canLoadTokenData = Boolean(coinId ?? fallbackToken.symbol);
+  const tokenIdentityInput = { symbol: activeSymbol, tokenId: routeTokenId };
   const shouldLoadListing = activeTab === "listing";
   const shouldLoadDepth = activeTab === "depth";
   const shouldLoadUnlock = activeTab === "unlock";
@@ -794,40 +825,40 @@ export default function CoinDetail() {
     },
   });
   const tokenProfileQuery = trpc.token.getProfile.useQuery(
-    { symbol: activeSymbol },
+    tokenIdentityInput,
     { enabled: canLoadTokenData }
   );
   const tokenUnlockQuery = trpc.token.getUnlockView.useQuery(
-    { symbol: activeSymbol },
+    tokenIdentityInput,
     { enabled: canLoadTokenData && shouldLoadUnlock }
   );
   const tokenListingQuery = trpc.token.getListingView.useQuery(
-    { symbol: activeSymbol },
+    tokenIdentityInput,
     { enabled: canLoadTokenData && shouldLoadListing }
   );
   const tokenKlineQuery = trpc.token.getKline.useQuery(
-    { symbol: activeSymbol, range: listingRange },
+    { ...tokenIdentityInput, range: listingRange },
     { enabled: canLoadTokenData && shouldLoadListing }
   );
   const tokenHoldersQuery = trpc.token.getHoldersView.useQuery(
-    { symbol: activeSymbol, timeframe: positionTimeframe },
+    { ...tokenIdentityInput, timeframe: positionTimeframe },
     { enabled: canLoadTokenData && shouldLoadHolders }
   );
   const tokenFundingQuery = trpc.token.getFundingView.useQuery(
-    { symbol: activeSymbol },
+    tokenIdentityInput,
     { enabled: canLoadTokenData && shouldLoadFunding }
   );
   const tokenSocialHeatQuery = trpc.token.getSocialHeatView.useQuery(
-    { symbol: activeSymbol },
+    tokenIdentityInput,
     { enabled: canLoadTokenData && shouldLoadSocial }
   );
   const tokenDepthQuery = trpc.token.getDepthView.useQuery(
-    { symbol: activeSymbol, marketType: depthMarketType },
+    { ...tokenIdentityInput, marketType: depthMarketType },
     { enabled: canLoadTokenData && shouldLoadDepth }
   );
   const tokenDepthTrendQuery = trpc.token.getDepthTrend.useQuery(
     {
-      symbol: activeSymbol,
+      ...tokenIdentityInput,
       days: depthRange,
       marketType: depthMarketType,
     },
@@ -992,6 +1023,54 @@ export default function CoinDetail() {
         publishedAt: null,
       }));
   const listingChartGroups = useMemo(() => {
+    const chartEvents = listingTimelineItems.flatMap(item => {
+      const baseTitle = formatListingChartEventTitle({
+        exchange: item.exchange,
+        tag: item.tag,
+        isActivity: item.isActivity,
+        title: item.title,
+      });
+      const baseEvent = {
+        ...item,
+        title: baseTitle,
+        chartEventId: `${item.id}-event`,
+        chartEventTime: item.rawDate,
+        chartEventLabel: item.isActivity ? "活动事件" : `${baseTitle}`,
+        isRewardEvent: false,
+      };
+
+      if (!item.isActivity) {
+        const announcementEvent = item.publishedAt
+          ? {
+              ...item,
+              title: `${item.exchange} 公告上币`,
+              chartEventId: `${item.id}-announcement`,
+              chartEventTime: item.publishedAt,
+              chartEventLabel: "公告上币",
+              isRewardEvent: false,
+            }
+          : null;
+
+        return announcementEvent ? [announcementEvent, baseEvent] : [baseEvent];
+      }
+
+      if (!item.rewardDistributionTime) {
+        return [baseEvent];
+      }
+
+      return [
+        baseEvent,
+        {
+          ...item,
+          title: `${item.exchange} 活动发奖`,
+          chartEventId: `${item.id}-reward`,
+          chartEventTime: item.rewardDistributionTime,
+          chartEventLabel: "活动发奖",
+          isRewardEvent: true,
+        },
+      ];
+    });
+
     const grouped = new Map<
       string,
       {
@@ -999,17 +1078,17 @@ export default function CoinDetail() {
         date: string;
         rawDate: string | null;
         price: number;
-        items: typeof listingTimelineItems;
+        items: typeof chartEvents;
         markerType: "listing" | "activity" | "multi";
       }
     >();
 
-    listingTimelineItems.forEach(item => {
-      const key = toDateKey(item.rawDate) ?? item.id;
+    chartEvents.forEach(item => {
+      const key = getListingEventKey(item.chartEventTime) ?? item.chartEventId;
       const current = grouped.get(key);
       if (current) {
         current.items.push(item);
-        if (!current.date || current.date === "—") current.date = formatChartShortDate(item.rawDate);
+        if (!current.date || current.date === "—") current.date = formatChartShortDate(item.chartEventTime);
         if (item.chartPrice && !Number.isNaN(item.chartPrice)) current.price = item.chartPrice;
         const hasListing = current.items.some(entry => !entry.isActivity);
         const hasActivity = current.items.some(entry => entry.isActivity);
@@ -1019,8 +1098,8 @@ export default function CoinDetail() {
 
       grouped.set(key, {
         key,
-        date: formatChartShortDate(item.rawDate),
-        rawDate: item.rawDate,
+        date: formatChartShortDate(item.chartEventTime),
+        rawDate: item.chartEventTime,
         price: item.chartPrice && !Number.isNaN(item.chartPrice) ? item.chartPrice : Number(token.price),
         items: [item],
         markerType: item.isActivity ? "activity" : "listing",
@@ -1042,10 +1121,12 @@ export default function CoinDetail() {
     eventY: group.price,
     markerType: group.markerType,
     items: group.items.map(item => ({
-      id: item.id,
+      id: item.chartEventId,
       exchange: item.exchange,
       tag: item.tag,
       title: item.title,
+      eventTime: item.chartEventTime ? formatListingDateTime(item.chartEventTime) : "—",
+      eventLabel: item.chartEventLabel,
       markerType: (item.isActivity ? "activity" : "listing") as "listing" | "activity" | "multi",
     })),
   }));

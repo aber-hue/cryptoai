@@ -45,6 +45,11 @@ import {
   startLabelAnalysis,
 } from "./labelWorkbench";
 
+const tokenIdentityInput = z.object({
+  symbol: z.string().trim().min(1),
+  tokenId: z.number().int().positive().optional(),
+});
+
 export const appRouter = router({
   system: systemRouter,
   labels: router({
@@ -441,62 +446,47 @@ export const appRouter = router({
 
   token: router({
     getProfile: publicProcedure
-      .input(
-        z.object({
-          symbol: z.string().trim().min(1),
-        })
-      )
+      .input(tokenIdentityInput)
       .query(async ({ input }) => {
-        return await getTokenProfileBySymbol(input.symbol);
+        return await getTokenProfileBySymbol(input.symbol, input.tokenId);
       }),
     getUnlockView: publicProcedure
-      .input(
-        z.object({
-          symbol: z.string().trim().min(1),
-        })
-      )
+      .input(tokenIdentityInput)
       .query(async ({ input }) => {
-        return await getTokenUnlockViewBySymbol(input.symbol);
+        return await getTokenUnlockViewBySymbol(input.symbol, input.tokenId);
       }),
     getListingView: publicProcedure
-      .input(
-        z.object({
-          symbol: z.string().trim().min(1),
-        })
-      )
+      .input(tokenIdentityInput)
       .query(async ({ input }) => {
-        return await getTokenListingViewBySymbol(input.symbol);
+        return await getTokenListingViewBySymbol(input.symbol, input.tokenId);
       }),
     getKline: publicProcedure
       .input(
-        z.object({
-          symbol: z.string().trim().min(1),
+        tokenIdentityInput.extend({
           range: z.enum(["1m", "3m", "6m", "1y"]).optional(),
         })
       )
       .query(async ({ input }) => {
-        return await getTokenKlineBySymbol(input.symbol, input.range ?? "3m");
+        return await getTokenKlineBySymbol(input.symbol, input.range ?? "3m", input.tokenId);
       }),
     getDepthView: publicProcedure
       .input(
-        z.object({
-          symbol: z.string().trim().min(1),
+        tokenIdentityInput.extend({
           marketType: z.enum(["spot", "perps"]).optional(),
         })
       )
       .query(async ({ input }) => {
-        return await getTokenDepthViewBySymbol(input.symbol, input.marketType);
+        return await getTokenDepthViewBySymbol(input.symbol, input.marketType, input.tokenId);
       }),
     getDepthTrend: publicProcedure
       .input(
-        z.object({
-          symbol: z.string().trim().min(1),
+        tokenIdentityInput.extend({
           days: z.number().int().min(7).max(365).optional(),
           marketType: z.enum(["spot", "perps"]).optional(),
         })
       )
       .query(async ({ input }) => {
-        return await getTokenDepthTrendBySymbol(input.symbol, input.days, input.marketType);
+        return await getTokenDepthTrendBySymbol(input.symbol, input.days, input.marketType, input.tokenId);
       }),
     getExchangeDepthView: publicProcedure
       .input(
@@ -511,13 +501,12 @@ export const appRouter = router({
       }),
     getHoldersView: publicProcedure
       .input(
-        z.object({
-          symbol: z.string().trim().min(1),
+        tokenIdentityInput.extend({
           timeframe: z.enum(["1h", "4h", "12h", "1d"]).optional(),
         })
       )
       .query(async ({ input }) => {
-        return await getTokenHoldersViewBySymbol(input.symbol, input.timeframe);
+        return await getTokenHoldersViewBySymbol(input.symbol, input.timeframe, input.tokenId);
       }),
     getExchangeHoldersView: publicProcedure
       .input(
@@ -531,22 +520,14 @@ export const appRouter = router({
         return await getExchangeHoldersViewBySymbol(input.symbol, input.exchangeSlug, input.timeframe);
       }),
     getFundingView: publicProcedure
-      .input(
-        z.object({
-          symbol: z.string().trim().min(1),
-        })
-      )
+      .input(tokenIdentityInput)
       .query(async ({ input }) => {
-        return await getTokenFundingViewBySymbol(input.symbol);
+        return await getTokenFundingViewBySymbol(input.symbol, input.tokenId);
       }),
     getSocialHeatView: publicProcedure
-      .input(
-        z.object({
-          symbol: z.string().trim().min(1),
-        })
-      )
+      .input(tokenIdentityInput)
       .query(async ({ input }) => {
-        return await getTokenSocialHeatViewBySymbol(input.symbol);
+        return await getTokenSocialHeatViewBySymbol(input.symbol, input.tokenId);
       }),
   }),
 

@@ -2032,7 +2032,15 @@ function pickFirstNumber(record: Record<string, unknown>, keys: string[]) {
   return null;
 }
 
-export async function getTokenProfileBySymbol(symbol: string): Promise<TokenProfileResult | null> {
+export async function getTokenProfileBySymbol(
+  symbol: string,
+  tokenId?: number | null
+): Promise<TokenProfileResult | null> {
+  if (tokenId != null) {
+    const profile = await getTokenProfileByTokenId(tokenId);
+    if (profile) return profile;
+  }
+
   return await getTokenProfileByLookup("UPPER(tp.symbol) = UPPER(?)", [symbol]);
 }
 
@@ -2554,9 +2562,12 @@ export async function getOnchainOverviewBySymbol(
   }
 }
 
-export async function getTokenUnlockViewBySymbol(symbol: string): Promise<TokenUnlockViewResult | null> {
+export async function getTokenUnlockViewBySymbol(
+  symbol: string,
+  tokenId?: number | null
+): Promise<TokenUnlockViewResult | null> {
   const currentPool = getPool();
-  const profile = await getTokenProfileBySymbol(symbol);
+  const profile = await getTokenProfileBySymbol(symbol, tokenId);
 
   if (!profile) return null;
 
@@ -2701,9 +2712,12 @@ export async function getTokenUnlockViewBySymbol(symbol: string): Promise<TokenU
   };
 }
 
-export async function getTokenListingViewBySymbol(symbol: string): Promise<TokenListingViewResult | null> {
+export async function getTokenListingViewBySymbol(
+  symbol: string,
+  tokenId?: number | null
+): Promise<TokenListingViewResult | null> {
   const currentPool = getPool();
-  const profile = await getTokenProfileBySymbol(symbol);
+  const profile = await getTokenProfileBySymbol(symbol, tokenId);
 
   if (!profile) return null;
 
@@ -2884,9 +2898,10 @@ export async function getTokenListingViewBySymbol(symbol: string): Promise<Token
 
 export async function getTokenKlineBySymbol(
   symbol: string,
-  range: TokenKlineRange = "3m"
+  range: TokenKlineRange = "3m",
+  tokenId?: number | null
 ): Promise<TokenKlineResult | null> {
-  const profile = await getTokenProfileBySymbol(symbol);
+  const profile = await getTokenProfileBySymbol(symbol, tokenId);
 
   if (!profile) return null;
 
@@ -3356,10 +3371,11 @@ export async function searchListingAnnouncements(options: {
 
 export async function getTokenDepthViewBySymbol(
   symbol: string,
-  marketType?: "spot" | "perps"
+  marketType?: "spot" | "perps",
+  tokenId?: number | null
 ): Promise<TokenDepthViewResult | null> {
   const currentPool = getPool();
-  const profile = await getTokenProfileBySymbol(symbol);
+  const profile = await getTokenProfileBySymbol(symbol, tokenId);
 
   if (!profile) return null;
 
@@ -3421,10 +3437,11 @@ export async function getTokenDepthViewBySymbol(
 export async function getTokenDepthTrendBySymbol(
   symbol: string,
   days = 14,
-  marketType?: "spot" | "perps"
+  marketType?: "spot" | "perps",
+  tokenId?: number | null
 ): Promise<TokenDepthTrendResult | null> {
   const currentPool = getPool();
-  const profile = await getTokenProfileBySymbol(symbol);
+  const profile = await getTokenProfileBySymbol(symbol, tokenId);
 
   if (!profile) return null;
 
@@ -3616,10 +3633,11 @@ export async function getExchangeDepthViewBySymbol(
 
 export async function getTokenHoldersViewBySymbol(
   symbol: string,
-  timeframe: "1h" | "4h" | "12h" | "1d" = "4h"
+  timeframe: "1h" | "4h" | "12h" | "1d" = "4h",
+  tokenId?: number | null
 ): Promise<TokenHoldersViewResult | null> {
   const currentPool = getPool();
-  const profile = await getTokenProfileBySymbol(symbol);
+  const profile = await getTokenProfileBySymbol(symbol, tokenId);
 
   if (!profile) return null;
 
@@ -3835,9 +3853,12 @@ export async function getExchangeHoldersViewBySymbol(
   };
 }
 
-export async function getTokenFundingViewBySymbol(symbol: string): Promise<TokenFundingViewResult | null> {
+export async function getTokenFundingViewBySymbol(
+  symbol: string,
+  tokenId?: number | null
+): Promise<TokenFundingViewResult | null> {
   const currentPool = getPool();
-  const profile = await getTokenProfileBySymbol(symbol);
+  const profile = await getTokenProfileBySymbol(symbol, tokenId);
 
   if (!profile) return null;
 
@@ -3962,9 +3983,12 @@ export async function getTokenFundingViewBySymbol(symbol: string): Promise<Token
   };
 }
 
-export async function getTokenSocialHeatViewBySymbol(symbol: string): Promise<TokenSocialHeatViewResult | null> {
+export async function getTokenSocialHeatViewBySymbol(
+  symbol: string,
+  tokenId?: number | null
+): Promise<TokenSocialHeatViewResult | null> {
   const currentPool = getPool();
-  const profile = await getTokenProfileBySymbol(symbol);
+  const profile = await getTokenProfileBySymbol(symbol, tokenId);
 
   if (!profile) return null;
 

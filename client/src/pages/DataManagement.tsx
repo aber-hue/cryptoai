@@ -974,7 +974,7 @@ export default function DataManagement() {
                         typeof window !== "undefined"
                           ? `${window.location.pathname}${window.location.search}`
                           : `${location.split("?")[0]}`;
-                      setLocation(`/coin/${token.symbol.toLowerCase()}?from=${encodeURIComponent(currentMarketUrl)}`);
+                      setLocation(`/coin/${token.raw.tokenId}?from=${encodeURIComponent(currentMarketUrl)}`);
                     }}
                   >
                     <td className="px-3 py-3 align-top">{token.rank}</td>
