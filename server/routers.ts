@@ -514,10 +514,18 @@ export const appRouter = router({
           symbol: z.string().trim().min(1),
           exchangeSlug: z.string().trim().min(1),
           timeframe: z.enum(["1h", "4h", "12h", "1d"]).optional(),
+          page: z.number().int().min(1).optional(),
+          pageSize: z.number().int().min(10).max(100).optional(),
         })
       )
       .query(async ({ input }) => {
-        return await getExchangeHoldersViewBySymbol(input.symbol, input.exchangeSlug, input.timeframe);
+        return await getExchangeHoldersViewBySymbol(
+          input.symbol,
+          input.exchangeSlug,
+          input.timeframe,
+          input.page,
+          input.pageSize
+        );
       }),
     getFundingView: publicProcedure
       .input(tokenIdentityInput)

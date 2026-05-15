@@ -153,6 +153,14 @@ function getBlockExplorerUrl(chainName: string | null | undefined, address: stri
   return null;
 }
 
+function getExchangeRouteSlug(value: string | null | undefined) {
+  return (value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
 function AssetLogo({
   src,
   alt,
@@ -661,7 +669,10 @@ function formatCompactMoney(value: number) {
 }
 
 function formatFundingRate(value: number) {
-  return `${value.toFixed(3)}%`;
+  const percentValue = value * 100;
+  const abs = Math.abs(percentValue);
+  const fractionDigits = abs >= 1 ? 3 : abs >= 0.01 ? 4 : 5;
+  return `${percentValue.toFixed(fractionDigits)}%`;
 }
 
 function formatPositionAxisLabel(value: string, timeframe: PositionTimeframe) {
@@ -1732,7 +1743,7 @@ export default function CoinDetail() {
                               <td className="px-3 py-4 text-right">
                                 <button
                                   className="font-medium text-[#101828] hover:text-[#0f66d8]"
-                                  onClick={() => setLocation(`/depth/${row.exchangeId}/${normalizedId}?tab=depth&depthRange=${depthRange}&depthMarket=${depthMarketType}`)}
+                                  onClick={() => setLocation(`/depth/${getExchangeRouteSlug(row.exchange)}/${normalizedId}?tab=depth&depthRange=${depthRange}&depthMarket=${depthMarketType}`)}
                                 >
                                   查看深度
                                 </button>
@@ -2383,7 +2394,7 @@ export default function CoinDetail() {
                             <td className="px-3 py-4 text-right">
                               <button
                                 className="font-medium text-[#101828] hover:text-[#0f66d8]"
-                                onClick={() => setLocation(`/positions/${row.exchangeId}/${normalizedId}`)}
+                                onClick={() => setLocation(`/positions/${getExchangeRouteSlug(row.exchange)}/${normalizedId}`)}
                               >
                                 查看
                               </button>

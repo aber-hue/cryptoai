@@ -219,7 +219,7 @@ export default function ExchangeDepth() {
                 ) : latestFirstDepthRows.length === 0 ? (
                   <tr>
                     <td colSpan={5} className="px-4 py-10 text-center text-sm text-muted-foreground">
-                      当前交易所暂无日级深度数据
+                      数据库无相关数据
                     </td>
                   </tr>
                 ) : (

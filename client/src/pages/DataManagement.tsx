@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { Input } from "@/components/ui/input";
 import { exchangeOptions, type MarketType } from "@/features/crypto-ai/market-data";
 import {
@@ -137,13 +138,28 @@ function getExchangeDisplayName(value: string) {
 
 function getExchangeMarketBadge(rawType: string | null | undefined) {
   const normalized = (rawType ?? "").trim().toLowerCase();
-  if (normalized === "perps") return "perps";
-  if (normalized === "spot") return "spot";
-  if (normalized === "alpha") return "alpha";
-  if (normalized === "boost") return "boost";
-  if (normalized === "xlaunch") return "xlaunch";
-  if (normalized === "tradfi") return "tradfi";
-  return normalized || "spot";
+  if (normalized === "perps") return "Perps";
+  if (normalized === "spot") return "Spot";
+  if (normalized === "alpha") return "Alpha";
+  if (normalized === "boost") return "Boost";
+  if (normalized === "xlaunch") return "XLaunch";
+  if (normalized === "tradfi") return "TradFi";
+  return normalized || "Spot";
+}
+
+function getExchangeChipLabel(exchange: {
+  displayName: string;
+  rawType?: string | null;
+}) {
+  const badge = getExchangeMarketBadge(exchange.rawType);
+  if ((exchange.rawType ?? "").trim().toLowerCase() === "perps") {
+    return `${exchange.displayName} ${badge}`;
+  }
+  return exchange.displayName;
+}
+
+function getExchangeCompactLabel(rawType: string | null | undefined) {
+  return getExchangeMarketBadge(rawType);
 }
 
 function AssetLogo({
@@ -247,6 +263,7 @@ function ExchangeSummaryList({
     displayName: string;
     logoUrl?: string | null;
     rawType?: string | null;
+    listingTime?: string | null;
   }>;
 }) {
   if (items.length === 0) {
@@ -254,25 +271,56 @@ function ExchangeSummaryList({
   }
 
   return (
-    <div className="grid grid-cols-2 gap-x-2 gap-y-1.5">
-      {items.map(exchange => (
-        <div
-          key={`${exchange.name}-${exchange.rawType ?? "market"}`}
-          className="flex min-w-0 items-center gap-1.5 rounded-lg bg-[oklch(var(--crypto-panel-soft))] px-2 py-1.5"
-          title={exchange.displayName}
-        >
-          <AssetLogo
-            src={exchange.logoUrl}
-            alt={exchange.displayName}
-            fallback={exchange.displayName.slice(0, 1).toUpperCase()}
-            className="h-4 w-4 shrink-0"
-          />
-          <span className="truncate text-[11px] font-medium uppercase tracking-[0.08em] text-[oklch(var(--crypto-ink))]">
-            {getExchangeMarketBadge(exchange.rawType)}
-          </span>
+    <HoverCard openDelay={120} closeDelay={80}>
+      <HoverCardTrigger asChild>
+        <div className="grid cursor-default grid-cols-2 gap-x-2 gap-y-1.5">
+          {items.map(exchange => (
+            <div
+              key={`${exchange.name}-${exchange.rawType ?? "market"}-${exchange.listingTime ?? "na"}`}
+              className="flex min-w-0 items-center gap-1.5 rounded-lg bg-[oklch(var(--crypto-panel-soft))] px-2 py-1.5"
+              title={getExchangeChipLabel(exchange)}
+            >
+              <AssetLogo
+                src={exchange.logoUrl}
+                alt={exchange.displayName}
+                fallback={exchange.displayName.slice(0, 1).toUpperCase()}
+                className="h-4 w-4 shrink-0"
+              />
+              <span className="truncate text-[11px] font-medium text-[oklch(var(--crypto-ink))]">
+                {getExchangeCompactLabel(exchange.rawType)}
+              </span>
+            </div>
+          ))}
         </div>
-      ))}
-    </div>
+      </HoverCardTrigger>
+      <HoverCardContent align="start" className="w-[320px] border border-[#d8e0eb] bg-white/98 p-3 shadow-[0_18px_40px_rgba(15,23,42,0.14)]">
+        <div className="text-[12px] font-semibold text-[oklch(var(--crypto-ink))]">上线交易所</div>
+        <div className="mt-1 text-[11px] text-muted-foreground">按上线时间倒序，时间展示为 UTC+8，精确到分钟</div>
+        <div className="mt-3 space-y-2">
+          {items.map(exchange => (
+            <div
+              key={`${exchange.name}-${exchange.rawType ?? "market"}-${exchange.listingTime ?? "na"}-tooltip`}
+              className="flex items-center justify-between gap-3 rounded-lg bg-[#f8fafc] px-3 py-2"
+            >
+              <div className="flex min-w-0 items-center gap-2">
+                <AssetLogo
+                  src={exchange.logoUrl}
+                  alt={exchange.displayName}
+                  fallback={exchange.displayName.slice(0, 1).toUpperCase()}
+                  className="h-5 w-5 shrink-0"
+                />
+                <span className="truncate text-[12px] font-medium text-[oklch(var(--crypto-ink))]">
+                  {getExchangeChipLabel(exchange)}
+                </span>
+              </div>
+              <span className="shrink-0 font-mono text-[11px] text-[#475467]">
+                {formatDateTime(exchange.listingTime ?? null)}
+              </span>
+            </div>
+          ))}
+        </div>
+      </HoverCardContent>
+    </HoverCard>
   );
 }
 
@@ -458,7 +506,19 @@ export default function DataManagement() {
           logoUrl: exchange.exchangeLogoUrl,
           type: exchange.marketType === "perps" ? "perps" : "spot",
           rawType: exchange.marketType,
-        })),
+          listingTime: exchange.listingTime ?? null,
+        })).sort((
+          left: {
+            listingTime?: string | null;
+          },
+          right: {
+            listingTime?: string | null;
+          }
+        ) => {
+          const leftTime = parseUtcDateLike(left.listingTime)?.getTime() ?? 0;
+          const rightTime = parseUtcDateLike(right.listingTime)?.getTime() ?? 0;
+          return rightTime - leftTime;
+        }),
         recentVenue: token.recentVenue ?? "—",
         logoTone: "bg-[linear-gradient(135deg,#dbeafe,#bfdbfe)] text-[#1d4ed8]",
         watched: watchlistSymbolSet.has(token.symbol.trim().toUpperCase()),

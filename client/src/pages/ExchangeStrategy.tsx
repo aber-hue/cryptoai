@@ -4,7 +4,7 @@ import type { PositionTimeframe } from "@/features/crypto-ai/market-data";
 import { trpc } from "@/lib/trpc";
 import { parseUtcDateLike, SHANGHAI_TIME_ZONE } from "@/lib/time";
 import { cn } from "@/lib/utils";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ArrowLeft } from "lucide-react";
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Link, useParams } from "wouter";
@@ -25,7 +25,10 @@ function formatCompactPrice(value: number | null) {
 
 function formatFundingRate(value: number | null) {
   if (value == null || Number.isNaN(value)) return "—";
-  return `${value.toFixed(3)}%`;
+  const percentValue = value * 100;
+  const abs = Math.abs(percentValue);
+  const fractionDigits = abs >= 1 ? 3 : abs >= 0.01 ? 4 : 5;
+  return `${percentValue.toFixed(fractionDigits)}%`;
 }
 
 function parseValidDate(value: string | null | undefined) {
@@ -98,24 +101,27 @@ export default function ExchangeStrategy() {
   const normalizedSymbol = (coinId ?? "").toUpperCase();
   const exchangeSlug = (exchangeId ?? "").toLowerCase();
   const [timeframe, setTimeframe] = useState<PositionTimeframe>("1d");
+  const [detailPage, setDetailPage] = useState(1);
+  const detailPageSize = 20;
+
+  useEffect(() => {
+    setDetailPage(1);
+  }, [timeframe, normalizedSymbol, exchangeSlug]);
 
   const tokenProfileQuery = trpc.token.getProfile.useQuery(
     { symbol: normalizedSymbol },
     { enabled: Boolean(normalizedSymbol) }
   );
   const exchangeHoldersQuery = trpc.token.getExchangeHoldersView.useQuery(
-    { symbol: normalizedSymbol, exchangeSlug, timeframe },
+    { symbol: normalizedSymbol, exchangeSlug, timeframe, page: detailPage, pageSize: detailPageSize },
     { enabled: Boolean(normalizedSymbol && exchangeSlug) }
   );
 
   const tokenProfile = tokenProfileQuery.data;
   const detail = exchangeHoldersQuery.data;
   const series = detail?.series ?? [];
-  const latestFirstRows = [...series].sort(
-    (left, right) =>
-      (parseValidDate(right.snapshotDate)?.getTime() ?? 0) -
-      (parseValidDate(left.snapshotDate)?.getTime() ?? 0)
-  );
+  const latestFirstRows = detail?.rows ?? [];
+  const totalPages = detail ? Math.max(1, Math.ceil(detail.total / detail.pageSize)) : 1;
   const chartData = series.map(point => ({
     label: formatSeriesLabel(point.snapshotDate),
     openInterest: point.openInterest ?? 0,
@@ -256,15 +262,21 @@ export default function ExchangeStrategy() {
 
       <Card className="rounded-[28px] border border-white/70 bg-white/78 shadow-[0_16px_40px_rgba(83,102,138,0.08)]">
         <CardContent className="p-6">
-          <div className="mb-5">
-            <h2 className="section-title text-[oklch(var(--crypto-ink))]">日度持仓明细</h2>
-            <div className="mt-2 text-muted-foreground">按时间倒序展示该交易所每日未平仓量和资金费率</div>
+          <div className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <h2 className="section-title text-[oklch(var(--crypto-ink))]">持仓明细</h2>
+              <div className="mt-2 text-muted-foreground">按时间倒序展示该交易所的历史未平仓量和资金费率，可分页查看全量数据</div>
+            </div>
+            <div className="text-sm text-muted-foreground">
+              {detail ? `第 ${detail.page} / ${totalPages} 页，共 ${detail.total} 条` : "—"}
+            </div>
           </div>
 
           <div className="overflow-x-auto">
             <table className="min-w-full text-sm">
               <thead className="border-b border-[#d8e0eb] text-left text-[15px] font-semibold text-[#344054]">
                 <tr>
+                  <th className="px-4 py-4">#</th>
                   <th className="px-4 py-4">日期</th>
                   <th className="px-4 py-4">未平仓量</th>
                   <th className="px-4 py-4 text-right">资金费率</th>
@@ -273,20 +285,23 @@ export default function ExchangeStrategy() {
               <tbody>
                 {exchangeHoldersQuery.isLoading ? (
                   <tr>
-                    <td colSpan={3} className="px-4 py-10 text-center text-sm text-muted-foreground">
+                    <td colSpan={4} className="px-4 py-10 text-center text-sm text-muted-foreground">
                       正在加载正式明细数据...
                     </td>
                   </tr>
                 ) : null}
                 {!exchangeHoldersQuery.isLoading && latestFirstRows.length === 0 ? (
                   <tr>
-                    <td colSpan={3} className="px-4 py-10 text-center text-sm text-muted-foreground">
+                    <td colSpan={4} className="px-4 py-10 text-center text-sm text-muted-foreground">
                       当前交易所暂无日度持仓明细
                     </td>
                   </tr>
                 ) : null}
-                {latestFirstRows.map(row => (
+                {latestFirstRows.map((row, index) => (
                   <tr key={row.snapshotDate} className="border-b border-[#e7edf4] hover:bg-[#f8fafc]">
+                    <td className="px-4 py-4 text-muted-foreground">
+                      {((detail?.page ?? 1) - 1) * (detail?.pageSize ?? detailPageSize) + index + 1}
+                    </td>
                     <td className="px-4 py-4 font-medium text-[oklch(var(--crypto-ink))]">
                       {formatListingDateTime(row.snapshotDate)}
                     </td>
@@ -305,6 +320,25 @@ export default function ExchangeStrategy() {
                 ))}
               </tbody>
             </table>
+          </div>
+
+          <div className="mt-4 flex items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setDetailPage(current => Math.max(1, current - 1))}
+              disabled={detailPage <= 1 || exchangeHoldersQuery.isLoading}
+              className="rounded-full border border-[#d8e0eb] bg-white px-4 py-2 text-sm font-medium text-[#344054] transition hover:border-[#b8c7da] disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              上一页
+            </button>
+            <button
+              type="button"
+              onClick={() => setDetailPage(current => Math.min(totalPages, current + 1))}
+              disabled={exchangeHoldersQuery.isLoading || !detail || detailPage >= totalPages}
+              className="rounded-full border border-[#d8e0eb] bg-white px-4 py-2 text-sm font-medium text-[#344054] transition hover:border-[#b8c7da] disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              下一页
+            </button>
           </div>
         </CardContent>
       </Card>

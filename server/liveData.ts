@@ -177,6 +177,7 @@ type MarketTokenRow = {
     exchangeName: string;
     exchangeLogoUrl: string | null;
     marketType: string | null;
+    listingTime: string | null;
   }>;
 };
 
@@ -461,6 +462,14 @@ type ExchangeHoldersViewResult = {
     openInterest: number | null;
     fundingRate: number | null;
   }>;
+  rows: Array<{
+    snapshotDate: string;
+    openInterest: number | null;
+    fundingRate: number | null;
+  }>;
+  total: number;
+  page: number;
+  pageSize: number;
 };
 
 type OnchainFundFlowResult = {
@@ -1011,6 +1020,42 @@ function parseDbUtcDate(value: string | Date | null | undefined) {
 
   const date = new Date(normalized);
   return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function buildUtcBucketExpression(
+  column: string,
+  timeframe: "1h" | "4h" | "12h" | "1d"
+) {
+  const localTs = `DATE_ADD(${column}, INTERVAL 8 HOUR)`;
+
+  if (timeframe === "1h") {
+    return `DATE_FORMAT(${column}, '%Y-%m-%d %H:00:00')`;
+  }
+
+  if (timeframe === "4h") {
+    return `DATE_FORMAT(
+      DATE_SUB(
+        DATE(${localTs}) + INTERVAL FLOOR(HOUR(${localTs}) / 4) * 4 HOUR,
+        INTERVAL 8 HOUR
+      ),
+      '%Y-%m-%d %H:00:00'
+    )`;
+  }
+
+  if (timeframe === "12h") {
+    return `DATE_FORMAT(
+      DATE_SUB(
+        DATE(${localTs}) + INTERVAL FLOOR(HOUR(${localTs}) / 12) * 12 HOUR,
+        INTERVAL 8 HOUR
+      ),
+      '%Y-%m-%d %H:00:00'
+    )`;
+  }
+
+  return `DATE_FORMAT(
+    DATE_SUB(DATE(${localTs}), INTERVAL 8 HOUR),
+    '%Y-%m-%d %H:00:00'
+  )`;
 }
 
 function toShanghaiDateKey(value: string) {
@@ -1799,17 +1844,28 @@ export async function listMarketTokens(input: MarketListInput) {
   if (tokenIds.length > 0) {
     const placeholders = tokenIds.map(() => "?").join(", ");
     const exchangeSql = `
-      SELECT DISTINCT
-        el.token_id AS tokenId,
-        ep.id AS exchangeId,
-        ep.name AS exchangeName,
-        ep.logo_url AS exchangeLogoUrl,
-        ep.market_type AS marketType
-      FROM exchange_listings el
-      JOIN exchange_platforms ep ON ep.id = el.exchange_id
-      WHERE el.token_id IN (${placeholders})
-        AND ep.market_type NOT IN ('tradfi', 'onchain')
-      ORDER BY el.token_id, ep.id
+      SELECT
+        listing_rows.tokenId AS tokenId,
+        listing_rows.exchangeId AS exchangeId,
+        listing_rows.exchangeName AS exchangeName,
+        listing_rows.exchangeLogoUrl AS exchangeLogoUrl,
+        listing_rows.marketType AS marketType,
+        listing_rows.listingTime AS listingTime
+      FROM (
+        SELECT
+          el.token_id AS tokenId,
+          ep.id AS exchangeId,
+          ep.name AS exchangeName,
+          ep.logo_url AS exchangeLogoUrl,
+          ep.market_type AS marketType,
+          MAX(el.listing_time) AS listingTime
+        FROM exchange_listings el
+        JOIN exchange_platforms ep ON ep.id = el.exchange_id
+        WHERE el.token_id IN (${placeholders})
+          AND ep.market_type NOT IN ('tradfi', 'onchain')
+        GROUP BY el.token_id, ep.id, ep.name, ep.logo_url, ep.market_type
+      ) listing_rows
+      ORDER BY listing_rows.tokenId, listing_rows.listingTime DESC, listing_rows.exchangeId ASC
     `;
 
     const [exchangeRows] = await currentPool.query<
@@ -1819,6 +1875,7 @@ export async function listMarketTokens(input: MarketListInput) {
         exchangeName: string;
         exchangeLogoUrl: string | null;
         marketType: string | null;
+        listingTime: string | null;
       })[]
     >(exchangeSql, tokenIds);
 
@@ -1829,6 +1886,7 @@ export async function listMarketTokens(input: MarketListInput) {
         exchangeName: row.exchangeName,
         exchangeLogoUrl: row.exchangeLogoUrl,
         marketType: row.marketType,
+        listingTime: row.listingTime,
       });
       map.set(row.tokenId, current);
       return map;
@@ -2038,6 +2096,12 @@ export async function getTokenProfileBySymbol(
 ): Promise<TokenProfileResult | null> {
   if (tokenId != null) {
     const profile = await getTokenProfileByTokenId(tokenId);
+    if (profile) return profile;
+  }
+
+  const normalizedSymbol = symbol.trim();
+  if (/^\d+$/.test(normalizedSymbol)) {
+    const profile = await getTokenProfileByTokenId(Number(normalizedSymbol));
     if (profile) return profile;
   }
 
@@ -3543,6 +3607,16 @@ export async function getExchangeDepthViewBySymbol(
 
   if (!profile) return null;
 
+  const normalizedExchangeSlug = exchangeSlug.trim().toLowerCase();
+  if (!normalizedExchangeSlug) return null;
+  const shouldLookupExchangeById = /^\d+$/.test(normalizedExchangeSlug);
+  const exchangeLookupCondition = shouldLookupExchangeById
+    ? "ep.id = ?"
+    : "LOWER(REPLACE(ep.name, ' ', '-')) = ?";
+  const exchangeLookupParam = shouldLookupExchangeById
+    ? Number(normalizedExchangeSlug)
+    : normalizedExchangeSlug;
+
   const [exchangeRows] = await currentPool.query<
     (RowDataPacket & {
       exchangeId: number;
@@ -3556,10 +3630,10 @@ export async function getExchangeDepthViewBySymbol(
         ep.name AS exchangeName,
         ep.market_type AS marketType
       FROM exchange_platforms ep
-      WHERE LOWER(REPLACE(ep.name, ' ', '-')) = LOWER(?)
+      WHERE ${exchangeLookupCondition}
       LIMIT 1
     `,
-    [exchangeSlug]
+    [exchangeLookupParam]
   );
 
   const exchange = exchangeRows[0];
@@ -3641,14 +3715,7 @@ export async function getTokenHoldersViewBySymbol(
 
   if (!profile) return null;
 
-  const bucketExpression =
-    timeframe === "1h"
-      ? "DATE_FORMAT(DATE_ADD(f.snapshot_ts, INTERVAL 8 HOUR), '%Y-%m-%d %H:00:00')"
-      : timeframe === "4h"
-        ? "DATE_FORMAT(DATE(DATE_ADD(f.snapshot_ts, INTERVAL 8 HOUR)) + INTERVAL FLOOR(HOUR(DATE_ADD(f.snapshot_ts, INTERVAL 8 HOUR)) / 4) * 4 HOUR, '%Y-%m-%d %H:00:00')"
-        : timeframe === "12h"
-          ? "DATE_FORMAT(DATE(DATE_ADD(f.snapshot_ts, INTERVAL 8 HOUR)) + INTERVAL FLOOR(HOUR(DATE_ADD(f.snapshot_ts, INTERVAL 8 HOUR)) / 12) * 12 HOUR, '%Y-%m-%d %H:00:00')"
-          : "DATE_FORMAT(DATE(DATE_ADD(f.snapshot_ts, INTERVAL 8 HOUR)), '%Y-%m-%d 00:00:00')";
+  const bucketExpression = buildUtcBucketExpression("f.snapshot_ts", timeframe);
 
   const lookbackExpression =
     timeframe === "1h"
@@ -3738,7 +3805,9 @@ export async function getTokenHoldersViewBySymbol(
 export async function getExchangeHoldersViewBySymbol(
   symbol: string,
   exchangeSlug: string,
-  timeframe: "1h" | "4h" | "12h" | "1d" = "1d"
+  timeframe: "1h" | "4h" | "12h" | "1d" = "1d",
+  page = 1,
+  pageSize = 20
 ): Promise<ExchangeHoldersViewResult | null> {
   const currentPool = getPool();
   const profile = await getTokenProfileBySymbol(symbol);
@@ -3747,6 +3816,13 @@ export async function getExchangeHoldersViewBySymbol(
 
   const normalizedExchangeSlug = exchangeSlug.trim().toLowerCase();
   if (!normalizedExchangeSlug) return null;
+  const shouldLookupExchangeById = /^\d+$/.test(normalizedExchangeSlug);
+  const exchangeLookupCondition = shouldLookupExchangeById
+    ? "ep.id = ?"
+    : "LOWER(REPLACE(ep.name, ' ', '-')) = ?";
+  const exchangeLookupParam = shouldLookupExchangeById
+    ? Number(normalizedExchangeSlug)
+    : normalizedExchangeSlug;
 
   const [exchangeRows] = await currentPool.query<
     (RowDataPacket & {
@@ -3771,25 +3847,18 @@ export async function getExchangeHoldersViewBySymbol(
       FROM exchange_pairs p
       JOIN exchange_platforms ep ON ep.id = p.exchange_id
       WHERE p.token_id = ?
-        AND LOWER(REPLACE(ep.name, ' ', '-')) = ?
+        AND ${exchangeLookupCondition}
         AND ep.market_type = 'perps'
       ORDER BY COALESCE(p.open_interest, 0) DESC, COALESCE(p.volume_24h, 0) DESC, p.id DESC
       LIMIT 1
     `,
-    [profile.tokenId, normalizedExchangeSlug]
+    [profile.tokenId, exchangeLookupParam]
   );
 
   const exchange = exchangeRows[0];
   if (!exchange) return null;
 
-  const bucketExpression =
-    timeframe === "1h"
-      ? "DATE_FORMAT(DATE_ADD(f.snapshot_ts, INTERVAL 8 HOUR), '%Y-%m-%d %H:00:00')"
-      : timeframe === "4h"
-        ? "DATE_FORMAT(DATE(DATE_ADD(f.snapshot_ts, INTERVAL 8 HOUR)) + INTERVAL FLOOR(HOUR(DATE_ADD(f.snapshot_ts, INTERVAL 8 HOUR)) / 4) * 4 HOUR, '%Y-%m-%d %H:00:00')"
-        : timeframe === "12h"
-          ? "DATE_FORMAT(DATE(DATE_ADD(f.snapshot_ts, INTERVAL 8 HOUR)) + INTERVAL FLOOR(HOUR(DATE_ADD(f.snapshot_ts, INTERVAL 8 HOUR)) / 12) * 12 HOUR, '%Y-%m-%d %H:00:00')"
-          : "DATE_FORMAT(DATE(DATE_ADD(f.snapshot_ts, INTERVAL 8 HOUR)), '%Y-%m-%d 00:00:00')";
+  const bucketExpression = buildUtcBucketExpression("f.snapshot_ts", timeframe);
 
   const lookbackExpression =
     timeframe === "1h"
@@ -3800,6 +3869,31 @@ export async function getExchangeHoldersViewBySymbol(
           ? "DATE_SUB(UTC_TIMESTAMP(), INTERVAL 30 DAY)"
           : "DATE_SUB(UTC_TIMESTAMP(), INTERVAL 180 DAY)";
 
+  const normalizedPage = Math.max(1, page);
+  const normalizedPageSize = Math.min(Math.max(pageSize, 10), 100);
+  const offset = (normalizedPage - 1) * normalizedPageSize;
+  const recentAggregateSubquery = `
+    SELECT
+      ${bucketExpression} AS snapshotDate,
+      AVG(f.open_interest) AS openInterest,
+      AVG(f.funding_rate) AS fundingRate
+    FROM funding_rate_daily f
+    WHERE f.token_id = ?
+      AND f.exchange_id = ?
+      AND f.snapshot_ts >= ${lookbackExpression}
+    GROUP BY ${bucketExpression}
+  `;
+  const fullAggregateSubquery = `
+    SELECT
+      ${bucketExpression} AS snapshotDate,
+      AVG(f.open_interest) AS openInterest,
+      AVG(f.funding_rate) AS fundingRate
+    FROM funding_rate_daily f
+    WHERE f.token_id = ?
+      AND f.exchange_id = ?
+    GROUP BY ${bucketExpression}
+  `;
+
   const [seriesRows] = await currentPool.query<
     (RowDataPacket & {
       snapshotDate: string;
@@ -3809,18 +3903,43 @@ export async function getExchangeHoldersViewBySymbol(
   >(
     `
       SELECT
-        ${bucketExpression} AS snapshotDate,
-        AVG(f.open_interest) AS openInterest,
-        AVG(f.funding_rate) AS fundingRate
-      FROM funding_rate_daily f
-      WHERE f.token_id = ?
-        AND f.exchange_id = ?
-        AND f.snapshot_ts >= ${lookbackExpression}
-      GROUP BY ${bucketExpression}
+        snapshotDate,
+        openInterest,
+        fundingRate
+      FROM (${recentAggregateSubquery}) history
       ORDER BY snapshotDate DESC
       LIMIT 60
     `,
     [profile.tokenId, exchange.exchangeId]
+  );
+
+  const [countRows] = await currentPool.query<(RowDataPacket & { total: number })[]>(
+    `
+      SELECT COUNT(*) AS total
+      FROM (${fullAggregateSubquery}) history
+    `,
+    [profile.tokenId, exchange.exchangeId]
+  );
+
+  const total = Number(countRows[0]?.total ?? 0);
+
+  const [pageRows] = await currentPool.query<
+    (RowDataPacket & {
+      snapshotDate: string;
+      openInterest: number | null;
+      fundingRate: number | null;
+    })[]
+  >(
+    `
+      SELECT
+        snapshotDate,
+        openInterest,
+        fundingRate
+      FROM (${fullAggregateSubquery}) history
+      ORDER BY snapshotDate DESC
+      LIMIT ? OFFSET ?
+    `,
+    [profile.tokenId, exchange.exchangeId, normalizedPageSize, offset]
   );
 
   const latestSeriesDate = seriesRows
@@ -3850,6 +3969,14 @@ export async function getExchangeHoldersViewBySymbol(
           (parseDbUtcDate(left.snapshotDate)?.getTime() ?? 0) -
           (parseDbUtcDate(right.snapshotDate)?.getTime() ?? 0)
       ),
+    rows: pageRows.map(row => ({
+      snapshotDate: row.snapshotDate,
+      openInterest: toNullableNumber(row.openInterest),
+      fundingRate: toNullableNumber(row.fundingRate),
+    })),
+    total,
+    page: normalizedPage,
+    pageSize: normalizedPageSize,
   };
 }
 
