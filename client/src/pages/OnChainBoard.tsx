@@ -734,6 +734,17 @@ function formatShanghaiDateTime(value: string | null) {
   }).format(date);
 }
 
+function formatUsdRangeBound(value: number | null, side: "low" | "high") {
+  if (value == null) return "—";
+  if (value === -1) return side === "low" ? "≈0" : "∞";
+  return compactNumber(value, value >= 1 ? 4 : 8);
+}
+
+function formatUsdPriceRange(low: number | null, high: number | null) {
+  if (low == null && high == null) return "—";
+  return `${formatUsdRangeBound(low, "low")} - ${formatUsdRangeBound(high, "high")}`;
+}
+
 function buildFlowGraph(symbol: string) {
   const rng = createSeededRandom(symbol.split("").reduce((sum, char) => sum + char.charCodeAt(0), 0) + 97);
   const layerCounts = [1, 5, 30, 100, 200];
@@ -1364,8 +1375,8 @@ const FundFlowCanvas = memo(function FundFlowCanvas({
     <div className="rounded-[24px] border border-[#E2E8F0] bg-[#FCFDFF] p-4">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div>
-          <div className="text-sm font-semibold text-[#0F172A]">0 地址起始的四层分发路径</div>
-          <div className="mt-1 text-xs text-[#64748B]">点击节点可展开 / 收起下游子树</div>
+          <div className="text-sm font-semibold text-[#0F172A]">0 地址起始的七层分发路径</div>
+          <div className="mt-1 text-xs text-[#64748B]">点击地址后的加减号可展开 / 收起下游子树</div>
         </div>
         <div className="text-sm text-[#64748B]">当前可见地址 {visibleNodes.length} · 当前可见边 {visibleLinks.length}</div>
       </div>
@@ -1472,6 +1483,20 @@ const FundFlowCanvas = memo(function FundFlowCanvas({
                     >
                       {formattedAddress}
                     </text>
+                    {node.outgoingCount > 0 ? (
+                      <g
+                        onClick={event => {
+                          event.stopPropagation();
+                          onToggleCollapse(node.id);
+                        }}
+                        style={{ cursor: "pointer" }}
+                      >
+                        <rect x={x + width - 22} y={y + 26} width={16} height={16} rx={8} ry={8} fill="#FFFFFF" opacity={0.95} />
+                        <text x={x + width - 14} y={y + 37} textAnchor="middle" fill="#1E40AF" fontSize="11" fontWeight="700">
+                          {isCollapsed ? "+" : "-"}
+                        </text>
+                      </g>
+                    ) : null}
                     <text x={x + 12} y={y + 58} fill={darkText ? "#334155" : "#E2E8F0"} fontSize="8.8">
                       {metricText}
                     </text>
@@ -1503,20 +1528,6 @@ const FundFlowCanvas = memo(function FundFlowCanvas({
                     </text>
                   </>
                 )}
-                {node.outgoingCount > 0 ? (
-                  <g
-                    onClick={event => {
-                      event.stopPropagation();
-                      onToggleCollapse(node.id);
-                    }}
-                    style={{ cursor: "pointer" }}
-                  >
-                    <rect x={x + width - 9} y={y + height / 2 - 9} width={18} height={18} rx={9} ry={9} fill="#FFFFFF" opacity={0.95} />
-                    <text x={x + width - 3} y={y + height / 2 + 4} fill="#1E40AF" fontSize="12" fontWeight="700">
-                      {isCollapsed ? "+" : "-"}
-                    </text>
-                  </g>
-                ) : null}
               </g>
             );
           })}
@@ -2318,7 +2329,7 @@ export default function OnChainBoard() {
       symbol: selectedSymbol,
       tokenId: selectedTokenId ?? undefined,
       chainId: selectedChainId,
-      depth: 4,
+      depth: 7,
       limitPerLayer: 36,
     },
     {
@@ -2334,7 +2345,7 @@ export default function OnChainBoard() {
       tokenId: selectedTokenId ?? undefined,
       chainId: selectedChainId,
       page: holderPage,
-      pageSize: 20,
+      pageSize: 100,
     },
     {
       enabled: activeView === "holders",
@@ -2445,8 +2456,12 @@ export default function OnChainBoard() {
       }));
     }
 
+    if (onchainTokensQuery.isLoading) {
+      return [];
+    }
+
     return fallbackOnchainTokenOptions.filter(item => item.chainId === selectedChainId);
-  }, [onchainTokensQuery.data?.items, selectedChainId]);
+  }, [onchainTokensQuery.data?.items, onchainTokensQuery.isLoading, selectedChainId]);
 
   useEffect(() => {
     if (typeof document === "undefined") return undefined;
@@ -2667,6 +2682,9 @@ export default function OnChainBoard() {
           { layer: 2, title: "第二层", count: 0, totalAmount: 0 },
           { layer: 3, title: "第三层", count: 0, totalAmount: 0 },
           { layer: 4, title: "第四层", count: 0, totalAmount: 0 },
+          { layer: 5, title: "第五层", count: 0, totalAmount: 0 },
+          { layer: 6, title: "第六层", count: 0, totalAmount: 0 },
+          { layer: 7, title: "第七层", count: 0, totalAmount: 0 },
         ],
         totalAmount: 0,
       };
@@ -3126,26 +3144,40 @@ export default function OnChainBoard() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filteredTokenList.map(token => (
-                  <TableRow
-                    key={`${token.chainId ?? "na"}-${token.tokenId}`}
-                    role="button"
-                    tabIndex={0}
-                    className="cursor-pointer transition hover:bg-[#F8FAFC] focus-visible:bg-[#EFF6FF] focus-visible:outline-none"
-                    onClick={() => handleSelectToken(token)}
-                    onKeyDown={event => {
-                      if (event.key === "Enter" || event.key === " ") {
-                        event.preventDefault();
-                        handleSelectToken(token);
-                      }
-                    }}
-                  >
-                    <TableCell className="font-semibold text-[#0F172A]">{token.symbol}</TableCell>
-                    <TableCell className="text-[#475569]">{token.name}</TableCell>
-                    <TableCell className="text-right">{token.transferCount.toLocaleString()}</TableCell>
-                    <TableCell className="text-right">{token.holderCount.toLocaleString()}</TableCell>
+                {onchainTokensQuery.isLoading && filteredTokenList.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={4} className="h-28 text-center text-sm text-[#64748B]">
+                      正在加载代币列表...
+                    </TableCell>
                   </TableRow>
-                ))}
+                ) : filteredTokenList.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={4} className="h-28 text-center text-sm text-[#64748B]">
+                      暂无代币数据
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  filteredTokenList.map(token => (
+                    <TableRow
+                      key={`${token.chainId ?? "na"}-${token.tokenId}`}
+                      role="button"
+                      tabIndex={0}
+                      className="cursor-pointer transition hover:bg-[#F8FAFC] focus-visible:bg-[#EFF6FF] focus-visible:outline-none"
+                      onClick={() => handleSelectToken(token)}
+                      onKeyDown={event => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          handleSelectToken(token);
+                        }
+                      }}
+                    >
+                      <TableCell className="font-semibold text-[#0F172A]">{token.symbol}</TableCell>
+                      <TableCell className="text-[#475569]">{token.name}</TableCell>
+                      <TableCell className="text-right">{token.transferCount.toLocaleString()}</TableCell>
+                      <TableCell className="text-right">{token.holderCount.toLocaleString()}</TableCell>
+                    </TableRow>
+                  ))
+                )}
               </TableBody>
             </Table>
           </div>
@@ -3405,6 +3437,14 @@ export default function OnChainBoard() {
       ) : null}
 
       {activeTrack === "token-analysis" && isTokenDetailOpen && activeView === "holders" ? (
+        (() => {
+          const holderItemsWithCumulative =
+            holdersQuery.data?.items.map((item, index, items) => ({
+              ...item,
+              cumulativeRatio: items.slice(0, index + 1).reduce((sum, current) => sum + (current.ratioOfSupply ?? 0), 0),
+            })) ?? [];
+
+          return (
         <div className="space-y-6">
           <div className="grid gap-3 md:grid-cols-5">
             <Card className="rounded-[18px] border border-white/80 bg-white/90 shadow-[0_10px_24px_rgba(71,85,105,0.08)]">
@@ -3461,33 +3501,7 @@ export default function OnChainBoard() {
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
               <div>
                 <div className="text-lg font-semibold text-[#0F172A]">Holder 列表</div>
-                <div className="mt-1 text-sm text-[#64748B]">展示当前币种最近一期快照中的地址余额、标签和变化信息</div>
-              </div>
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="secondary"
-                  className="h-10 rounded-full"
-                  disabled={holderPage <= 1 || holdersQuery.isLoading}
-                  onClick={() => setHolderPage(current => Math.max(1, current - 1))}
-                >
-                  上一页
-                </Button>
-                <Button
-                  variant="secondary"
-                  className="h-10 rounded-full"
-                  disabled={
-                    holdersQuery.isLoading ||
-                    !holdersQuery.data ||
-                    holderPage >= Math.max(1, Math.ceil(holdersQuery.data.total / holdersQuery.data.pageSize))
-                  }
-                  onClick={() =>
-                    setHolderPage(current =>
-                      holdersQuery.data ? Math.min(Math.ceil(holdersQuery.data.total / holdersQuery.data.pageSize), current + 1) : current
-                    )
-                  }
-                >
-                  下一页
-                </Button>
+                <div className="mt-1 text-sm text-[#64748B]">展示当前币种最近一期快照中的地址余额、占总代币供应量比例、标签和变化信息</div>
               </div>
             </div>
 
@@ -3504,51 +3518,90 @@ export default function OnChainBoard() {
                 当前币种暂无 Holder 快照数据
               </div>
             ) : (
-              <div className="overflow-hidden rounded-[20px] border border-[#E2E8F0] bg-white">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>#</TableHead>
-                      <TableHead>地址</TableHead>
-                      <TableHead>标签</TableHead>
-                      <TableHead>类型</TableHead>
-                      <TableHead className="text-right">余额</TableHead>
-                      <TableHead className="text-right">24h 变化</TableHead>
-                      <TableHead className="text-right">7d 变化</TableHead>
-                      <TableHead className="text-center">新地址</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {holdersQuery.data.items.map((item, index) => (
-                      <TableRow key={`${item.address}-${index}`}>
-                        <TableCell>{(((holdersQuery.data?.page ?? 1) - 1) * (holdersQuery.data?.pageSize ?? 20) + index + 1).toLocaleString()}</TableCell>
-                        <TableCell>
-                          <button
-                            type="button"
-                            className="font-mono text-sm text-[#1D4ED8] underline"
-                            onClick={() => window.open(formatBscScanAddress(item.address, selectedChainId), "_blank", "noopener,noreferrer")}
-                          >
-                            {formatAddressDisplay(item.address)}
-                          </button>
-                        </TableCell>
-                        <TableCell>{item.label}</TableCell>
-                        <TableCell>{item.kind}</TableCell>
-                        <TableCell className="text-right">{item.balance != null ? compactNumber(item.balance) : "—"}</TableCell>
-                        <TableCell className={cn("text-right", item.balanceChange24h != null && item.balanceChange24h >= 0 ? "text-[#2563EB]" : "text-[#F59E0B]")}>
-                          {item.balanceChange24h != null ? `${item.balanceChange24h >= 0 ? "+" : ""}${compactNumber(item.balanceChange24h)}` : "—"}
-                        </TableCell>
-                        <TableCell className={cn("text-right", item.balanceChange7d != null && item.balanceChange7d >= 0 ? "text-[#2563EB]" : "text-[#F59E0B]")}>
-                          {item.balanceChange7d != null ? `${item.balanceChange7d >= 0 ? "+" : ""}${compactNumber(item.balanceChange7d)}` : "—"}
-                        </TableCell>
-                        <TableCell className="text-center">{item.isNew ? "是" : "—"}</TableCell>
+              <>
+                <div className="overflow-hidden rounded-[20px] border border-[#E2E8F0] bg-white">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>#</TableHead>
+                        <TableHead>地址</TableHead>
+                        <TableHead>标签</TableHead>
+                        <TableHead>类型</TableHead>
+                        <TableHead className="text-right">余额</TableHead>
+                        <TableHead className="text-right">占比</TableHead>
+                        <TableHead className="text-right">累积占比</TableHead>
+                        <TableHead className="text-right">24h 变化</TableHead>
+                        <TableHead className="text-right">7d 变化</TableHead>
+                        <TableHead className="text-center">新地址</TableHead>
                       </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
+                    </TableHeader>
+                    <TableBody>
+                      {holderItemsWithCumulative.map((item, index) => (
+                        <TableRow key={`${item.address}-${index}`}>
+                          <TableCell>{(((holdersQuery.data?.page ?? 1) - 1) * (holdersQuery.data?.pageSize ?? 100) + index + 1).toLocaleString()}</TableCell>
+                          <TableCell>
+                            <button
+                              type="button"
+                              className="font-mono text-sm text-[#1D4ED8] underline"
+                              onClick={() => window.open(formatBscScanAddress(item.address, selectedChainId), "_blank", "noopener,noreferrer")}
+                            >
+                              {formatAddressDisplay(item.address)}
+                            </button>
+                          </TableCell>
+                          <TableCell>{item.label}</TableCell>
+                          <TableCell>{item.kind}</TableCell>
+                          <TableCell className="text-right">{item.balance != null ? compactNumber(item.balance) : "—"}</TableCell>
+                          <TableCell className="text-right">{item.ratioOfSupply != null ? `${item.ratioOfSupply.toFixed(item.ratioOfSupply >= 1 ? 2 : 4)}%` : "—"}</TableCell>
+                          <TableCell className="text-right">{`${item.cumulativeRatio.toFixed(item.cumulativeRatio >= 1 ? 2 : 4)}%`}</TableCell>
+                          <TableCell className={cn("text-right", item.balanceChange24h != null && item.balanceChange24h >= 0 ? "text-[#2563EB]" : "text-[#F59E0B]")}>
+                            {item.balanceChange24h != null ? `${item.balanceChange24h >= 0 ? "+" : ""}${compactNumber(item.balanceChange24h)}` : "—"}
+                          </TableCell>
+                          <TableCell className={cn("text-right", item.balanceChange7d != null && item.balanceChange7d >= 0 ? "text-[#2563EB]" : "text-[#F59E0B]")}>
+                            {item.balanceChange7d != null ? `${item.balanceChange7d >= 0 ? "+" : ""}${compactNumber(item.balanceChange7d)}` : "—"}
+                          </TableCell>
+                          <TableCell className="text-center">{item.isNew ? "是" : "—"}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+                <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+                  <div className="text-sm text-[#64748B]">
+                    {holdersQuery.data ? `第 ${holdersQuery.data.page} / ${Math.max(1, Math.ceil(holdersQuery.data.total / holdersQuery.data.pageSize))} 页，每页 ${holdersQuery.data.pageSize} 条` : "—"}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="secondary"
+                      className="h-10 rounded-full"
+                      disabled={holderPage <= 1 || holdersQuery.isLoading}
+                      onClick={() => setHolderPage(current => Math.max(1, current - 1))}
+                    >
+                      上一页
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      className="h-10 rounded-full"
+                      disabled={
+                        holdersQuery.isLoading ||
+                        !holdersQuery.data ||
+                        holderPage >= Math.max(1, Math.ceil(holdersQuery.data.total / holdersQuery.data.pageSize))
+                      }
+                      onClick={() =>
+                        setHolderPage(current =>
+                          holdersQuery.data ? Math.min(Math.ceil(holdersQuery.data.total / holdersQuery.data.pageSize), current + 1) : current
+                        )
+                      }
+                    >
+                      下一页
+                    </Button>
+                  </div>
+                </div>
+              </>
             )}
           </div>
         </div>
+          );
+        })()
       ) : null}
 
       {activeTrack === "token-analysis" && isTokenDetailOpen && activeView === "cex-flows" ? (
@@ -3966,6 +4019,7 @@ export default function OnChainBoard() {
                       <TableHead className="text-right">本币数量</TableHead>
                       <TableHead className="text-right">配对币数量</TableHead>
                       <TableHead className="text-right">价格</TableHead>
+                      <TableHead className="text-right">价格区间（U）</TableHead>
                       <TableHead className="text-right">近似价值</TableHead>
                       <TableHead>交易 Hash</TableHead>
                     </TableRow>
@@ -4003,6 +4057,7 @@ export default function OnChainBoard() {
                         <TableCell className="text-right">{item.tokenAmount != null ? compactNumber(item.tokenAmount) : "—"}</TableCell>
                         <TableCell className="text-right">{item.quoteTokenAmount != null ? compactNumber(item.quoteTokenAmount) : "—"}</TableCell>
                         <TableCell className="text-right">{item.price != null ? compactNumber(item.price, 6) : "—"}</TableCell>
+                        <TableCell className="text-right">{formatUsdPriceRange(item.rangeLow ?? null, item.rangeHigh ?? null)}</TableCell>
                         <TableCell className="text-right">{item.value != null ? `$${compactNumber(item.value)}` : "—"}</TableCell>
                         <TableCell className="whitespace-nowrap">
                           {item.txhash ? (

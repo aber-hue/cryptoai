@@ -540,6 +540,7 @@ type OnchainHolderListResult = {
   tokenAddressId: number | null;
   tokenAddress: string | null;
   snapshotDate: string | null;
+  totalSupply: number | null;
   total: number;
   page: number;
   pageSize: number;
@@ -549,6 +550,7 @@ type OnchainHolderListResult = {
     kind: string;
     isContract: boolean;
     balance: number | null;
+    ratioOfSupply: number | null;
     rank: number | null;
     balanceChange24h: number | null;
     balanceChange7d: number | null;
@@ -660,6 +662,8 @@ type OnchainPoolAddsResult = {
     quoteTokenAmount: number | null;
     value: number | null;
     price: number | null;
+    rangeLow: number | null;
+    rangeHigh: number | null;
     parseSource: string | null;
     parseReason: string | null;
     chainId: number | null;
@@ -1054,43 +1058,6 @@ function buildUtcBucketExpression(
 
   return `DATE_FORMAT(
     DATE_SUB(DATE(${localTs}), INTERVAL 8 HOUR),
-    '%Y-%m-%d %H:00:00'
-  )`;
-}
-
-function buildUtcBucketExpressionFromShanghaiStored(
-  column: string,
-  timeframe: "1h" | "4h" | "12h" | "1d"
-) {
-  if (timeframe === "1h") {
-    return `DATE_FORMAT(
-      DATE_SUB(${column}, INTERVAL 8 HOUR),
-      '%Y-%m-%d %H:00:00'
-    )`;
-  }
-
-  if (timeframe === "4h") {
-    return `DATE_FORMAT(
-      DATE_SUB(
-        DATE(${column}) + INTERVAL FLOOR(HOUR(${column}) / 4) * 4 HOUR,
-        INTERVAL 8 HOUR
-      ),
-      '%Y-%m-%d %H:00:00'
-    )`;
-  }
-
-  if (timeframe === "12h") {
-    return `DATE_FORMAT(
-      DATE_SUB(
-        DATE(${column}) + INTERVAL FLOOR(HOUR(${column}) / 12) * 12 HOUR,
-        INTERVAL 8 HOUR
-      ),
-      '%Y-%m-%d %H:00:00'
-    )`;
-  }
-
-  return `DATE_FORMAT(
-    DATE_SUB(DATE(${column}), INTERVAL 8 HOUR),
     '%Y-%m-%d %H:00:00'
   )`;
 }
@@ -3548,7 +3515,7 @@ export async function getTokenDepthTrendBySymbol(
 
   const safeDays = Math.min(Math.max(days, 7), 365);
   const depthDailyBucketExpression = `DATE_FORMAT(
-    DATE_SUB(DATE(snapshot_ts), INTERVAL 8 HOUR),
+    DATE(snapshot_ts),
     '%Y-%m-%d %H:%i:%s'
   )`;
 
@@ -3568,10 +3535,7 @@ export async function getTokenDepthTrendBySymbol(
         SUM(p.volume_24h) AS totalVolume24h,
         SUM(p.depth_buy_2) AS totalDepthBuy2,
         SUM(p.depth_sell_2) AS totalDepthSell2,
-        DATE_FORMAT(
-          DATE_SUB(MAX(p.updated_at), INTERVAL 8 HOUR),
-          '%Y-%m-%d %H:%i:%s'
-        ) AS latestSnapshotTs
+        DATE_FORMAT(MAX(p.updated_at), '%Y-%m-%d %H:%i:%s') AS latestSnapshotTs
       FROM exchange_pairs p
       JOIN exchange_platforms ep ON ep.id = p.exchange_id
       WHERE p.token_id = ?
@@ -3683,7 +3647,7 @@ export async function getExchangeDepthViewBySymbol(
   const exchange = exchangeRows[0];
   if (!exchange) return null;
 
-  const bucketExpression = buildUtcBucketExpressionFromShanghaiStored("s.snapshot_ts", timeframe);
+  const bucketExpression = buildUtcBucketExpression("s.snapshot_ts", timeframe);
 
   const lookbackExpression =
     timeframe === "1h"
@@ -4336,7 +4300,7 @@ export async function getOnchainFundFlowBySymbol(
 
   if (!dataset || !context) return null;
 
-  const depth = Math.min(Math.max(options?.depth ?? 3, 1), 4);
+  const depth = Math.min(Math.max(options?.depth ?? 3, 1), 7);
   const limitPerLayer = Math.min(Math.max(options?.limitPerLayer ?? 36, 5), 120);
   const date = options?.date?.trim();
   const { resolvedTokenId, dedupedTokenAddresses } = context;
@@ -4577,7 +4541,7 @@ export async function getOnchainFundFlowBySymbol(
   });
 
   let frontier = [rootAddress];
-  const layerTitles = ["0 地址", "第一层", "第二层", "第三层", "第四层"];
+  const layerTitles = ["0 地址", "第一层", "第二层", "第三层", "第四层", "第五层", "第六层", "第七层"];
 
   for (let layer = 1; layer <= depth; layer += 1) {
     const layerIncoming = new Map<string, number>();
@@ -5167,16 +5131,18 @@ export async function getOnchainHoldersBySymbol(
   if (!dataset || !context) return null;
 
   const page = Math.max(options?.page ?? 1, 1);
-  const pageSize = Math.min(Math.max(options?.pageSize ?? 20, 10), 500);
+  const pageSize = Math.min(Math.max(options?.pageSize ?? 100, 10), 500);
   const offset = (page - 1) * pageSize;
   const date = options?.date?.trim();
-  const { resolvedTokenId, dedupedTokenAddresses } = context;
+  const { profile, resolvedTokenId, dedupedTokenAddresses } = context;
+  const totalSupply = profile?.totalSupply != null && Number.isFinite(profile.totalSupply) ? profile.totalSupply : null;
   if (dedupedTokenAddresses.length === 0) {
     return {
       tokenId: resolvedTokenId,
       tokenAddressId: null,
       tokenAddress: null,
       snapshotDate: null,
+      totalSupply,
       total: 0,
       page,
       pageSize,
@@ -5241,6 +5207,7 @@ export async function getOnchainHoldersBySymbol(
       tokenAddressId: chosenAddress.tokenAddressId,
       tokenAddress: chosenAddress.address,
       snapshotDate: null,
+      totalSupply,
       total: 0,
       page,
       pageSize,
@@ -5341,12 +5308,14 @@ export async function getOnchainHoldersBySymbol(
     tokenAddressId: chosenAddress.tokenAddressId,
     tokenAddress: chosenAddress.address,
     snapshotDate,
+    totalSupply,
     total,
     page,
     pageSize,
     items: holderRows.map(row => {
       const address = String((row as { holderAddress?: string }).holderAddress ?? "").toLowerCase();
       const meta = walletMeta.get(address);
+      const balance = toNullableNumber((row as { balance?: string | number | null }).balance);
       return {
         address,
         label: meta?.label ?? "普通地址",
@@ -5357,7 +5326,8 @@ export async function getOnchainHoldersBySymbol(
               ? "合约地址"
               : "普通地址",
         isContract: Boolean(meta?.isContract),
-        balance: toNullableNumber((row as { balance?: string | number | null }).balance),
+        balance,
+        ratioOfSupply: balance != null && totalSupply && totalSupply > 0 ? (balance / totalSupply) * 100 : null,
         rank: toNullableNumber((row as { balanceRank?: number | string | null }).balanceRank),
         balanceChange24h: toNullableNumber((row as { balanceChange24h?: number | string | null }).balanceChange24h),
         balanceChange7d: toNullableNumber((row as { balanceChange7d?: number | string | null }).balanceChange7d),
@@ -6713,6 +6683,8 @@ export async function getOnchainPoolAddsBySymbol(
       SAFE_CAST(action.quote_token_amount AS NUMERIC) AS quoteTokenAmount,
       SAFE_CAST(action.value AS NUMERIC) AS value,
       SAFE_CAST(action.price AS NUMERIC) AS price,
+      SAFE_CAST(action.range_low AS NUMERIC) AS rangeLow,
+      SAFE_CAST(action.range_high AS NUMERIC) AS rangeHigh,
       action.parse_source AS parseSource,
       action.parse_reason AS parseReason,
       action.chain_id AS chainId
@@ -6785,6 +6757,8 @@ export async function getOnchainPoolAddsBySymbol(
       const quoteTokenAmount = toNullableNumber((row as { quoteTokenAmount?: string | number | null }).quoteTokenAmount);
       const value = toNullableNumber((row as { value?: string | number | null }).value);
       const price = toNullableNumber((row as { price?: string | number | null }).price);
+      const rangeLow = toNullableNumber((row as { rangeLow?: string | number | null }).rangeLow);
+      const rangeHigh = toNullableNumber((row as { rangeHigh?: string | number | null }).rangeHigh);
       const rawBlockTime = (row as { blockTime?: { value?: string } | string | null }).blockTime;
       const blockTime = typeof rawBlockTime === "string" ? rawBlockTime : rawBlockTime?.value ?? null;
       const rawStartedTime = (row as { startedTime?: { value?: string } | string | null }).startedTime;
@@ -6837,6 +6811,8 @@ export async function getOnchainPoolAddsBySymbol(
         quoteTokenAmount,
         value,
         price,
+        rangeLow,
+        rangeHigh,
         parseSource: typeof (row as { parseSource?: string | null }).parseSource === "string" ? String((row as { parseSource?: string | null }).parseSource) : null,
         parseReason: typeof (row as { parseReason?: string | null }).parseReason === "string" ? String((row as { parseReason?: string | null }).parseReason) : null,
         chainId: toNullableNumber((row as { chainId?: string | number | null }).chainId),
@@ -6901,6 +6877,8 @@ export async function getOnchainPoolAddsByPoolId(
       SAFE_CAST(action.quote_token_amount AS NUMERIC) AS quoteTokenAmount,
       SAFE_CAST(action.value AS NUMERIC) AS value,
       SAFE_CAST(action.price AS NUMERIC) AS price,
+      SAFE_CAST(action.range_low AS NUMERIC) AS rangeLow,
+      SAFE_CAST(action.range_high AS NUMERIC) AS rangeHigh,
       action.parse_source AS parseSource,
       action.parse_reason AS parseReason,
       action.chain_id AS chainId
@@ -6979,6 +6957,8 @@ export async function getOnchainPoolAddsByPoolId(
       const quoteTokenAmount = toNullableNumber((row as { quoteTokenAmount?: string | number | null }).quoteTokenAmount);
       const value = toNullableNumber((row as { value?: string | number | null }).value);
       const price = toNullableNumber((row as { price?: string | number | null }).price);
+      const rangeLow = toNullableNumber((row as { rangeLow?: string | number | null }).rangeLow);
+      const rangeHigh = toNullableNumber((row as { rangeHigh?: string | number | null }).rangeHigh);
       const rawBlockTime = (row as { blockTime?: { value?: string } | string | null }).blockTime;
       const blockTime = typeof rawBlockTime === "string" ? rawBlockTime : rawBlockTime?.value ?? null;
       const rawStartedTime = (row as { startedTime?: { value?: string } | string | null }).startedTime;
@@ -7023,6 +7003,8 @@ export async function getOnchainPoolAddsByPoolId(
         quoteTokenAmount,
         value,
         price,
+        rangeLow,
+        rangeHigh,
         parseSource:
           typeof (row as { parseSource?: string | null }).parseSource === "string"
             ? String((row as { parseSource?: string | null }).parseSource)

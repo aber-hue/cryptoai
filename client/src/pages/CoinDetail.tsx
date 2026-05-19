@@ -360,6 +360,20 @@ function formatListingMetric(value: number | null) {
   return `$${value.toFixed(4)}`;
 }
 
+function formatActivityDilutionRatio(rewardAmount: number | null, totalSupply: number | null | undefined) {
+  if (
+    rewardAmount == null ||
+    Number.isNaN(rewardAmount) ||
+    totalSupply == null ||
+    Number.isNaN(totalSupply) ||
+    totalSupply <= 0
+  ) {
+    return "—";
+  }
+
+  return `${((rewardAmount / totalSupply) * 100).toFixed(4)}%`;
+}
+
 function formatChartShortDate(value: string | null) {
   const parts = getFormatterParts(value, {
     year: "2-digit",
@@ -1036,7 +1050,8 @@ export default function CoinDetail() {
         pricePost15m: item.pricePost15m,
         changePost15m: item.changePost15m,
         activityType: item.activityType,
-        dilutionRatio: item.dilutionRatio,
+        dilutionRatio: formatActivityDilutionRatio(item.rewardAmount, tokenProfile?.totalSupply),
+        rewardAmount: item.rewardAmount,
         description: item.description,
         participationThreshold: item.participationThreshold,
         operationSteps: item.operationSteps,
@@ -1058,6 +1073,7 @@ export default function CoinDetail() {
         changePost15m: null,
         activityType: null,
         dilutionRatio: null,
+        rewardAmount: null,
         description: null,
         participationThreshold: null,
         operationSteps: null,

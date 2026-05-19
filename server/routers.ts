@@ -582,7 +582,7 @@ export const appRouter = router({
           tokenId: z.number().int().optional(),
           chainId: z.number().int().optional(),
           date: z.string().trim().optional(),
-          depth: z.number().int().min(1).max(4).optional(),
+          depth: z.number().int().min(1).max(7).optional(),
           limitPerLayer: z.number().int().min(5).max(120).optional(),
         })
       )
