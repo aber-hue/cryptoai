@@ -1058,6 +1058,43 @@ function buildUtcBucketExpression(
   )`;
 }
 
+function buildUtcBucketExpressionFromShanghaiStored(
+  column: string,
+  timeframe: "1h" | "4h" | "12h" | "1d"
+) {
+  if (timeframe === "1h") {
+    return `DATE_FORMAT(
+      DATE_SUB(${column}, INTERVAL 8 HOUR),
+      '%Y-%m-%d %H:00:00'
+    )`;
+  }
+
+  if (timeframe === "4h") {
+    return `DATE_FORMAT(
+      DATE_SUB(
+        DATE(${column}) + INTERVAL FLOOR(HOUR(${column}) / 4) * 4 HOUR,
+        INTERVAL 8 HOUR
+      ),
+      '%Y-%m-%d %H:00:00'
+    )`;
+  }
+
+  if (timeframe === "12h") {
+    return `DATE_FORMAT(
+      DATE_SUB(
+        DATE(${column}) + INTERVAL FLOOR(HOUR(${column}) / 12) * 12 HOUR,
+        INTERVAL 8 HOUR
+      ),
+      '%Y-%m-%d %H:00:00'
+    )`;
+  }
+
+  return `DATE_FORMAT(
+    DATE_SUB(DATE(${column}), INTERVAL 8 HOUR),
+    '%Y-%m-%d %H:00:00'
+  )`;
+}
+
 function toShanghaiDateKey(value: string) {
   const date = parseDbUtcDate(value);
   if (!date) return value.slice(0, 10);
@@ -2699,7 +2736,7 @@ export async function getTokenUnlockViewBySymbol(
   rows.forEach(row => {
     const normalizedCategory = normalizeUnlockCategory(row.recipientCategory);
     const amount = row.unlockAmount ?? 0;
-    const dateKey = toShanghaiDateKey(row.unlockDate);
+    const dateKey = row.unlockDate;
 
     categoryTotals.set(normalizedCategory, (categoryTotals.get(normalizedCategory) ?? 0) + amount);
 
@@ -3527,7 +3564,10 @@ export async function getTokenDepthTrendBySymbol(
         SUM(p.volume_24h) AS totalVolume24h,
         SUM(p.depth_buy_2) AS totalDepthBuy2,
         SUM(p.depth_sell_2) AS totalDepthSell2,
-        MAX(p.updated_at) AS latestSnapshotTs
+        DATE_FORMAT(
+          DATE_SUB(MAX(p.updated_at), INTERVAL 8 HOUR),
+          '%Y-%m-%d %H:%i:%s'
+        ) AS latestSnapshotTs
       FROM exchange_pairs p
       JOIN exchange_platforms ep ON ep.id = p.exchange_id
       WHERE p.token_id = ?
@@ -3550,7 +3590,10 @@ export async function getTokenDepthTrendBySymbol(
         SELECT *
         FROM (
           SELECT
-            DATE(snapshot_ts) AS snapshotDate,
+            DATE_FORMAT(
+              DATE_SUB(DATE(snapshot_ts), INTERVAL 8 HOUR),
+              '%Y-%m-%d %H:%i:%s'
+            ) AS snapshotDate,
             SUM(bid_amt) AS totalDepthBuy2,
             SUM(ask_amt) AS totalDepthSell2
           FROM token_trade_depth_daily
@@ -3566,7 +3609,10 @@ export async function getTokenDepthTrendBySymbol(
       ) daily_points
       LEFT JOIN (
         SELECT
-          DATE(snapshot_ts) AS snapshotDate,
+          DATE_FORMAT(
+            DATE_SUB(DATE(snapshot_ts), INTERVAL 8 HOUR),
+            '%Y-%m-%d %H:%i:%s'
+          ) AS snapshotDate,
           SUM(volume_24h) AS totalVolume
         FROM token_trade_depth_snapshot
         JOIN exchange_platforms ep ON ep.id = token_trade_depth_snapshot.exchange_id
@@ -3639,14 +3685,7 @@ export async function getExchangeDepthViewBySymbol(
   const exchange = exchangeRows[0];
   if (!exchange) return null;
 
-  const bucketExpression =
-    timeframe === "1h"
-      ? "DATE_FORMAT(DATE_ADD(s.snapshot_ts, INTERVAL 8 HOUR), '%Y-%m-%d %H:00:00')"
-      : timeframe === "4h"
-        ? "DATE_FORMAT(DATE(DATE_ADD(s.snapshot_ts, INTERVAL 8 HOUR)) + INTERVAL FLOOR(HOUR(DATE_ADD(s.snapshot_ts, INTERVAL 8 HOUR)) / 4) * 4 HOUR, '%Y-%m-%d %H:00:00')"
-        : timeframe === "12h"
-          ? "DATE_FORMAT(DATE(DATE_ADD(s.snapshot_ts, INTERVAL 8 HOUR)) + INTERVAL FLOOR(HOUR(DATE_ADD(s.snapshot_ts, INTERVAL 8 HOUR)) / 12) * 12 HOUR, '%Y-%m-%d %H:00:00')"
-          : "DATE_FORMAT(DATE(DATE_ADD(s.snapshot_ts, INTERVAL 8 HOUR)), '%Y-%m-%d 00:00:00')";
+  const bucketExpression = buildUtcBucketExpressionFromShanghaiStored("s.snapshot_ts", timeframe);
 
   const lookbackExpression =
     timeframe === "1h"
