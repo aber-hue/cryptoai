@@ -292,6 +292,38 @@ function formatPlainNumber(value: number | null) {
   return `${value}`;
 }
 
+async function copyText(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+
+  try {
+    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(trimmed);
+      return true;
+    }
+  } catch {
+    // Fall through to the legacy copy path below.
+  }
+
+  if (typeof document === "undefined") return false;
+
+  const textarea = document.createElement("textarea");
+  textarea.value = trimmed;
+  textarea.setAttribute("readonly", "true");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  textarea.style.pointerEvents = "none";
+  document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.select();
+
+  try {
+    return document.execCommand("copy");
+  } finally {
+    document.body.removeChild(textarea);
+  }
+}
+
 function formatListingDateTime(value: string | null) {
   return formatInShanghai(value, {
     year: "numeric",
@@ -1429,9 +1461,13 @@ export default function CoinDetail() {
                       )}
                       <button
                         type="button"
-                        onClick={async () => {
-                          await navigator.clipboard.writeText(primaryAddress.address);
-                          setCopiedAddress(primaryAddress.address);
+                        onClick={async event => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          const copied = await copyText(primaryAddress.address);
+                          if (copied) {
+                            setCopiedAddress(primaryAddress.address);
+                          }
                         }}
                         className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-[#d8e0eb] bg-white px-2 py-1 text-xs text-[#344054] hover:border-[#b8c7da]"
                       >

@@ -3547,6 +3547,10 @@ export async function getTokenDepthTrendBySymbol(
   if (!profile) return null;
 
   const safeDays = Math.min(Math.max(days, 7), 365);
+  const depthDailyBucketExpression = `DATE_FORMAT(
+    DATE_SUB(DATE(snapshot_ts), INTERVAL 8 HOUR),
+    '%Y-%m-%d %H:%i:%s'
+  )`;
 
   const marketCondition =
     marketType === "perps"
@@ -3590,10 +3594,7 @@ export async function getTokenDepthTrendBySymbol(
         SELECT *
         FROM (
           SELECT
-            DATE_FORMAT(
-              DATE_SUB(DATE(snapshot_ts), INTERVAL 8 HOUR),
-              '%Y-%m-%d %H:%i:%s'
-            ) AS snapshotDate,
+            ${depthDailyBucketExpression} AS snapshotDate,
             SUM(bid_amt) AS totalDepthBuy2,
             SUM(ask_amt) AS totalDepthSell2
           FROM token_trade_depth_daily
@@ -3601,25 +3602,22 @@ export async function getTokenDepthTrendBySymbol(
           WHERE token_id = ?
             AND ep.market_type NOT IN ('tradfi', 'onchain')
             ${marketCondition}
-          GROUP BY DATE(snapshot_ts)
-          ORDER BY DATE(snapshot_ts) DESC
+          GROUP BY ${depthDailyBucketExpression}
+          ORDER BY ${depthDailyBucketExpression} DESC
           LIMIT ?
         ) recent_daily
         ORDER BY snapshotDate ASC
       ) daily_points
       LEFT JOIN (
         SELECT
-          DATE_FORMAT(
-            DATE_SUB(DATE(snapshot_ts), INTERVAL 8 HOUR),
-            '%Y-%m-%d %H:%i:%s'
-          ) AS snapshotDate,
+          ${depthDailyBucketExpression} AS snapshotDate,
           SUM(volume_24h) AS totalVolume
         FROM token_trade_depth_snapshot
         JOIN exchange_platforms ep ON ep.id = token_trade_depth_snapshot.exchange_id
         WHERE token_id = ?
           AND ep.market_type NOT IN ('tradfi', 'onchain')
           ${marketCondition}
-        GROUP BY DATE(snapshot_ts)
+        GROUP BY ${depthDailyBucketExpression}
       ) snapshot_volume ON snapshot_volume.snapshotDate = daily_points.snapshotDate
     `,
     [profile.tokenId, safeDays, profile.tokenId]
