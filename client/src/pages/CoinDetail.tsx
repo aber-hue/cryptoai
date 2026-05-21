@@ -279,6 +279,26 @@ function formatUnlockPercent(value: number | null) {
   return `${value.toFixed(4)}%`;
 }
 
+function formatAllocationAmount(value: number | null, symbol: string) {
+  if (value == null || Number.isNaN(value)) return "—";
+  return `${value.toLocaleString(undefined, { maximumFractionDigits: 0 })} ${symbol}`.trim();
+}
+
+function formatAllocationPercentage(value: number | null) {
+  if (value == null || Number.isNaN(value)) return "—";
+  return `${value.toFixed(2)}%`;
+}
+
+function formatAllocationRule(value: string | null | undefined, category: string) {
+  if (!value) return "—";
+
+  const normalized = value
+    .replace(new RegExp(`^${category.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[:：]?\\s*`, "i"), "")
+    .trim();
+
+  return normalized || value;
+}
+
 function toCsvValue(value: string | number | null | undefined) {
   if (value == null) return '""';
   return `"${String(value).replace(/"/g, '""')}"`;
@@ -978,8 +998,19 @@ export default function CoinDetail() {
     tokenProfile?.volume24h != null && tokenProfile?.marketCap
       ? (tokenProfile.volume24h / tokenProfile.marketCap) * 100
       : null;
+  const unlockAllocations = tokenUnlockQuery.data?.allocations ?? [];
   const unlockCategories = tokenUnlockQuery.data?.categories ?? [];
   const unlockRows = tokenUnlockQuery.data?.rows ?? [];
+  const unlockAllocationTotals = useMemo(() => {
+    return unlockAllocations.reduce(
+      (acc, item) => {
+        acc.amount += item.amount ?? 0;
+        acc.percentage += item.percentage ?? 0;
+        return acc;
+      },
+      { amount: 0, percentage: 0 }
+    );
+  }, [unlockAllocations]);
   const canDownloadUnlockCsv = unlockRows.length > 0;
   const downloadUnlockCsv = () => {
     if (!canDownloadUnlockCsv) return;
@@ -2205,89 +2236,172 @@ export default function CoinDetail() {
           )}
 
           {activeTab === "unlock" && (
-            <Card className="rounded-[28px] border border-white/70 bg-white/78 shadow-[0_16px_40px_rgba(83,102,138,0.08)]">
-              <CardContent className="p-6">
-                <div className="mb-5 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-                  <div>
-                    <h2 className="section-title text-[oklch(var(--crypto-ink))]">代币解锁完整表</h2>
-                    <div className="mt-2 text-muted-foreground">按日期汇总类别释放量、月度释放总量与累计占比</div>
+            <div className="space-y-6">
+              <Card className="rounded-[28px] border border-white/70 bg-white/78 shadow-[0_16px_40px_rgba(83,102,138,0.08)]">
+                <CardContent className="p-6">
+                  <div className="mb-5">
+                    <h2 className="section-title text-[oklch(var(--crypto-ink))]">代币分配表</h2>
+                    <div className="mt-2 text-muted-foreground">读取 token_allocation，展示各类别分配、占比与释放说明</div>
                   </div>
-                  {canDownloadUnlockCsv ? (
-                    <button
-                      type="button"
-                      onClick={downloadUnlockCsv}
-                      className="inline-flex items-center gap-2 self-start rounded-full border border-[#d8e0eb] bg-white px-3.5 py-2 text-sm font-medium text-[#344054] transition hover:border-[#b8c7da] hover:text-[#101828]"
-                    >
-                      <Download className="h-4 w-4" />
-                      下载 CSV
-                    </button>
-                  ) : null}
-                </div>
-                {tokenUnlockQuery.isError ? (
-                  <div className="mb-4 rounded-2xl border border-[#fecaca] bg-[#fff1f2] px-4 py-3 text-sm text-[#b42318]">
-                    解锁数据加载失败：{tokenUnlockQuery.error.message}
-                  </div>
-                ) : null}
-                <div className="overflow-x-auto">
-                  <table className="min-w-full text-sm">
-                    <thead className="border-b border-[#d8e0eb] text-left text-[15px] font-semibold text-[#344054]">
-                      <tr>
-                        <th className="px-4 py-4">日期</th>
-                        {unlockCategories.map(category => (
-                          <th key={category.key} className="px-4 py-4">
-                            {category.label} ({category.ratio.toFixed(2)}%)
-                          </th>
-                        ))}
-                        <th className="px-4 py-4">Monthly Total Release</th>
-                        <th className="px-4 py-4">Monthly Release %</th>
-                        <th className="px-4 py-4">Cumulative Release</th>
-                        <th className="px-4 py-4 text-right">Cumulative Release %</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {tokenUnlockQuery.isLoading ? (
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full text-sm">
+                      <thead className="border-b border-[#d8e0eb] text-left text-[15px] font-semibold text-[#344054]">
                         <tr>
-                          <td colSpan={1 + unlockCategories.length + 4} className="px-4 py-10 text-center text-sm text-muted-foreground">
-                            正在加载真实解锁数据...
-                          </td>
+                          <th className="px-4 py-4">类别</th>
+                          <th className="px-4 py-4">数量</th>
+                          <th className="px-4 py-4">占总量</th>
+                          <th className="px-4 py-4">解锁开始时间</th>
+                          <th className="px-4 py-4">释放规则</th>
+                          <th className="px-4 py-4 text-right">来源</th>
                         </tr>
-                      ) : null}
-                      {!tokenUnlockQuery.isLoading && unlockRows.length === 0 ? (
-                        <tr>
-                          <td colSpan={1 + unlockCategories.length + 4} className="px-4 py-10 text-center text-sm text-muted-foreground">
-                            当前币种暂无解锁数据
-                          </td>
-                        </tr>
-                      ) : null}
-                      {unlockRows.map((row, index) => (
-                        <tr key={`${row.unlockDate}-${index}`} className="border-b border-[#e7edf4] hover:bg-[#f8fafc]">
-                          <td className="px-4 py-4 font-medium text-[oklch(var(--crypto-ink))]">
-                            {formatUnlockDate(row.unlockDate)}
-                          </td>
-                          {unlockCategories.map(category => (
-                            <td key={`${row.unlockDate}-${category.key}`} className="px-4 py-4 font-mono text-[oklch(var(--crypto-ink))]">
-                              {formatUnlockAmount(row.categoryValues[category.key] ?? null)}
+                      </thead>
+                      <tbody>
+                        {tokenUnlockQuery.isLoading ? (
+                          <tr>
+                            <td colSpan={6} className="px-4 py-10 text-center text-sm text-muted-foreground">
+                              正在加载分配数据...
                             </td>
+                          </tr>
+                        ) : null}
+                        {!tokenUnlockQuery.isLoading && unlockAllocations.length === 0 ? (
+                          <tr>
+                            <td colSpan={6} className="px-4 py-10 text-center text-sm text-muted-foreground">
+                              当前币种暂无分配数据
+                            </td>
+                          </tr>
+                        ) : null}
+                        {unlockAllocations.map((item, index) => (
+                          <tr key={`${item.category}-${index}`} className="border-b border-[#e7edf4] align-top hover:bg-[#f8fafc]">
+                            <td className="px-4 py-4 font-medium text-[oklch(var(--crypto-ink))]">{item.category}</td>
+                            <td className="px-4 py-4 font-mono text-[oklch(var(--crypto-ink))]">
+                              {formatAllocationAmount(item.amount, token.symbol)}
+                            </td>
+                            <td className="px-4 py-4 font-mono text-[oklch(var(--crypto-ink))]">
+                              {formatAllocationPercentage(item.percentage)}
+                            </td>
+                            <td className="px-4 py-4 text-[oklch(var(--crypto-ink))]">
+                              {item.vestingStartDate ? formatListingDateTime(item.vestingStartDate) : "—"}
+                            </td>
+                            <td className="px-4 py-4 text-[oklch(var(--crypto-ink))]">
+                              <div className="max-w-[520px] whitespace-pre-wrap break-words text-sm leading-6">
+                                {formatAllocationRule(item.sourceText, item.category)}
+                              </div>
+                            </td>
+                            <td className="px-4 py-4 text-right">
+                              {item.sourceUrl ? (
+                                <a href={item.sourceUrl} target="_blank" rel="noreferrer" className="inline-flex items-center text-[#101828] hover:text-[#0f66d8]">
+                                  <ExternalLink className="h-4 w-4" />
+                                </a>
+                              ) : (
+                                <span className="text-muted-foreground">—</span>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                        {unlockAllocations.length > 0 ? (
+                          <tr className="bg-[#f8fafc] font-semibold text-[oklch(var(--crypto-ink))]">
+                            <td className="px-4 py-4">合计</td>
+                            <td className="px-4 py-4 font-mono">
+                              {formatAllocationAmount(unlockAllocationTotals.amount, token.symbol)}
+                            </td>
+                            <td className="px-4 py-4 font-mono">
+                              {formatAllocationPercentage(unlockAllocationTotals.percentage)}
+                            </td>
+                            <td className="px-4 py-4">—</td>
+                            <td className="px-4 py-4">—</td>
+                            <td className="px-4 py-4 text-right">—</td>
+                          </tr>
+                        ) : null}
+                      </tbody>
+                    </table>
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card className="rounded-[28px] border border-white/70 bg-white/78 shadow-[0_16px_40px_rgba(83,102,138,0.08)]">
+                <CardContent className="p-6">
+                  <div className="mb-5 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                    <div>
+                      <h2 className="section-title text-[oklch(var(--crypto-ink))]">代币解锁完整表</h2>
+                      <div className="mt-2 text-muted-foreground">按日期汇总类别释放量、月度释放总量与累计占比</div>
+                    </div>
+                    {canDownloadUnlockCsv ? (
+                      <button
+                        type="button"
+                        onClick={downloadUnlockCsv}
+                        className="inline-flex items-center gap-2 self-start rounded-full border border-[#d8e0eb] bg-white px-3.5 py-2 text-sm font-medium text-[#344054] transition hover:border-[#b8c7da] hover:text-[#101828]"
+                      >
+                        <Download className="h-4 w-4" />
+                        下载 CSV
+                      </button>
+                    ) : null}
+                  </div>
+                  {tokenUnlockQuery.isError ? (
+                    <div className="mb-4 rounded-2xl border border-[#fecaca] bg-[#fff1f2] px-4 py-3 text-sm text-[#b42318]">
+                      解锁数据加载失败：{tokenUnlockQuery.error.message}
+                    </div>
+                  ) : null}
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full text-sm">
+                      <thead className="border-b border-[#d8e0eb] text-left text-[15px] font-semibold text-[#344054]">
+                        <tr>
+                          <th className="px-4 py-4">日期</th>
+                          {unlockCategories.map(category => (
+                            <th key={category.key} className="px-4 py-4">
+                              {category.label} ({category.ratio.toFixed(2)}%)
+                            </th>
                           ))}
-                          <td className="px-4 py-4 font-mono text-[oklch(var(--crypto-ink))]">
-                            {formatUnlockAmount(row.monthlyTotalRelease)}
-                          </td>
-                          <td className="px-4 py-4 font-mono text-[oklch(var(--crypto-ink))]">
-                            {formatUnlockPercent(row.monthlyReleaseRatio)}
-                          </td>
-                          <td className="px-4 py-4 font-mono text-[oklch(var(--crypto-ink))]">
-                            {formatUnlockAmount(row.cumulativeRelease)}
-                          </td>
-                          <td className="px-4 py-4 text-right font-mono text-[oklch(var(--crypto-ink))]">
-                            {formatUnlockPercent(row.cumulativeReleaseRatio)}
-                          </td>
+                          <th className="px-4 py-4">Monthly Total Release</th>
+                          <th className="px-4 py-4">Monthly Release %</th>
+                          <th className="px-4 py-4">Cumulative Release</th>
+                          <th className="px-4 py-4 text-right">Cumulative Release %</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </CardContent>
-            </Card>
+                      </thead>
+                      <tbody>
+                        {tokenUnlockQuery.isLoading ? (
+                          <tr>
+                            <td colSpan={1 + unlockCategories.length + 4} className="px-4 py-10 text-center text-sm text-muted-foreground">
+                              正在加载真实解锁数据...
+                            </td>
+                          </tr>
+                        ) : null}
+                        {!tokenUnlockQuery.isLoading && unlockRows.length === 0 ? (
+                          <tr>
+                            <td colSpan={1 + unlockCategories.length + 4} className="px-4 py-10 text-center text-sm text-muted-foreground">
+                              当前币种暂无解锁数据
+                            </td>
+                          </tr>
+                        ) : null}
+                        {unlockRows.map((row, index) => (
+                          <tr key={`${row.unlockDate}-${index}`} className="border-b border-[#e7edf4] hover:bg-[#f8fafc]">
+                            <td className="px-4 py-4 font-medium text-[oklch(var(--crypto-ink))]">
+                              {formatUnlockDate(row.unlockDate)}
+                            </td>
+                            {unlockCategories.map(category => (
+                              <td key={`${row.unlockDate}-${category.key}`} className="px-4 py-4 font-mono text-[oklch(var(--crypto-ink))]">
+                                {formatUnlockAmount(row.categoryValues[category.key] ?? null)}
+                              </td>
+                            ))}
+                            <td className="px-4 py-4 font-mono text-[oklch(var(--crypto-ink))]">
+                              {formatUnlockAmount(row.monthlyTotalRelease)}
+                            </td>
+                            <td className="px-4 py-4 font-mono text-[oklch(var(--crypto-ink))]">
+                              {formatUnlockPercent(row.monthlyReleaseRatio)}
+                            </td>
+                            <td className="px-4 py-4 font-mono text-[oklch(var(--crypto-ink))]">
+                              {formatUnlockAmount(row.cumulativeRelease)}
+                            </td>
+                            <td className="px-4 py-4 text-right font-mono text-[oklch(var(--crypto-ink))]">
+                              {formatUnlockPercent(row.cumulativeReleaseRatio)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
           )}
 
           {activeTab === "holders" && (

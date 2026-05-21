@@ -221,6 +221,16 @@ type TokenProfileResult = {
 
 type TokenUnlockViewResult = {
   tokenId: number;
+  allocations: Array<{
+    category: string;
+    amount: number | null;
+    percentage: number | null;
+    totalSupply: number | null;
+    vestingStartDate: string | null;
+    rawText: string | null;
+    sourceText: string | null;
+    sourceUrl: string | null;
+  }>;
   categories: Array<{
     key: string;
     label: string;
@@ -2665,13 +2675,23 @@ export async function getTokenUnlockViewBySymbol(
       category: string | null;
       percentage: number | null;
       amount: number | null;
+      totalSupply: number | null;
+      vestingStartDate: string | null;
+      rawText: string | null;
+      sourceText: string | null;
+      sourceUrl: string | null;
     })[]
   >(
     `
       SELECT
         category AS category,
         percentage AS percentage,
-        amount AS amount
+        amount AS amount,
+        total_supply AS totalSupply,
+        vesting_start_date AS vestingStartDate,
+        raw_text AS rawText,
+        source_text AS sourceText,
+        source_url AS sourceUrl
       FROM token_allocation
       WHERE token_id = ?
       ORDER BY id ASC
@@ -2740,6 +2760,16 @@ export async function getTokenUnlockViewBySymbol(
 
   return {
     tokenId: profile.tokenId,
+    allocations: allocationRows.map(row => ({
+      category: row.category?.trim() || "Unknown",
+      amount: row.amount,
+      percentage: row.percentage,
+      totalSupply: row.totalSupply,
+      vestingStartDate: row.vestingStartDate,
+      rawText: row.rawText,
+      sourceText: row.sourceText,
+      sourceUrl: row.sourceUrl,
+    })),
     categories: categoryKeys.map(key => ({
       key,
       label: key,
@@ -4359,22 +4389,23 @@ export async function getOnchainFundFlowBySymbol(
     };
   }
 
-  const transferQuery = `
-    SELECT
-      block_time,
-      from_address,
-      to_address,
-      amount,
-      txhash
+  const rootQuery = `
+    SELECT LOWER(from_address) AS fromAddress
     FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.token_transfer_raw\`
     WHERE LOWER(token_address) = @tokenAddress
     ${options?.chainId ? "AND CAST(chain_id AS INT64) = @chainId" : ""}
     ${date ? "AND DATE(block_time) <= @selectedDate" : ""}
-    ORDER BY block_time ASC, id ASC
-    LIMIT 5000
+    ORDER BY
+      CASE
+        WHEN LOWER(from_address) = '0x0000000000000000000000000000000000000000' THEN 0
+        ELSE 1
+      END,
+      block_time ASC,
+      id ASC
+    LIMIT 1
   `;
-  const [transferRows] = await bigQuery.query({
-    query: transferQuery,
+  const [rootRows] = await bigQuery.query({
+    query: rootQuery,
     params: {
       tokenAddress: chosenAddress.address,
       ...(options?.chainId ? { chainId: options.chainId } : {}),
@@ -4383,14 +4414,204 @@ export async function getOnchainFundFlowBySymbol(
     useLegacySql: false,
   });
 
-  const uniqueAddresses = Array.from(
-    new Set(
-      transferRows.flatMap(row => [
-        String((row as { from_address?: string }).from_address ?? "").toLowerCase(),
-        String((row as { to_address?: string }).to_address ?? "").toLowerCase(),
-      ]).filter(Boolean)
+  const rootAddress =
+    String((rootRows[0] as { fromAddress?: string }).fromAddress ?? "").toLowerCase() ||
+    "0x0000000000000000000000000000000000000000";
+  const disconnectedRootsQuery = `
+    WITH incoming AS (
+      SELECT
+        LOWER(to_address) AS address,
+        SUM(SAFE_CAST(amount AS NUMERIC)) AS totalIn
+      FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.token_transfer_raw\`
+      WHERE LOWER(token_address) = @tokenAddress
+      ${options?.chainId ? "AND CAST(chain_id AS INT64) = @chainId" : ""}
+      ${date ? "AND DATE(block_time) <= @selectedDate" : ""}
+      GROUP BY address
+    ),
+    outgoing AS (
+      SELECT
+        LOWER(from_address) AS address,
+        SUM(SAFE_CAST(amount AS NUMERIC)) AS totalOut
+      FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.token_transfer_raw\`
+      WHERE LOWER(token_address) = @tokenAddress
+      ${options?.chainId ? "AND CAST(chain_id AS INT64) = @chainId" : ""}
+      ${date ? "AND DATE(block_time) <= @selectedDate" : ""}
+      GROUP BY address
     )
+    SELECT
+      outgoing.address,
+      outgoing.totalOut
+    FROM outgoing
+    LEFT JOIN incoming USING (address)
+    WHERE outgoing.address != @zeroAddress
+      AND COALESCE(incoming.totalIn, 0) = 0
+      AND outgoing.totalOut > 0
+    ORDER BY outgoing.totalOut DESC
+    LIMIT 5
+  `;
+  const [disconnectedRootRows] = await bigQuery.query({
+    query: disconnectedRootsQuery,
+    params: {
+      tokenAddress: chosenAddress.address,
+      zeroAddress: "0x0000000000000000000000000000000000000000",
+      ...(options?.chainId ? { chainId: options.chainId } : {}),
+      ...(date ? { selectedDate: date } : {}),
+    },
+    useLegacySql: false,
+  });
+  const rootSeedAddresses = Array.from(
+    new Set([
+      rootAddress,
+      ...disconnectedRootRows
+        .map(row => String((row as { address?: string }).address ?? "").toLowerCase())
+        .filter(Boolean),
+    ])
   );
+  const rootAddressSet = new Set(rootSeedAddresses);
+  const nodeMap = new Map<
+    string,
+    {
+      id: string;
+      layer: number;
+      address: string;
+      label: string;
+      amount: number;
+      currentBalance: number | null;
+      kind: string;
+      outgoingCount: number;
+    }
+  >();
+  const discoveredAddresses = new Set<string>(rootSeedAddresses);
+  const aggregatedLinks = new Map<
+    string,
+    {
+      source: string;
+      target: string;
+      amount: number;
+      time: string | null;
+      txhash: string | null;
+    }
+  >();
+  const outgoingTargetMap = new Map<string, Set<string>>();
+
+  rootSeedAddresses.forEach(address => {
+    nodeMap.set(address, {
+      id: `addr:${address}`,
+      layer: 0,
+      address,
+      label: address === rootAddress ? "0 地址" : "断链来源",
+      amount: 0,
+      currentBalance: null,
+      kind: address === rootAddress ? "铸造源头" : "断链来源",
+      outgoingCount: 0,
+    });
+  });
+
+  let frontier = [...rootSeedAddresses];
+  const layerTitles = ["0 地址", "第一层", "第二层", "第三层", "第四层", "第五层", "第六层", "第七层"];
+
+  for (let layer = 1; layer <= depth; layer += 1) {
+    const layerIncoming = new Map<string, number>();
+    const layerLinks = new Map<
+      string,
+      {
+        source: string;
+        target: string;
+        amount: number;
+        time: string | null;
+        txhash: string | null;
+      }
+    >();
+
+    const layerQuery = `
+      SELECT
+        LOWER(from_address) AS sourceAddress,
+        LOWER(to_address) AS targetAddress,
+        SUM(SAFE_CAST(amount AS NUMERIC)) AS totalAmount,
+        MIN(block_time) AS firstBlockTime,
+        ARRAY_AGG(txhash IGNORE NULLS ORDER BY block_time DESC, id DESC LIMIT 1)[OFFSET(0)] AS sampleTxhash
+      FROM \`${process.env.BIGQUERY_PROJECT_ID}.${dataset}.token_transfer_raw\`
+      WHERE LOWER(token_address) = @tokenAddress
+      ${options?.chainId ? "AND CAST(chain_id AS INT64) = @chainId" : ""}
+      ${date ? "AND DATE(block_time) <= @selectedDate" : ""}
+      AND LOWER(from_address) IN UNNEST(@frontier)
+      GROUP BY sourceAddress, targetAddress
+    `;
+    const [layerRows] = await bigQuery.query({
+      query: layerQuery,
+      params: {
+        tokenAddress: chosenAddress.address,
+        frontier,
+        ...(options?.chainId ? { chainId: options.chainId } : {}),
+        ...(date ? { selectedDate: date } : {}),
+      },
+      useLegacySql: false,
+    });
+
+    layerRows.forEach(row => {
+      const sourceAddress = String((row as { sourceAddress?: string }).sourceAddress ?? "").toLowerCase();
+      const targetAddress = String((row as { targetAddress?: string }).targetAddress ?? "").toLowerCase();
+      const amount = toNullableNumber((row as { totalAmount?: string | number | null }).totalAmount) ?? 0;
+      if (!sourceAddress || !targetAddress || amount <= 0 || rootAddressSet.has(targetAddress)) return;
+
+      const outgoingTargets = outgoingTargetMap.get(sourceAddress) ?? new Set<string>();
+      outgoingTargets.add(targetAddress);
+      outgoingTargetMap.set(sourceAddress, outgoingTargets);
+
+      const key = `${sourceAddress}->${targetAddress}`;
+      layerLinks.set(key, {
+        source: sourceAddress,
+        target: targetAddress,
+        amount,
+        time:
+          typeof (row as { firstBlockTime?: { value?: string } | string | null }).firstBlockTime === "string"
+            ? ((row as { firstBlockTime?: string | null }).firstBlockTime ?? null)
+            : ((row as { firstBlockTime?: { value?: string } | null }).firstBlockTime?.value ?? null),
+        txhash: String((row as { sampleTxhash?: string | null }).sampleTxhash ?? "").trim() || null,
+      });
+      layerIncoming.set(targetAddress, (layerIncoming.get(targetAddress) ?? 0) + amount);
+    });
+
+    const selectedAddresses = Array.from(layerIncoming.entries())
+      .sort((left, right) => right[1] - left[1])
+      .slice(0, limitPerLayer)
+      .map(([address]) => address);
+    const selectedSet = new Set(selectedAddresses);
+
+    Array.from(layerIncoming.entries())
+      .filter(([address]) => selectedSet.has(address))
+      .forEach(([address, amount]) => {
+        if (nodeMap.has(address)) return;
+        discoveredAddresses.add(address);
+        nodeMap.set(address, {
+          id: `addr:${address}`,
+          layer,
+          address,
+          label: "普通地址",
+          amount,
+          currentBalance: null,
+          kind: "普通地址",
+          outgoingCount: 0,
+        });
+      });
+
+    Array.from(layerLinks.values())
+      .filter(link => selectedSet.has(link.target))
+      .forEach(link => {
+        aggregatedLinks.set(`${link.source}->${link.target}`, {
+          source: `addr:${link.source}`,
+          target: `addr:${link.target}`,
+          amount: link.amount,
+          time: link.time,
+          txhash: link.txhash,
+        });
+      });
+
+    frontier = selectedAddresses.filter(address => !nodeMap.has(address) || nodeMap.get(address)?.layer === layer);
+    if (frontier.length === 0) break;
+  }
+
+  const uniqueAddresses = Array.from(discoveredAddresses);
 
   const walletQuery = `
     SELECT
@@ -4470,167 +4691,35 @@ export async function getOnchainFundFlowBySymbol(
     holderBalanceMap.set(address, toNullableNumber((row as { balance?: string | number | null }).balance));
   });
 
-  const normalizedRows = transferRows
-    .map(row => ({
-      time:
-        typeof (row as { block_time?: { value?: string } | string }).block_time === "object"
-          ? ((row as { block_time?: { value?: string } }).block_time?.value ?? null)
-          : String((row as { block_time?: string }).block_time ?? ""),
-      fromAddress: String((row as { from_address?: string }).from_address ?? "").toLowerCase(),
-      toAddress: String((row as { to_address?: string }).to_address ?? "").toLowerCase(),
-      amount: toNullableNumber((row as { amount?: string | number }).amount) ?? 0,
-      txhash: String((row as { txhash?: string }).txhash ?? ""),
-    }))
-    .filter(row => row.amount > 0 && row.fromAddress && row.toAddress);
-
-  if (normalizedRows.length === 0) {
-    return {
-      tokenId: resolvedTokenId,
-      tokenAddressId: chosenAddress.tokenAddressId,
-      totalAmount: 0,
-      nodes: [],
-      links: [],
-      summaries: [],
-    };
-  }
-
-  const rootAddress =
-    normalizedRows.find(row => row.fromAddress === "0x0000000000000000000000000000000000000000")?.fromAddress ??
-    normalizedRows[0]?.fromAddress ??
-    chosenAddress.address;
-  const nodeMap = new Map<
-    string,
-    {
-      id: string;
-      layer: number;
-      address: string;
-      label: string;
-      amount: number;
-      currentBalance: number | null;
-      kind: string;
-      outgoingCount: number;
-    }
-  >();
-  const aggregatedLinks = new Map<
-    string,
-    {
-      source: string;
-      target: string;
-      amount: number;
-      time: string | null;
-      txhash: string | null;
-    }
-  >();
-  const childRowsMap = new Map<string, typeof normalizedRows>();
-
-  normalizedRows.forEach(row => {
-    const current = childRowsMap.get(row.fromAddress) ?? [];
-    current.push(row);
-    childRowsMap.set(row.fromAddress, current);
+  nodeMap.forEach(node => {
+    const meta = walletMeta.get(node.address);
+    node.label =
+      node.layer === 0
+        ? node.address === rootAddress
+          ? "0 地址"
+          : meta?.label ?? "断链来源"
+        : meta?.label ?? "普通地址";
+    node.kind =
+      node.layer === 0
+        ? node.address === rootAddress
+          ? "铸造源头"
+          : "断链来源"
+        : meta?.kind && meta.kind !== "普通地址"
+          ? formatAddressTagLabel(meta.kind)
+          : meta?.isContract
+            ? "合约地址"
+            : "普通地址";
+    node.currentBalance = holderBalanceMap.get(node.address) ?? null;
+    node.outgoingCount = outgoingTargetMap.get(node.address)?.size ?? 0;
   });
 
-  nodeMap.set(rootAddress, {
-    id: `addr:${rootAddress}`,
-    layer: 0,
-    address: rootAddress,
-    label: "0 地址",
-    amount: 0,
-    currentBalance: holderBalanceMap.get(rootAddress) ?? null,
-    kind: "铸造源头",
-    outgoingCount: 0,
+  rootSeedAddresses.forEach(address => {
+    const rootNode = nodeMap.get(address);
+    if (!rootNode) return;
+    rootNode.amount = Array.from(aggregatedLinks.values())
+      .filter(link => link.source === `addr:${address}`)
+      .reduce((sum, link) => sum + link.amount, 0);
   });
-
-  let frontier = [rootAddress];
-  const layerTitles = ["0 地址", "第一层", "第二层", "第三层", "第四层", "第五层", "第六层", "第七层"];
-
-  for (let layer = 1; layer <= depth; layer += 1) {
-    const layerIncoming = new Map<string, number>();
-    const layerLinks = new Map<
-      string,
-      {
-        source: string;
-        target: string;
-        amount: number;
-        time: string | null;
-        txhash: string | null;
-      }
-    >();
-
-    frontier.forEach(sourceAddress => {
-      const sourceRows = childRowsMap.get(sourceAddress) ?? [];
-      sourceRows.forEach(row => {
-        if (row.toAddress === rootAddress) return;
-        const key = `${row.fromAddress}->${row.toAddress}`;
-        const existing = layerLinks.get(key);
-        if (existing) {
-          existing.amount += row.amount;
-        } else {
-          layerLinks.set(key, {
-            source: row.fromAddress,
-            target: row.toAddress,
-            amount: row.amount,
-            time: row.time,
-            txhash: row.txhash,
-          });
-        }
-
-        layerIncoming.set(row.toAddress, (layerIncoming.get(row.toAddress) ?? 0) + row.amount);
-      });
-    });
-
-    const selectedAddresses = Array.from(layerIncoming.entries())
-      .sort((left, right) => right[1] - left[1])
-      .slice(0, limitPerLayer)
-      .map(([address]) => address);
-    const selectedSet = new Set(selectedAddresses);
-
-    Array.from(layerIncoming.entries())
-      .filter(([address]) => selectedSet.has(address))
-      .forEach(([address, amount]) => {
-        if (nodeMap.has(address)) return;
-        const meta = walletMeta.get(address);
-        const outgoingCount = new Set((childRowsMap.get(address) ?? []).map(row => row.toAddress)).size;
-        nodeMap.set(address, {
-          id: `addr:${address}`,
-          layer,
-          address,
-          label: meta?.label ?? "普通地址",
-          amount,
-          currentBalance: holderBalanceMap.get(address) ?? null,
-          kind:
-            meta?.kind && meta.kind !== "普通地址"
-              ? formatAddressTagLabel(meta.kind)
-              : meta?.isContract
-                ? "合约地址"
-                : "普通地址",
-          outgoingCount,
-        });
-      });
-
-    Array.from(layerLinks.values())
-      .filter(link => selectedSet.has(link.target))
-      .forEach(link => {
-        aggregatedLinks.set(`${link.source}->${link.target}`, {
-          source: `addr:${link.source}`,
-          target: `addr:${link.target}`,
-          amount: link.amount,
-          time: link.time,
-          txhash: link.txhash,
-        });
-      });
-
-    frontier = selectedAddresses;
-    if (frontier.length === 0) break;
-  }
-
-  const rootOutgoingAmount = Array.from(aggregatedLinks.values())
-    .filter(link => link.source === `addr:${rootAddress}`)
-    .reduce((sum, link) => sum + link.amount, 0);
-  const rootNode = nodeMap.get(rootAddress);
-  if (rootNode) {
-    rootNode.amount = rootOutgoingAmount;
-    rootNode.outgoingCount = new Set((childRowsMap.get(rootAddress) ?? []).map(row => row.toAddress)).size;
-  }
 
   const nodes = Array.from(nodeMap.values()).sort((left, right) => left.layer - right.layer || right.amount - left.amount);
   const summaries = Array.from({ length: depth + 1 }, (_, layer) => {
@@ -4646,7 +4735,7 @@ export async function getOnchainFundFlowBySymbol(
   return {
     tokenId: resolvedTokenId,
     tokenAddressId: chosenAddress.tokenAddressId,
-    totalAmount: rootOutgoingAmount,
+    totalAmount: nodes.filter(node => node.layer === 0).reduce((sum, node) => sum + node.amount, 0),
     nodes,
     links: Array.from(aggregatedLinks.values()),
     summaries,
@@ -5431,6 +5520,7 @@ export async function getOnchainLargeTransfersBySymbol(
   `;
   const baseParams = {
     tokenAddress: chosenAddress.address,
+    ...(options?.chainId ? { chainId: options.chainId } : {}),
     ...(thresholdAmount != null ? { thresholdAmount } : {}),
     ...(normalizedSearch ? { addressSearch: `%${normalizedSearch}%` } : {}),
   };
