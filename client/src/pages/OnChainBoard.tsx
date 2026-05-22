@@ -1288,24 +1288,32 @@ const FundFlowCanvas = memo(function FundFlowCanvas({
     });
 
     const visibleNodeIds = new Set<string>();
+    const visibleLinkIds = new Set<string>();
     const visibleLinks: FlowLink[] = [];
-    const rootNodeId = graph.nodes.find(node => node.layer === 0)?.id;
+    const rootNodeIds = graph.nodes.filter(node => node.layer === 0).map(node => node.id);
+    const expandedNodeIds = new Set<string>();
+    const stack = [...rootNodeIds];
 
-    const walk = (nodeId: string, visiting = new Set<string>()) => {
-      if (visiting.has(nodeId)) return;
-      const nextVisiting = new Set(visiting);
-      nextVisiting.add(nodeId);
+    while (stack.length > 0) {
+      const nodeId = stack.pop();
+      if (!nodeId) continue;
+      if (expandedNodeIds.has(nodeId)) continue;
+      expandedNodeIds.add(nodeId);
       visibleNodeIds.add(nodeId);
-      if (collapsedNodeIds.has(nodeId)) return;
+      if (collapsedNodeIds.has(nodeId)) continue;
+
       const children = (childrenMap.get(nodeId) ?? []).filter(link => link.amount >= minAmount);
       children.forEach(link => {
-        visibleLinks.push(link);
-        walk(link.target, nextVisiting);
+        const linkId = `${link.source}->${link.target}`;
+        if (!visibleLinkIds.has(linkId)) {
+          visibleLinkIds.add(linkId);
+          visibleLinks.push(link);
+        }
+        visibleNodeIds.add(link.target);
+        if (!expandedNodeIds.has(link.target)) {
+          stack.push(link.target);
+        }
       });
-    };
-
-    if (rootNodeId) {
-      walk(rootNodeId);
     }
 
     const visibleNodes = graph.nodes.filter(node => visibleNodeIds.has(node.id));
@@ -1358,6 +1366,8 @@ const FundFlowCanvas = memo(function FundFlowCanvas({
       nodePositions,
     };
   }, [graph, minAmount, collapsedNodeIds]);
+  const rootLayerCount = nodesByLayer[0]?.length ?? 0;
+  const rootLayerTitle = rootLayerCount > 1 ? "0 地址 + 断链来源的七层分发路径" : "0 地址起始的七层分发路径";
 
   const handleCopyAddress = async (nodeId: string, address: string) => {
     try {
@@ -1375,8 +1385,10 @@ const FundFlowCanvas = memo(function FundFlowCanvas({
     <div className="rounded-[24px] border border-[#E2E8F0] bg-[#FCFDFF] p-4">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div>
-          <div className="text-sm font-semibold text-[#0F172A]">0 地址起始的七层分发路径</div>
-          <div className="mt-1 text-xs text-[#64748B]">点击地址后的加减号可展开 / 收起下游子树</div>
+          <div className="text-sm font-semibold text-[#0F172A]">{rootLayerTitle}</div>
+          <div className="mt-1 text-xs text-[#64748B]">
+            {rootLayerCount > 1 ? "第 0 层包含 1 个真实 0 地址和若干断链来源地址。" : "点击地址后的加减号可展开 / 收起下游子树"}
+          </div>
         </div>
         <div className="text-sm text-[#64748B]">当前可见地址 {visibleNodes.length} · 当前可见边 {visibleLinks.length}</div>
       </div>
@@ -1521,10 +1533,10 @@ const FundFlowCanvas = memo(function FundFlowCanvas({
                 ) : (
                   <>
                     <text x={x + 10} y={y + 17} fill="#FFFFFF" fontSize="9.2" fontWeight="700">
-                      0 地址
+                      {node.label}
                     </text>
                     <text x={x + 10} y={y + 31} fill="#DBEAFE" fontSize="8.5">
-                      {compactNumber(node.amount, 1)} · 100%
+                      {compactNumber(node.amount, 1)} · {ratioText}
                     </text>
                   </>
                 )}
@@ -4276,7 +4288,7 @@ export default function OnChainBoard() {
                   <TableBody>
                     {scopedLargeTransferItems.map(item => (
                       <TableRow key={`${item.txhash}-${item.logIndex ?? "na"}-${item.fromAddress}-${item.toAddress}`}>
-                        <TableCell>{item.blockTime ? item.blockTime.replace("T", " ").slice(0, 19) : "—"}</TableCell>
+                        <TableCell className="whitespace-nowrap">{formatShanghaiDateTime(item.blockTime)}</TableCell>
                         <TableCell>
                           <div className="flex items-center gap-2">
                             <button

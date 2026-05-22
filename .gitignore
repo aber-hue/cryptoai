@@ -6,3 +6,6 @@ dist
 *.log
 coverage
 .pnpm-store
+reports/data-checks
+secrets/
+tmp_*.ts

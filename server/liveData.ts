@@ -4508,7 +4508,16 @@ export async function getOnchainFundFlowBySymbol(
   });
 
   let frontier = [...rootSeedAddresses];
-  const layerTitles = ["0 地址", "第一层", "第二层", "第三层", "第四层", "第五层", "第六层", "第七层"];
+  const layerTitles = [
+    rootSeedAddresses.length > 1 ? "起始层" : "0 地址",
+    "第一层",
+    "第二层",
+    "第三层",
+    "第四层",
+    "第五层",
+    "第六层",
+    "第七层",
+  ];
 
   for (let layer = 1; layer <= depth; layer += 1) {
     const layerIncoming = new Map<string, number>();
