@@ -229,6 +229,7 @@ type OnchainTokenOption = {
   name: string;
   tokenId: number;
   chainId: number | null;
+  listingTime: string | null;
   transferCount: number;
   holderCount: number;
   dexActionCount?: number;
@@ -254,16 +255,16 @@ const ONCHAIN_CHAIN_OPTIONS: OnchainChainOption[] = [
 ];
 
 const fallbackOnchainTokenOptions: OnchainTokenOption[] = [
-  { symbol: "GENIUS", name: "Genius", tokenId: 1522, chainId: 56, transferCount: 65341, holderCount: 4181, dexActionCount: 0 },
-  { symbol: "ST", name: "Sentio", tokenId: 1248, chainId: 56, transferCount: 63339, holderCount: 548, dexActionCount: 0 },
-  { symbol: "BSB", name: "Block Street", tokenId: 787, chainId: 56, transferCount: 36087, holderCount: 1459, dexActionCount: 0 },
-  { symbol: "ARIA", name: "AriaAI", tokenId: 1467, chainId: 56, transferCount: 23041, holderCount: 41278, dexActionCount: 0 },
-  { symbol: "UP", name: "Unitas Labs", tokenId: 1178, chainId: 56, transferCount: 11495, holderCount: 807, dexActionCount: 0 },
-  { symbol: "EDGE", name: "edgeX", tokenId: 794, chainId: 56, transferCount: 0, holderCount: 0, dexActionCount: 1 },
-  { symbol: "PRL", name: "Perle", tokenId: 1244, chainId: 56, transferCount: 0, holderCount: 0, dexActionCount: 1 },
-  { symbol: "R2", name: "R2 Protocol", tokenId: 1295, chainId: 56, transferCount: 0, holderCount: 0, dexActionCount: 1 },
-  { symbol: "BASED", name: "Based", tokenId: 1297, chainId: 56, transferCount: 0, holderCount: 0, dexActionCount: 1 },
-  { symbol: "OPG", name: "OpenGradient", tokenId: 1584, chainId: 56, transferCount: 0, holderCount: 0, dexActionCount: 1 },
+  { symbol: "GENIUS", name: "Genius", tokenId: 1522, chainId: 56, listingTime: null, transferCount: 65341, holderCount: 4181, dexActionCount: 0 },
+  { symbol: "ST", name: "Sentio", tokenId: 1248, chainId: 56, listingTime: null, transferCount: 63339, holderCount: 548, dexActionCount: 0 },
+  { symbol: "BSB", name: "Block Street", tokenId: 787, chainId: 56, listingTime: null, transferCount: 36087, holderCount: 1459, dexActionCount: 0 },
+  { symbol: "ARIA", name: "AriaAI", tokenId: 1467, chainId: 56, listingTime: null, transferCount: 23041, holderCount: 41278, dexActionCount: 0 },
+  { symbol: "UP", name: "Unitas Labs", tokenId: 1178, chainId: 56, listingTime: null, transferCount: 11495, holderCount: 807, dexActionCount: 0 },
+  { symbol: "EDGE", name: "edgeX", tokenId: 794, chainId: 56, listingTime: null, transferCount: 0, holderCount: 0, dexActionCount: 1 },
+  { symbol: "PRL", name: "Perle", tokenId: 1244, chainId: 56, listingTime: null, transferCount: 0, holderCount: 0, dexActionCount: 1 },
+  { symbol: "R2", name: "R2 Protocol", tokenId: 1295, chainId: 56, listingTime: null, transferCount: 0, holderCount: 0, dexActionCount: 1 },
+  { symbol: "BASED", name: "Based", tokenId: 1297, chainId: 56, listingTime: null, transferCount: 0, holderCount: 0, dexActionCount: 1 },
+  { symbol: "OPG", name: "OpenGradient", tokenId: 1584, chainId: 56, listingTime: null, transferCount: 0, holderCount: 0, dexActionCount: 1 },
 ];
 
 function buildLargeTransferGraph(
@@ -732,6 +733,39 @@ function formatShanghaiDateTime(value: string | null) {
     second: "2-digit",
     hour12: false,
   }).format(date);
+}
+
+async function copyTextWithFallback(value: string) {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value);
+      return true;
+    }
+  } catch {
+    // Fall through to the execCommand fallback below.
+  }
+
+  if (typeof document === "undefined") {
+    return false;
+  }
+
+  try {
+    const textarea = document.createElement("textarea");
+    textarea.value = value;
+    textarea.setAttribute("readonly", "true");
+    textarea.style.position = "fixed";
+    textarea.style.opacity = "0";
+    textarea.style.pointerEvents = "none";
+    textarea.style.left = "-9999px";
+    document.body.appendChild(textarea);
+    textarea.select();
+    textarea.setSelectionRange(0, textarea.value.length);
+    const copied = document.execCommand("copy");
+    document.body.removeChild(textarea);
+    return copied;
+  } catch {
+    return false;
+  }
 }
 
 function formatUsdRangeBound(value: number | null, side: "low" | "high") {
@@ -1371,7 +1405,8 @@ const FundFlowCanvas = memo(function FundFlowCanvas({
 
   const handleCopyAddress = async (nodeId: string, address: string) => {
     try {
-      await navigator.clipboard.writeText(address);
+      const copied = await copyTextWithFallback(address);
+      if (!copied) throw new Error("copy failed");
       setCopiedNodeId(nodeId);
       window.setTimeout(() => {
         setCopiedNodeId(current => (current === nodeId ? null : current));
@@ -2297,6 +2332,8 @@ export default function OnChainBoard() {
   const [copiedLargeTransferAddress, setCopiedLargeTransferAddress] = useState<string | null>(null);
   const [copiedCexTokenAddress, setCopiedCexTokenAddress] = useState(false);
   const [copiedPoolAddsTokenAddress, setCopiedPoolAddsTokenAddress] = useState(false);
+  const [copiedPoolCoreTokenAddress, setCopiedPoolCoreTokenAddress] = useState(false);
+  const [copiedPoolAddress, setCopiedPoolAddress] = useState(false);
   const [expandedCexFlowDates, setExpandedCexFlowDates] = useState<Set<string>>(new Set(initialExpandDate ? [initialExpandDate] : []));
   const [isTokenPickerOpen, setIsTokenPickerOpen] = useState(false);
   const tokenPickerRef = useRef<HTMLDivElement | null>(null);
@@ -2457,15 +2494,23 @@ export default function OnChainBoard() {
   const flowTokenOptions = useMemo<OnchainTokenOption[]>(() => {
     const items = onchainTokensQuery.data?.items ?? [];
     if (items.length > 0) {
-      return items.map(item => ({
-        symbol: item.symbol,
-        name: item.name,
-        tokenId: item.tokenId,
-        chainId: item.chainId ?? selectedChainId,
-        transferCount: item.transferCount,
-        holderCount: item.holderCount,
-        dexActionCount: item.dexActionCount,
-      }));
+      return items
+        .map(item => ({
+          symbol: item.symbol,
+          name: item.name,
+          tokenId: item.tokenId,
+          chainId: item.chainId ?? selectedChainId,
+          listingTime: item.listingTime ?? null,
+          transferCount: item.transferCount,
+          holderCount: item.holderCount,
+          dexActionCount: item.dexActionCount,
+        }))
+        .sort((left, right) => {
+          const leftTs = left.listingTime ? new Date(left.listingTime).getTime() : 0;
+          const rightTs = right.listingTime ? new Date(right.listingTime).getTime() : 0;
+          if (leftTs !== rightTs) return rightTs - leftTs;
+          return right.transferCount - left.transferCount;
+        });
     }
 
     if (onchainTokensQuery.isLoading) {
@@ -2784,7 +2829,8 @@ export default function OnChainBoard() {
   const handleCopyHolderTokenAddress = async () => {
     if (!holdersQuery.data?.tokenAddress) return;
     try {
-      await navigator.clipboard.writeText(holdersQuery.data.tokenAddress);
+      const copied = await copyTextWithFallback(holdersQuery.data.tokenAddress);
+      if (!copied) throw new Error("copy failed");
       setCopiedHolderTokenAddress(true);
       window.setTimeout(() => setCopiedHolderTokenAddress(false), 1200);
     } catch {
@@ -2849,7 +2895,8 @@ export default function OnChainBoard() {
 
   const handleCopyLargeTransferAddress = async (address: string) => {
     try {
-      await navigator.clipboard.writeText(address);
+      const copied = await copyTextWithFallback(address);
+      if (!copied) throw new Error("copy failed");
       setCopiedLargeTransferAddress(address);
       window.setTimeout(() => {
         setCopiedLargeTransferAddress(current => (current === address ? null : current));
@@ -2862,7 +2909,8 @@ export default function OnChainBoard() {
   const handleCopyCexTokenAddress = async () => {
     if (!cexFlowsQuery.data?.tokenAddress) return;
     try {
-      await navigator.clipboard.writeText(cexFlowsQuery.data.tokenAddress);
+      const copied = await copyTextWithFallback(cexFlowsQuery.data.tokenAddress);
+      if (!copied) throw new Error("copy failed");
       setCopiedCexTokenAddress(true);
       window.setTimeout(() => setCopiedCexTokenAddress(false), 1200);
     } catch {
@@ -2873,11 +2921,37 @@ export default function OnChainBoard() {
   const handleCopyPoolAddsTokenAddress = async () => {
     if (!poolAddsQuery.data?.tokenAddress) return;
     try {
-      await navigator.clipboard.writeText(poolAddsQuery.data.tokenAddress);
+      const copied = await copyTextWithFallback(poolAddsQuery.data.tokenAddress);
+      if (!copied) throw new Error("copy failed");
       setCopiedPoolAddsTokenAddress(true);
       window.setTimeout(() => setCopiedPoolAddsTokenAddress(false), 1200);
     } catch {
       setCopiedPoolAddsTokenAddress(false);
+    }
+  };
+
+  const handleCopyPoolCoreTokenAddress = async () => {
+    if (!selectedPool?.coreTokenAddress) return;
+    try {
+      const copied = await copyTextWithFallback(selectedPool.coreTokenAddress);
+      if (!copied) throw new Error("copy failed");
+      setCopiedPoolCoreTokenAddress(true);
+      window.setTimeout(() => setCopiedPoolCoreTokenAddress(false), 1200);
+    } catch {
+      setCopiedPoolCoreTokenAddress(false);
+    }
+  };
+
+  const handleCopyPoolAddress = async () => {
+    const poolAddress = selectedPool?.poolAddress ?? selectedPool?.poolId ?? null;
+    if (!poolAddress) return;
+    try {
+      const copied = await copyTextWithFallback(poolAddress);
+      if (!copied) throw new Error("copy failed");
+      setCopiedPoolAddress(true);
+      window.setTimeout(() => setCopiedPoolAddress(false), 1200);
+    } catch {
+      setCopiedPoolAddress(false);
     }
   };
 
@@ -3013,13 +3087,13 @@ export default function OnChainBoard() {
                         >
                           <div className="min-w-0">
                             <div className="font-medium text-[#0F172A]">{token.symbol}</div>
-                            <div className="truncate text-xs text-[#64748B]">
+                          <div className="truncate text-xs text-[#64748B]">
                               {token.name}
                               {token.chainId != null ? ` · ${ONCHAIN_CHAIN_OPTIONS.find(option => option.id === token.chainId)?.label ?? token.chainId}` : ""}
                             </div>
                           </div>
                           <div className="ml-4 shrink-0 text-right text-[11px] text-[#94A3B8]">
-                            <div>{token.transferCount.toLocaleString()} transfers</div>
+                            <div>{token.listingTime ? formatShanghaiDateTime(token.listingTime) : "未记录上线"}</div>
                             <div>{token.holderCount.toLocaleString()} holders</div>
                           </div>
                         </button>
@@ -3151,6 +3225,7 @@ export default function OnChainBoard() {
                 <TableRow className="bg-[#F8FAFC]">
                   <TableHead>代币</TableHead>
                   <TableHead>名称</TableHead>
+                  <TableHead>上线时间</TableHead>
                   <TableHead className="text-right">Transfer</TableHead>
                   <TableHead className="text-right">Holder</TableHead>
                 </TableRow>
@@ -3158,13 +3233,13 @@ export default function OnChainBoard() {
               <TableBody>
                 {onchainTokensQuery.isLoading && filteredTokenList.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={4} className="h-28 text-center text-sm text-[#64748B]">
+                    <TableCell colSpan={5} className="h-28 text-center text-sm text-[#64748B]">
                       正在加载代币列表...
                     </TableCell>
                   </TableRow>
                 ) : filteredTokenList.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={4} className="h-28 text-center text-sm text-[#64748B]">
+                    <TableCell colSpan={5} className="h-28 text-center text-sm text-[#64748B]">
                       暂无代币数据
                     </TableCell>
                   </TableRow>
@@ -3185,6 +3260,7 @@ export default function OnChainBoard() {
                     >
                       <TableCell className="font-semibold text-[#0F172A]">{token.symbol}</TableCell>
                       <TableCell className="text-[#475569]">{token.name}</TableCell>
+                      <TableCell className="whitespace-nowrap text-[#475569]">{token.listingTime ? formatShanghaiDateTime(token.listingTime) : "—"}</TableCell>
                       <TableCell className="text-right">{token.transferCount.toLocaleString()}</TableCell>
                       <TableCell className="text-right">{token.holderCount.toLocaleString()}</TableCell>
                     </TableRow>
@@ -3846,11 +3922,11 @@ export default function OnChainBoard() {
                       </a>
                       <button
                         type="button"
-                        onClick={() => navigator.clipboard.writeText(selectedPool.coreTokenAddress!)}
+                        onClick={handleCopyPoolCoreTokenAddress}
                         className="text-[#64748B] transition hover:text-[#1D4ED8]"
-                        title="复制地址"
+                        title={copiedPoolCoreTokenAddress ? "已复制" : "复制地址"}
                       >
-                        <Copy className="h-4 w-4" />
+                        {copiedPoolCoreTokenAddress ? "✓" : <Copy className="h-4 w-4" />}
                       </button>
                     </div>
                   ) : (
@@ -3880,11 +3956,11 @@ export default function OnChainBoard() {
                       </a>
                       <button
                         type="button"
-                        onClick={() => navigator.clipboard.writeText(detailPoolAddress)}
+                        onClick={handleCopyPoolAddress}
                         className="text-[#64748B] transition hover:text-[#1D4ED8]"
-                        title="复制地址"
+                        title={copiedPoolAddress ? "已复制" : "复制地址"}
                       >
-                        <Copy className="h-4 w-4" />
+                        {copiedPoolAddress ? "✓" : <Copy className="h-4 w-4" />}
                       </button>
                     </div>
                   ) : (

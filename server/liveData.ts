@@ -744,6 +744,7 @@ type AvailableOnchainTokenResult = {
     name: string;
     tokenAddressId: number | null;
     tokenAddress: string | null;
+    listingTime: string | null;
     transferCount: number;
     holderCount: number;
     dexActionCount: number;
@@ -6208,7 +6209,11 @@ export async function listAvailableOnchainTokens(limit = 20, chainId?: number | 
       ON ids.chainId = h.chainId AND ids.tokenId = h.tokenId
     LEFT JOIN dex_counts d
       ON ids.chainId = d.chainId AND ids.tokenId = d.tokenId
-    ORDER BY transferCount DESC, holderCount DESC, dexActionCount DESC, tokenId ASC
+    ORDER BY
+      transferCount DESC,
+      holderCount DESC,
+      dexActionCount DESC,
+      tokenId ASC
     LIMIT @limit
   `;
   const [activityRows] = await bigQuery.query({
@@ -6233,6 +6238,7 @@ export async function listAvailableOnchainTokens(limit = 20, chainId?: number | 
       name: string;
       tokenAddressId: number | null;
       tokenAddress: string | null;
+      listingTime: string | null;
     })[]
   >(
     `
@@ -6241,7 +6247,8 @@ export async function listAvailableOnchainTokens(limit = 20, chainId?: number | 
         tp.symbol AS symbol,
         tp.name AS name,
         ta.id AS tokenAddressId,
-        ta.address AS tokenAddress
+        ta.address AS tokenAddress,
+        listingAgg.listingTime AS listingTime
       FROM token_profiles tp
       LEFT JOIN (
         SELECT ta1.*
@@ -6254,6 +6261,14 @@ export async function listAvailableOnchainTokens(limit = 20, chainId?: number | 
           ON latest.token_id = ta1.token_id
          AND latest.maxId = ta1.id
       ) ta ON ta.token_id = tp.id
+      LEFT JOIN (
+        SELECT
+          el.token_id AS tokenId,
+          MIN(el.listing_time) AS listingTime
+        FROM exchange_listings el
+        WHERE el.listing_time IS NOT NULL
+        GROUP BY el.token_id
+      ) listingAgg ON listingAgg.tokenId = tp.id
       WHERE tp.id IN (${placeholders})
     `,
     tokenIds
@@ -6274,12 +6289,21 @@ export async function listAvailableOnchainTokens(limit = 20, chainId?: number | 
           name: profile.name,
           tokenAddressId: profile.tokenAddressId,
           tokenAddress: profile.tokenAddress,
+          listingTime: profile.listingTime ? String(profile.listingTime).trim() || null : null,
           transferCount: Number((row as { transferCount?: string | number }).transferCount ?? 0),
           holderCount: Number((row as { holderCount?: string | number }).holderCount ?? 0),
           dexActionCount: Number((row as { dexActionCount?: string | number }).dexActionCount ?? 0),
         };
       })
-      .filter((item): item is NonNullable<typeof item> => Boolean(item)),
+      .filter((item): item is NonNullable<typeof item> => Boolean(item))
+      .sort((left, right) => {
+        const leftTs = left.listingTime ? new Date(left.listingTime).getTime() : 0;
+        const rightTs = right.listingTime ? new Date(right.listingTime).getTime() : 0;
+        if (leftTs !== rightTs) return rightTs - leftTs;
+        if (left.transferCount !== right.transferCount) return right.transferCount - left.transferCount;
+        if (left.holderCount !== right.holderCount) return right.holderCount - left.holderCount;
+        return right.tokenId - left.tokenId;
+      }),
   };
 }
 
