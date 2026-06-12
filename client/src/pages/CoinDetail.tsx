@@ -84,7 +84,8 @@ function CandleBar(props: any) {
   );
 }
 
-function formatCompactPrice(value: number) {
+function formatCompactPrice(value: number | null | undefined) {
+  if (value == null || Number.isNaN(value)) return "—";
   return value >= 1 ? `$${value.toFixed(2)}` : `$${value.toFixed(4)}`;
 }
 
@@ -768,65 +769,6 @@ function formatPositionAxisLabel(value: string, timeframe: PositionTimeframe) {
   return `${month}/${day}`;
 }
 
-const listingTimelineRows = [
-  {
-    id: "upbit",
-    exchange: "Upbit Spot",
-    tag: "现货",
-    date: "2026/04/15 03:00",
-    price: "—",
-    fdv: "N/A",
-    link: "#",
-    side: "left" as const,
-    color: "#22c55e",
-    logo: "UP",
-    logoUrl: null,
-    logoTone: "bg-[#1f4aa8] text-white",
-  },
-  {
-    id: "bithumb",
-    exchange: "Bithumb Spot",
-    tag: "现货",
-    date: "2026/04/15 00:30",
-    price: "—",
-    fdv: "N/A",
-    link: "#",
-    side: "left" as const,
-    color: "#22c55e",
-    logo: "b",
-    logoUrl: null,
-    logoTone: "bg-[#ff6b1a] text-white",
-  },
-  {
-    id: "binance",
-    exchange: "Binance Alpha",
-    tag: "活动",
-    date: "2026/04/13 20:00",
-    price: "$0.021",
-    fdv: "$210.0M",
-    link: "#",
-    side: "right" as const,
-    color: "#f4b000",
-    logo: "BN",
-    logoUrl: null,
-    logoTone: "bg-[#f4b000] text-zinc-900",
-  },
-  {
-    id: "okx",
-    exchange: "OKX Boost",
-    tag: "多重事件",
-    date: "2026/04/10 12:00",
-    price: "$0.019",
-    fdv: "$190.0M",
-    link: "#",
-    side: "right" as const,
-    color: "#3b82f6",
-    logo: "OK",
-    logoUrl: null,
-    logoTone: "bg-zinc-900 text-white",
-  },
-];
-
 export default function CoinDetail() {
   const { coinId } = useParams<{ coinId: string }>();
   const [location, setLocation] = useLocation();
@@ -953,12 +895,12 @@ export default function CoinDetail() {
     ...fallbackToken,
     symbol: tokenProfile?.symbol ?? fallbackToken.symbol,
     name: tokenProfile?.name ?? fallbackToken.name,
-    price: tokenProfile?.currentPrice ?? fallbackToken.price,
-    totalSupply: tokenProfile ? formatSupplyValue(tokenProfile.totalSupply) : fallbackToken.totalSupply,
-    circulatingSupply: tokenProfile ? formatSupplyValue(tokenProfile.circulatingSupply) : fallbackToken.circulatingSupply,
-    fdv: tokenProfile ? formatMetricValue(tokenProfile.fdv) : fallbackToken.fdv,
-    marketCap: tokenProfile ? formatMetricValue(tokenProfile.marketCap) : fallbackToken.marketCap,
-    volume24h: tokenProfile ? formatMetricValue(tokenProfile.volume24h) : fallbackToken.volume24h,
+    price: tokenProfile?.currentPrice ?? null,
+    totalSupply: tokenProfile ? formatSupplyValue(tokenProfile.totalSupply) : "—",
+    circulatingSupply: tokenProfile ? formatSupplyValue(tokenProfile.circulatingSupply) : "—",
+    fdv: tokenProfile ? formatMetricValue(tokenProfile.fdv) : "—",
+    marketCap: tokenProfile ? formatMetricValue(tokenProfile.marketCap) : "—",
+    volume24h: tokenProfile ? formatMetricValue(tokenProfile.volume24h) : "—",
     logoText: (tokenProfile?.symbol?.[0] || fallbackToken.logoText || "?").slice(0, 2).toUpperCase(),
   };
   const primaryAddress = tokenProfile?.addresses[0];
@@ -967,9 +909,7 @@ export default function CoinDetail() {
     (watchlistQuery.data?.items ?? []).map(item => item.symbol.trim().toUpperCase())
   );
   const isWatched = watchlistSymbols.has(token.symbol.trim().toUpperCase());
-  const tokenTags = tokenProfile?.coinTags.length
-    ? tokenProfile.coinTags
-    : ["DeFi", "Layer 1", "Smart Contracts", "Interoperability"];
+  const tokenTags = tokenProfile?.coinTags ?? [];
   const tokenLinks: Array<{ label: string; href: string; icon: LucideIcon }> = [
     ...(tokenProfile?.website ? [{ label: "Website", href: tokenProfile.website, icon: Globe }] : []),
     ...(tokenProfile?.coinMarketCapId
@@ -1091,28 +1031,7 @@ export default function CoinDetail() {
         rewardDistributionTime: item.rewardDistributionTime,
         publishedAt: item.publishedAt,
       }))
-    : listingTimelineRows.map(item => ({
-        ...item,
-        title: item.exchange,
-        isActivity: item.tag !== "现货",
-        marketCap: "—",
-        rawDate: null,
-        chartPrice: Number(token.price),
-        depositTime: null,
-        pairName: null,
-        pricePost5m: null,
-        pricePost15m: null,
-        changePost15m: null,
-        activityType: null,
-        dilutionRatio: null,
-        rewardAmount: null,
-        description: null,
-        participationThreshold: null,
-        operationSteps: null,
-        endTime: null,
-        rewardDistributionTime: null,
-        publishedAt: null,
-      }));
+    : [];
   const listingChartGroups = useMemo(() => {
     const chartEvents = listingTimelineItems.flatMap(item => {
       const baseTitle = formatListingChartEventTitle({
@@ -1298,21 +1217,7 @@ export default function CoinDetail() {
           fundingRate: item.fundingRate,
           openInterest: item.openInterest,
         }))
-      : token.exchanges.map((exchange, index) => ({
-          id: `${exchange.name}-${index}`,
-          exchangeId: exchange.name.toLowerCase().replace(/\s+/g, "-"),
-          exchange: exchange.name,
-          exchangeLogoUrl: null,
-          marketType: formatMarketTypeLabel(exchange.type),
-          pair: `${token.symbol}/USDT`,
-          price: token.price,
-          volume24h: 25_529_217.73 + index * 19_200_000,
-          volumeRatio: 7.99 + index * 6.4,
-          depthBuy2: null,
-          depthSell2: null,
-          fundingRate: null,
-          openInterest: null,
-        }));
+      : [];
 
   const holdersSeries = tokenHoldersQuery.data?.series ?? [];
   const holdersItems = tokenHoldersQuery.data?.items ?? [];
@@ -1428,7 +1333,7 @@ export default function CoinDetail() {
               <div className="metric-value-strong mt-3 text-[oklch(var(--crypto-green))]">
                 {tokenProfile?.priceChange7d != null
                   ? `${tokenProfile.priceChange7d >= 0 ? "+" : ""}${tokenProfile.priceChange7d.toFixed(2)}% (7D)`
-                  : "+35.17% (All)"}
+                  : "—"}
               </div>
             </div>
           </div>
@@ -1440,7 +1345,7 @@ export default function CoinDetail() {
               ["24h 交易量", token.volume24h],
               ["量/市值", formatPercentValue(volumeToMarketCap)],
               ["总供应量", token.totalSupply],
-              ["最大供应量", token.totalSupply],
+              ["最大供应量", "—"],
               ["流通供应量", token.circulatingSupply],
               ["持有者", formatHolderCount(tokenProfile?.tokenHolderCount ?? null)],
             ].map(([label, value]) => (
@@ -1454,13 +1359,17 @@ export default function CoinDetail() {
           <div className="space-y-5 border-t border-[#e7edf4] pt-5">
             <div>
               <div className="mb-3 text-[15px] font-semibold text-muted-foreground">行业 / 赛道</div>
-              <div className="flex flex-wrap gap-2.5">
-                {tokenTags.map(item => (
-                  <Badge key={item} variant="secondary" className="rounded-full bg-[oklch(var(--crypto-panel-soft))] px-3 py-1.5 text-[13px] font-medium">
-                    {item}
-                  </Badge>
-                ))}
-              </div>
+              {tokenTags.length > 0 ? (
+                <div className="flex flex-wrap gap-2.5">
+                  {tokenTags.map(item => (
+                    <Badge key={item} variant="secondary" className="rounded-full bg-[oklch(var(--crypto-panel-soft))] px-3 py-1.5 text-[13px] font-medium">
+                      {item}
+                    </Badge>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-sm text-muted-foreground">暂无赛道数据</div>
+              )}
             </div>
 
             <div className="space-y-3 border-t border-[#eef2f6] pt-5">
@@ -1619,7 +1528,7 @@ export default function CoinDetail() {
                   <div className="mt-2 text-lg text-muted-foreground">
                     {tokenProfile?.description
                       ? tokenProfile.description.slice(0, 180)
-                      : `${token.name} market depth, short-term price trend, and venue-level liquidity overview.`}
+                      : "—"}
                   </div>
                 </div>
             </div>
