@@ -6,6 +6,7 @@ import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import Home from "./pages/Home";
 import CoinDetail from "./pages/CoinDetail";
+import CoinReport from "./pages/CoinReport";
 import ExchangeDepth from "./pages/ExchangeDepth";
 import ExchangeStrategy from "./pages/ExchangeStrategy";
 import DataAnalysis from "./pages/DataAnalysis";
@@ -33,6 +34,7 @@ function Router() {
             <Route path={"/"} component={DataManagement} />
             <Route path={"/market"} component={DataManagement} />
             <Route path={"/signals"} component={Home} />
+            <Route path={"/coin/:coinId/report"} component={CoinReport} />
             <Route path={"/coin/:coinId"} component={CoinDetail} />
             <Route path={"/depth/:exchangeId/:coinId"} component={ExchangeDepth} />
             <Route path={"/depth/:exchangeId"} component={ExchangeDepth} />

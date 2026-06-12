@@ -255,6 +255,24 @@ function formatCountdownOrDateTime(value: string | null) {
   return formatAnnouncementDateTime(value);
 }
 
+function isNewSpotListing(
+  exchanges: Array<{
+    marketType?: string | null;
+    listingTime?: string | null;
+  }>
+) {
+  const now = Date.now();
+  const firstSpotListingTime = exchanges
+    .filter(exchange => (exchange.marketType ?? "").trim().toLowerCase() !== "perps")
+    .map(exchange => parseUtcDateLike(exchange.listingTime)?.getTime() ?? Number.POSITIVE_INFINITY)
+    .reduce((earliest, current) => Math.min(earliest, current), Number.POSITIVE_INFINITY);
+
+  if (!Number.isFinite(firstSpotListingTime)) return false;
+
+  const ageMs = now - firstSpotListingTime;
+  return ageMs >= 0 && ageMs <= 48 * 60 * 60 * 1000;
+}
+
 function ExchangeSummaryList({
   items,
 }: {
@@ -522,6 +540,7 @@ export default function DataManagement() {
         recentVenue: token.recentVenue ?? "—",
         logoTone: "bg-[linear-gradient(135deg,#dbeafe,#bfdbfe)] text-[#1d4ed8]",
         watched: watchlistSymbolSet.has(token.symbol.trim().toUpperCase()),
+        isNew: isNewSpotListing(token.exchanges ?? []),
         raw: token,
       }));
 
@@ -987,41 +1006,41 @@ export default function DataManagement() {
             ) : null}
             <div className="overflow-x-auto">
             <table className="min-w-full text-sm">
-              <thead className="border-b border-[#d8e0eb] text-left text-[13px] font-semibold text-[oklch(var(--crypto-ink))]">
+              <thead className="text-left text-[13px] font-semibold text-[oklch(var(--crypto-ink))]">
                 <tr>
-                  <th rowSpan={2} className="px-3 py-4 align-middle">
+                  <th rowSpan={2} className="sticky top-0 z-30 border-b border-[#d8e0eb] bg-[rgba(251,252,254,0.96)] px-3 py-4 align-middle backdrop-blur-md">
                     <SortButton field="rank" label="#" />
                   </th>
-                  <th rowSpan={2} className="px-3 py-4 align-middle">
+                  <th rowSpan={2} className="sticky top-0 z-30 border-b border-[#d8e0eb] bg-[rgba(251,252,254,0.96)] px-3 py-4 align-middle backdrop-blur-md">
                     <SortButton field="symbol" label="币种" />
                   </th>
-                  <th rowSpan={2} className="px-3 py-4 align-middle">
+                  <th rowSpan={2} className="sticky top-0 z-30 border-b border-[#d8e0eb] bg-[rgba(251,252,254,0.96)] px-3 py-4 align-middle backdrop-blur-md">
                     <SortButton field="listedAt" label="上线时间" />
                   </th>
-                  <th rowSpan={2} className="px-3 py-4 align-middle">
+                  <th rowSpan={2} className="sticky top-0 z-30 border-b border-[#d8e0eb] bg-[rgba(251,252,254,0.96)] px-3 py-4 align-middle backdrop-blur-md">
                     <SortButton field="price" label="价格" />
                   </th>
-                  <th rowSpan={2} className="px-3 py-4 align-middle">
+                  <th rowSpan={2} className="sticky top-0 z-30 border-b border-[#d8e0eb] bg-[rgba(251,252,254,0.96)] px-3 py-4 align-middle backdrop-blur-md">
                     <SortButton field="totalSupply" label="总量" />
                   </th>
-                  <th rowSpan={2} className="px-3 py-4 align-middle">
+                  <th rowSpan={2} className="sticky top-0 z-30 border-b border-[#d8e0eb] bg-[rgba(251,252,254,0.96)] px-3 py-4 align-middle backdrop-blur-md">
                     <SortButton field="circulatingSupply" label="流通量" />
                   </th>
-                  <th rowSpan={2} className="px-3 py-4 align-middle">
+                  <th rowSpan={2} className="sticky top-0 z-30 border-b border-[#d8e0eb] bg-[rgba(251,252,254,0.96)] px-3 py-4 align-middle backdrop-blur-md">
                     <SortButton field="fdv" label="FDV" />
                   </th>
-                  <th rowSpan={2} className="px-3 py-4 align-middle">
+                  <th rowSpan={2} className="sticky top-0 z-30 border-b border-[#d8e0eb] bg-[rgba(251,252,254,0.96)] px-3 py-4 align-middle backdrop-blur-md">
                     <SortButton field="marketCap" label="流通市值" />
                   </th>
-                  <th colSpan={2} className="px-3 pb-2 pt-4 text-left align-bottom">上线交易所</th>
-                  <th rowSpan={2} className="px-3 py-4 align-middle">最近上所</th>
-                  <th rowSpan={2} className="px-3 py-4 text-right align-middle">
+                  <th colSpan={2} className="sticky top-0 z-30 border-b border-[#d8e0eb] bg-[rgba(251,252,254,0.96)] px-3 pb-2 pt-4 text-left align-bottom backdrop-blur-md">上线交易所</th>
+                  <th rowSpan={2} className="sticky top-0 z-30 border-b border-[#d8e0eb] bg-[rgba(251,252,254,0.96)] px-3 py-4 align-middle backdrop-blur-md">最近上所</th>
+                  <th rowSpan={2} className="sticky top-0 z-30 border-b border-[#d8e0eb] bg-[rgba(251,252,254,0.96)] px-3 py-4 text-right align-middle backdrop-blur-md">
                     <SortButton field="volume24h" label="24h交易量" align="right" />
                   </th>
                 </tr>
                 <tr className="border-t border-[#eef2f6]">
-                  <th className="px-3 pb-3 pt-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Spot</th>
-                  <th className="px-3 pb-3 pt-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Perps</th>
+                  <th className="sticky top-[52px] z-30 border-b border-[#d8e0eb] bg-[rgba(251,252,254,0.96)] px-3 pb-3 pt-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground backdrop-blur-md">Spot</th>
+                  <th className="sticky top-[52px] z-30 border-b border-[#d8e0eb] bg-[rgba(251,252,254,0.96)] px-3 pb-3 pt-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground backdrop-blur-md">Perps</th>
                 </tr>
               </thead>
               <tbody>
@@ -1059,7 +1078,14 @@ export default function DataManagement() {
                           ) : null}
                         </div>
                         <div>
-                          <div className="font-semibold leading-5">{token.symbol}</div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <div className="font-semibold leading-5">{token.symbol}</div>
+                            {token.isNew ? (
+                              <span className="inline-flex items-center rounded-full border border-[#f97316]/25 bg-[linear-gradient(135deg,#ff8a3d,#ff4d6d)] px-2.5 py-0.5 text-[10px] font-black uppercase tracking-[0.22em] text-white shadow-[0_8px_18px_rgba(255,109,72,0.28)]">
+                                New
+                              </span>
+                            ) : null}
+                          </div>
                           <div className="line-clamp-1 text-[12px] leading-5 text-muted-foreground">{token.name}</div>
                         </div>
                       </div>

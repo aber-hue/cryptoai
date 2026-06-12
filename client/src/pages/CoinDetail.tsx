@@ -6,6 +6,7 @@ import {
   type PositionTimeframe,
 } from "@/features/crypto-ai/market-data";
 import { trpc } from "@/lib/trpc";
+import { findTokenReport } from "@/lib/tokenReports";
 import { parseUtcDateLike, SHANGHAI_TIME_ZONE } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { useEffect, useMemo, useState } from "react";
@@ -30,6 +31,7 @@ import {
   Copy,
   Download,
   ExternalLink,
+  FileText,
   GitBranch,
   Globe,
   Link2,
@@ -942,6 +944,11 @@ export default function CoinDetail() {
     { enabled: canLoadTokenData && shouldLoadDepth }
   );
   const tokenProfile = tokenProfileQuery.data;
+  const tokenReport = findTokenReport({
+    tokenId: tokenProfile?.tokenId ?? routeTokenId,
+    symbol: tokenProfile?.symbol ?? activeSymbol,
+    name: tokenProfile?.name ?? fallbackToken.name,
+  });
   const token = {
     ...fallbackToken,
     symbol: tokenProfile?.symbol ?? fallbackToken.symbol,
@@ -987,13 +994,7 @@ export default function CoinDetail() {
       ? [{ label: "Whitepaper", href: tokenProfile.whitepaperUrl, icon: ExternalLink }]
       : []),
   ];
-  const latestAnnouncements = tokenProfile?.latestAnnouncements.length
-    ? tokenProfile.latestAnnouncements
-    : [
-        { id: 1, title: `${token.symbol} 上线 Binance 现货`, publishedAt: "2025-03-15", type: "listing" as const, url: "#" },
-        { id: 2, title: `${token.symbol} Launchpool 活动开启`, publishedAt: "2025-02-28", type: "event" as const, url: "#" },
-        { id: 3, title: `${token.symbol} 上线 OKX 合约`, publishedAt: "2025-02-10", type: "listing" as const, url: "#" },
-      ];
+  const latestAnnouncements = tokenProfile?.latestAnnouncements ?? [];
   const volumeToMarketCap =
     tokenProfile?.volume24h != null && tokenProfile?.marketCap
       ? (tokenProfile.volume24h / tokenProfile.marketCap) * 100
@@ -1547,17 +1548,23 @@ export default function CoinDetail() {
                 </Button>
               </div>
               <div className="space-y-3">
-                {latestAnnouncements.map(item => (
-                  <div key={`${item.id}-${item.title}`} className="rounded-2xl bg-[oklch(var(--crypto-panel-soft))] px-3 py-3.5">
-                    <div className="flex items-start gap-2 text-sm font-medium text-[oklch(var(--crypto-ink))]">
-                      <span className={cn("mt-1 text-[10px]", item.type === "listing" ? "text-[oklch(var(--crypto-green))]" : "text-[oklch(var(--crypto-gold))]")}>
-                        ●
-                      </span>
-                      <span className="leading-6">{item.title}</span>
+                {latestAnnouncements.length > 0 ? (
+                  latestAnnouncements.map(item => (
+                    <div key={`${item.id}-${item.title}`} className="rounded-2xl bg-[oklch(var(--crypto-panel-soft))] px-3 py-3.5">
+                      <div className="flex items-start gap-2 text-sm font-medium text-[oklch(var(--crypto-ink))]">
+                        <span className={cn("mt-1 text-[10px]", item.type === "listing" ? "text-[oklch(var(--crypto-green))]" : "text-[oklch(var(--crypto-gold))]")}>
+                          ●
+                        </span>
+                        <span className="leading-6">{item.title}</span>
+                      </div>
+                      <div className="mt-2 pl-4 text-sm text-muted-foreground">{formatAnnouncementDate(item.publishedAt)}</div>
                     </div>
-                    <div className="mt-2 pl-4 text-sm text-muted-foreground">{formatAnnouncementDate(item.publishedAt)}</div>
+                  ))
+                ) : (
+                  <div className="rounded-2xl bg-[oklch(var(--crypto-panel-soft))] px-3 py-4 text-sm text-muted-foreground">
+                    暂无相关公告
                   </div>
-                ))}
+                )}
               </div>
             </div>
           </div>
@@ -1598,6 +1605,16 @@ export default function CoinDetail() {
                       <Star className={cn("h-4 w-4", isWatched && "fill-current")} />
                       {isWatched ? "已关注" : "关注"}
                     </button>
+                    {tokenReport ? (
+                      <button
+                        type="button"
+                        onClick={() => setLocation(`/coin/${coinId}/report${returnTo ? `?from=${encodeURIComponent(returnTo)}` : ""}`)}
+                        className="inline-flex h-9 items-center gap-2 rounded-full border border-[#d7e6fb] bg-[linear-gradient(135deg,rgba(36,79,184,0.96),rgba(40,163,137,0.92))] px-3.5 text-sm font-medium text-white shadow-[0_10px_22px_rgba(36,79,184,0.22)] transition hover:brightness-105"
+                      >
+                        <FileText className="h-4 w-4" />
+                        查看报告
+                      </button>
+                    ) : null}
                   </div>
                   <div className="mt-2 text-lg text-muted-foreground">
                     {tokenProfile?.description
