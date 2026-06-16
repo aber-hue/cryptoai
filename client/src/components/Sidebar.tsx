@@ -3,7 +3,7 @@ import {
   Bot,
   BrainCircuit,
   CandlestickChart,
-  Radar,
+  FileText,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -12,10 +12,11 @@ export default function Sidebar() {
 
   const workspaces = [
     {
-      path: "/",
-      label: "Signal Board",
-      description: "日常信号、关注名单、Alpha 异动",
-      icon: Radar,
+      path: "http://104.155.193.240:8001/token-briefs/",
+      label: "Reprot",
+      description: "Token brief 报告入口",
+      icon: FileText,
+      external: true,
     },
     {
       path: "/market",
@@ -49,33 +50,43 @@ export default function Sidebar() {
               const Icon = item.icon;
               const isActive = item.path === "/analysis" ? location === item.path || location.startsWith("/analysis/") : location === item.path;
 
-              return (
+              const className = cn(
+                "block rounded-[24px] border px-4 py-4 transition-all",
+                isActive
+                  ? "border-transparent bg-[linear-gradient(135deg,rgba(39,86,191,0.97),rgba(36,154,138,0.94))] text-white shadow-[0_18px_42px_rgba(49,102,187,0.32)]"
+                  : "border-white/70 bg-white/65 text-[oklch(var(--crypto-ink))] hover:border-white hover:bg-white"
+              );
+
+              const content = (
+                <div className="flex items-start gap-3">
+                  <div
+                    className={cn(
+                      "mt-0.5 flex h-10 w-10 items-center justify-center rounded-2xl",
+                      isActive ? "bg-white/16" : "bg-[oklch(var(--crypto-panel-soft))]"
+                    )}
+                  >
+                    <Icon className="h-5 w-5" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="font-semibold">{item.label}</div>
+                    <div className={cn("mt-1 text-sm leading-6", isActive ? "text-white/78" : "text-muted-foreground")}>
+                      {item.description}
+                    </div>
+                  </div>
+                </div>
+              );
+
+              return item.external ? (
+                <a key={item.path} href={item.path} target="_blank" rel="noreferrer" className={className}>
+                  {content}
+                </a>
+              ) : (
                 <Link
                   key={item.path}
                   href={item.path}
-                  className={cn(
-                    "block rounded-[24px] border px-4 py-4 transition-all",
-                    isActive
-                      ? "border-transparent bg-[linear-gradient(135deg,rgba(39,86,191,0.97),rgba(36,154,138,0.94))] text-white shadow-[0_18px_42px_rgba(49,102,187,0.32)]"
-                      : "border-white/70 bg-white/65 text-[oklch(var(--crypto-ink))] hover:border-white hover:bg-white"
-                  )}
+                  className={className}
                 >
-                  <div className="flex items-start gap-3">
-                    <div
-                      className={cn(
-                        "mt-0.5 flex h-10 w-10 items-center justify-center rounded-2xl",
-                        isActive ? "bg-white/16" : "bg-[oklch(var(--crypto-panel-soft))]"
-                      )}
-                    >
-                      <Icon className="h-5 w-5" />
-                    </div>
-                    <div className="min-w-0">
-                      <div className="font-semibold">{item.label}</div>
-                      <div className={cn("mt-1 text-sm leading-6", isActive ? "text-white/78" : "text-muted-foreground")}>
-                        {item.description}
-                      </div>
-                    </div>
-                  </div>
+                  {content}
                 </Link>
               );
             })}

@@ -7,7 +7,7 @@ import {
   CandlestickChart,
   Coins,
   ClipboardList,
-  Radar,
+  FileText,
 } from "lucide-react";
 import { useLocation } from "wouter";
 import { cn } from "@/lib/utils";
@@ -18,7 +18,7 @@ export default function Navbar() {
     { href: "/workbench", label: "工作台", icon: ClipboardList },
     { href: "/market", label: "Market Board", icon: CandlestickChart },
     { href: "/onchain", label: "On-chain Board", icon: Activity },
-    { href: "/signals", label: "Signal Board", icon: Radar },
+    { href: "http://104.155.193.240:8001/token-briefs/", label: "Reprot", icon: FileText, external: true },
     { href: "/analysis", label: "Template Lab", icon: BrainCircuit },
     { href: "/chat", label: "Free Chat", icon: Bot },
   ];
@@ -53,19 +53,31 @@ export default function Navbar() {
                   ? location === "/analysis" || location.startsWith("/analysis/")
                 : location === item.href;
 
-            return (
+            const className = cn(
+              "flex shrink-0 items-center gap-2 rounded-full border px-4 py-2 text-sm font-medium transition-all",
+              active
+                ? "border-transparent bg-[linear-gradient(135deg,rgba(39,86,191,0.97),rgba(36,154,138,0.94))] text-white shadow-[0_12px_24px_rgba(49,102,187,0.22)]"
+                : "border-white/70 bg-white/80 text-[oklch(var(--crypto-ink))] hover:bg-white"
+            );
+
+            const content = (
+              <>
+                <Icon className="h-4 w-4" />
+                <span>{item.label}</span>
+              </>
+            );
+
+            return item.external ? (
+              <a key={item.href} href={item.href} target="_blank" rel="noreferrer" className={className}>
+                {content}
+              </a>
+            ) : (
               <Link
                 key={item.href}
                 href={item.href}
-                className={cn(
-                  "flex shrink-0 items-center gap-2 rounded-full border px-4 py-2 text-sm font-medium transition-all",
-                  active
-                    ? "border-transparent bg-[linear-gradient(135deg,rgba(39,86,191,0.97),rgba(36,154,138,0.94))] text-white shadow-[0_12px_24px_rgba(49,102,187,0.22)]"
-                    : "border-white/70 bg-white/80 text-[oklch(var(--crypto-ink))] hover:bg-white"
-                )}
+                className={className}
               >
-                <Icon className="h-4 w-4" />
-                <span>{item.label}</span>
+                {content}
               </Link>
             );
           })}
